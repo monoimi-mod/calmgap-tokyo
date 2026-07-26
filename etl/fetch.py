@@ -783,6 +783,77 @@ def normalize_clinics(path: Path) -> gpd.GeoDataFrame:
     return out.reset_index(drop=True)
 
 
+def _extract_zoning_codes(gdf: gpd.GeoDataFrame, path: Path) -> pd.Series:
+    """A29 から用途地域コードを取り出す。
+
+    列名も格納形式も年度で変わる。仕様書からの推測で 1 列だけ決め打ちすると、
+    外れたときに **全件 NaN のまま静かに通ってしまう**（既定値 0.30 が
+    全メッシュに乗り、負荷スコアの主軸が消える）。
+    実際に A29-19_13 でこれが起きた。
+
+    そこで全列を走査し、
+      1. 用途地域コード（1〜13）として解釈できる列
+      2. 用途地域名（「商業地域」等）として解釈できる列
+    のどちらかが見つかるまで探す。どちらも無ければ、
+    各列の実際の値を添えて失敗する。黙って 0.30 を返すよりよい。
+    """
+    name_to_code = {name: code for code, name in ZONING_NAME.items()}
+    valid = set(ZONING_LOAD)
+
+    # --- 1. コードとして解釈できる列を探す ---
+    best: tuple[str, pd.Series, float] | None = None
+    for col in gdf.columns:
+        if col == "geometry":
+            continue
+        nums = pd.to_numeric(gdf[col], errors="coerce")
+        hit = nums.isin(valid)
+        ratio = float(hit.mean())
+        # 用途地域コードは 1〜13 に収まり、ほぼ全件が有効値になるはず。
+        # 行政区域コード(13113)や建蔽率(60)・容積率(400)は valid に入らず弾かれる。
+        #
+        # ただし都道府県コードは東京都なら全件 13 で、これは有効値の範囲に
+        # 入ってしまう（13 = 田園住居地域）。用途地域が 1 種類しかない
+        # 都市計画区域は現実には無いので、値の種類数で除外する。
+        if ratio > 0.9 and int(nums[hit].nunique()) >= 3:
+            if best is None or ratio > best[2]:
+                best = (col, nums, ratio)
+
+    if best is not None:
+        col, nums, ratio = best
+        print(f"[a29] 用途地域コード列 = {col}（有効値 {ratio * 100:.0f}%）")
+        return nums
+
+    # --- 2. 名称として解釈できる列を探す ---
+    for col in gdf.columns:
+        if col == "geometry":
+            continue
+        mapped = gdf[col].astype(str).str.strip().map(name_to_code)
+        ratio = float(mapped.notna().mean())
+        if ratio > 0.9:
+            print(f"[a29] 用途地域名の列 = {col}（有効値 {ratio * 100:.0f}%）")
+            return mapped.astype("Float64").astype(float)
+
+    # --- どちらも見つからない ---
+    lines = [
+        "用途地域コードを特定できない。",
+        "コード(1〜13)としても名称としても解釈できる列が無かった。",
+        "",
+        "各列の実際の値:",
+    ]
+    for col in gdf.columns:
+        if col == "geometry":
+            continue
+        vals = gdf[col].dropna().unique()[:8]
+        lines.append(f"    {col}: {list(vals)}")
+    lines += [
+        "",
+        "用途地域を表す列を見つけて、",
+        "etl/fetch.py の COLUMN_MAP['ksj_a29_youto']['zoning_code'] に追加すること。",
+        f"詳細: python -m etl.fetch --inspect {path}",
+    ]
+    raise ValueError("\n".join(lines))
+
+
 def normalize_zoning(path: Path, clip: bool = True) -> gpd.GeoDataFrame:
     """国土数値情報 A29 用途地域を負荷スコアつきポリゴンにする。
 
@@ -797,14 +868,8 @@ def normalize_zoning(path: Path, clip: bool = True) -> gpd.GeoDataFrame:
     if len(gdf) == 0:
         raise ValueError("研究領域内に用途地域が 0 件。対象範囲か入力を確認すること。")
 
-    col = pick_column(gdf, COLUMN_MAP["ksj_a29_youto"]["zoning_code"])
-    if not col:
-        raise ValueError(
-            f"用途地域コード列が見つからない。実列名を確認すること:\n"
-            f"    python -m etl.fetch --inspect {path}"
-        )
+    codes = _extract_zoning_codes(gdf, path)
 
-    codes = pd.to_numeric(gdf[col], errors="coerce")
     unknown = sorted(set(codes.dropna().astype(int)) - set(ZONING_LOAD))
     if unknown:
         print(
