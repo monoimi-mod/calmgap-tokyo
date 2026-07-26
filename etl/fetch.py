@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import io
 import os
+import re
 import sys
 import time
 import zipfile
@@ -324,6 +325,27 @@ def read_vector(path: Path) -> gpd.GeoDataFrame:
         )
 
     fmt = "GeoJSON" if geojson else "SHP"
+
+    # 【罠】県全体ファイルと市区町村別ファイルが同梱されていることがある。
+    #
+    # A29 用途地域（東京都）は
+    #     A29-19_13000  … 都全域 10,684 件
+    #     A29-19_13101  … 千代田区 92 件
+    #     A29-19_13112  … 世田谷区 520 件   …（以下 47 市区町村）
+    # が同じフォルダに入っている。全部読むと同じポリゴンを 2 回数えることになり、
+    # 面積加重平均が壊れる（同じ場所に用途地域が二重に乗る）。
+    #
+    # 末尾が「都道府県コード + 000」のファイルは全域版なので、
+    # それがあればそれだけを使う。
+    aggregate = [p for p in files if re.search(r"_\d{2}000(?:[._]|$)", p.stem)]
+    if aggregate and len(files) > len(aggregate):
+        skipped = len(files) - len(aggregate)
+        print(
+            f"[read] 全域ファイル {aggregate[0].name} を検出。"
+            f"市区町村別 {skipped} ファイルは同じ内容の内訳なので読まない（二重計上防止）"
+        )
+        files = aggregate[:1]
+
     print(f"[read] {path} から {fmt} を {len(files)} ファイル読み込む")
 
     frames = []
