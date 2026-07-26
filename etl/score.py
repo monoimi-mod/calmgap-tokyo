@@ -27,8 +27,34 @@ from .config import (
     LOAD_COMPONENTS,
     PRIORITY_ALPHA,
     PRIORITY_BETA,
+    PUBLISH_DECIMALS,
     Component,
 )
+
+
+# ---------------------------------------------------------------------------
+# 配信精度への丸め
+# ---------------------------------------------------------------------------
+
+
+def publish_round(values, decimals: int = PUBLISH_DECIMALS):
+    """配信精度へ丸める。**JavaScript の Math.round と同じ規則で**丸める。
+
+    Python の組み込み round と numpy は「ちょうど半分」を偶数側へ丸める
+    （0.03125 → 0.0312）。JavaScript の Math.round は大きい側へ丸める
+    （0.03125 → 0.0313）。同じ数式を 2 言語で実装しているこのプロジェクトでは、
+    この違いがそのまま Python↔TypeScript の不一致になる。
+
+    模擬データではパーセンタイル順位が 1/32 のような綺麗な分数になるため
+    ちょうど半分の値が実際に現れ、`python -m etl.build` の直後に
+    parity_check が落ちていた（実データでは偶然この値に当たらず通っていた）。
+
+    スコアは常に 0 以上なので floor(x + 0.5) で JS と同じ結果になる。
+    """
+    scale = 10.0**decimals
+    if isinstance(values, pd.Series):
+        return np.floor(values.to_numpy(dtype=float) * scale + 0.5) / scale
+    return float(np.floor(float(values) * scale + 0.5) / scale)
 
 
 # ---------------------------------------------------------------------------

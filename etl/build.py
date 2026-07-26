@@ -40,7 +40,6 @@ from .config import (
     MESH_LEVEL,
     PRIORITY_ALPHA,
     PRIORITY_BETA,
-    PUBLISH_DECIMALS,
     PRESETS,
     CRS_GEOGRAPHIC,
     SOURCES,
@@ -224,9 +223,9 @@ def _feature_properties(row: pd.Series) -> dict:
     """配信サイズを抑えるため、必要な列だけを丸めて出す。"""
     props = {"c": row["mesh_code"]}
     for comp in ALL_COMPONENTS:
-        props[f"n_{comp.key}"] = round(float(row[f"n_{comp.key}"]), PUBLISH_DECIMALS)
+        props[f"n_{comp.key}"] = score.publish_round(row[f"n_{comp.key}"])
     for key in ("demand", "load", "priority"):
-        props[key] = round(float(row[key]), PUBLISH_DECIMALS)
+        props[key] = score.publish_round(row[key])
     if row.get("host_name"):
         props["host"] = row["host_name"]
         props["host_kind"] = row["host_kind"]
@@ -459,9 +458,10 @@ def main(argv: list[str] | None = None) -> int:
     # 配信精度へ丸めてから合成する。
     # ブラウザへ渡すのは丸めた n_* であり、そこから再計算した結果が
     # ここで書き出す demand/load/priority と一致していなければならない。
+    # 丸め方も JS と揃える（score.publish_round のコメント参照）。
     for comp in ALL_COMPONENTS:
         col = f"n_{comp.key}"
-        normalized[col] = normalized[col].round(PUBLISH_DECIMALS)
+        normalized[col] = score.publish_round(normalized[col])
 
     scored = score.compose(normalized)
 

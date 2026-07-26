@@ -411,7 +411,8 @@ SOURCES: dict[str, Source] = {
         url="https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-A29-v2_1.html",
         kind="shp",
         license="国土数値情報 利用約款（出典表示）",
-        note="reinfolib_youto の代替。A29_005 に用途地域コード。",
+        note="reinfolib_youto の代替。用途地域コードは A29-19_13 では A29_004"
+        "（列名は年度で変わるため中身から自動判定する）。",
     ),
     "tokyo_road_noise": Source(
         key="tokyo_road_noise",
