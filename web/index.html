@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>calmgap-tokyo — カームダウン・スペース 設置優先度マップ</title>
+    <meta
+      name="description"
+      content="オープンデータから、東京都が次にカームダウン・クールダウンスペースを設置すべき場所を需要×負荷で算出し、根拠つきで提言する行政向け分析ツール。"
+    />
+  </head>
+  <body>
+    <div id="app">
+      <aside id="controls" class="panel">
+        <div class="panel-section">
+          <h1>calmgap-tokyo</h1>
+          <p class="subtitle">
+            カームダウン・クールダウンスペース 設置優先度マップ
+          </p>
+        </div>
+
+        <!-- 模擬データ実行時のみ表示される。build.py が meta.synthetic で制御。 -->
+        <div id="synthetic-banner" hidden></div>
+
+        <div class="panel-section">
+          <div class="stat">
+            <div class="stat-value" id="stat-value">—</div>
+            <div class="stat-label" id="stat-label">集計中…</div>
+          </div>
+        </div>
+
+        <div class="panel-section">
+          <h2>重みプリセット</h2>
+          <div class="presets" id="presets"></div>
+          <div class="preset-note" id="preset-note"></div>
+        </div>
+
+        <div class="panel-section">
+          <h2>重みを調整する</h2>
+          <div id="sliders"></div>
+          <button class="ghost-btn" id="reset-btn" style="margin-top: 10px">
+            既定値に戻す
+          </button>
+        </div>
+
+        <div class="panel-section">
+          <h2>重ねて表示</h2>
+          <div class="toggles">
+            <label class="toggle">
+              <input type="checkbox" id="toggle-demand" />
+              <span class="swatch demand"></span>
+              需要側の施設（事業所・学校・駅・クリニック）
+            </label>
+            <label class="toggle">
+              <input type="checkbox" id="toggle-hosts" />
+              <span class="swatch host"></span>
+              ホスト施設候補（設置先）
+            </label>
+          </div>
+        </div>
+
+        <div class="panel-section">
+          <details>
+            <summary>算出方法とデータ出典</summary>
+            <div id="methodology"></div>
+          </details>
+        </div>
+      </aside>
+
+      <main id="map-wrap">
+        <div id="map"></div>
+        <div id="legend">
+          <div class="legend-title">設置優先度</div>
+          <div class="legend-ramp"></div>
+          <div class="legend-scale">
+            <span>低</span><span>対象地域内での順位</span><span>高</span>
+          </div>
+          <div class="legend-note" id="legend-note"></div>
+        </div>
+      </main>
+
+      <aside id="detail" class="panel">
+        <div class="tabs" role="tablist">
+          <button class="tab" role="tab" data-tab="proposals" aria-selected="true">
+            提言リスト
+          </button>
+          <button class="tab" role="tab" data-tab="selected" aria-selected="false">
+            選択中のメッシュ
+          </button>
+          <button class="tab" role="tab" data-tab="table" aria-selected="false">
+            表で見る
+          </button>
+        </div>
+        <div class="panel-section" id="detail-body"></div>
+      </aside>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

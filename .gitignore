@@ -1,0 +1,28 @@
+# ダウンロードした生データ。大容量かつ再取得可能なので追跡しない。
+# 正規化済みの data/processed/ と配信用の web/public/data/ は追跡する
+# （後者はデモをそのまま動かせる状態で残しておきたいため）。
+data/raw/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Node
+node_modules/
+web/dist/
+*.log
+
+# API キー。不動産情報ライブラリ・e-Stat・ODPT のトークンを入れる場所。
+.env
+.env.local
+
+# OS / エディタ
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

@@ -1,0 +1,665 @@
+/*
+ * calmgap-tokyo — 設置優先度マップ
+ *
+ * 配色方針:
+ *   優先度の面 = 連続量 → 単一色相（青）の light→dark シーケンシャルランプ。
+ *   重ねる点 = identity → カテゴリカル 2 スロットのみ（橙・アクア）。
+ *   地図は淡色ベースマップ前提のため面そのものは常に明色系に固定し、
+ *   UI クロームだけを OS のテーマ設定に追従させる。
+ */
+
+:root {
+  color-scheme: light;
+
+  /* サーフェス */
+  --surface-1: #fcfcfb;
+  --surface-2: #f4f4f1;
+  --surface-raised: #ffffff;
+  --border: #dedcd6;
+  --border-strong: #c3c1b9;
+
+  /* テキスト */
+  --text-primary: #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted: #7c7a74;
+
+  /* シーケンシャル（青）— 優先度の面に使う */
+  --seq-100: #cde2fb;
+  --seq-200: #9ec5f4;
+  --seq-300: #6da7ec;
+  --seq-400: #3987e5;
+  --seq-500: #256abf;
+  --seq-600: #184f95;
+  --seq-700: #0d366b;
+
+  /* カテゴリカル — 重畳する点レイヤー */
+  --cat-demand: #eb6834; /* slot 2 orange : 需要側の施設 */
+  --cat-host: #1baf7a; /* slot 3 aqua   : ホスト施設（供給側） */
+
+  /* ステータス */
+  --status-warning: #fab219;
+  --status-critical: #d03b3b;
+
+  --accent: var(--seq-500);
+  --radius: 6px;
+  --panel-w: 336px;
+  --detail-w: 380px;
+
+  --font: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP",
+    "Yu Gothic UI", Meiryo, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --surface-1: #1a1a19;
+    --surface-2: #232322;
+    --surface-raised: #262625;
+    --border: #3a3a38;
+    --border-strong: #4e4e4b;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted: #96958c;
+    --cat-demand: #d95926;
+    --cat-host: #199e70;
+    --accent: var(--seq-400);
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface-1: #1a1a19;
+  --surface-2: #232322;
+  --surface-raised: #262625;
+  --border: #3a3a38;
+  --border-strong: #4e4e4b;
+  --text-primary: #ffffff;
+  --text-secondary: #c3c2b7;
+  --text-muted: #96958c;
+  --cat-demand: #d95926;
+  --cat-host: #199e70;
+  --accent: var(--seq-400);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  font-family: var(--font);
+  color: var(--text-primary);
+  background: var(--surface-1);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+#app {
+  display: grid;
+  grid-template-columns: var(--panel-w) 1fr var(--detail-w);
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* ---------------------------------------------------------------- パネル共通 */
+
+.panel {
+  background: var(--surface-1);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-right: 1px solid var(--border);
+}
+
+#detail {
+  border-right: none;
+  border-left: 1px solid var(--border);
+}
+
+.panel-section {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.panel-section:last-child {
+  border-bottom: none;
+}
+
+h1 {
+  font-size: 17px;
+  margin: 0 0 2px;
+  letter-spacing: 0.01em;
+}
+
+.subtitle {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+h2 {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin: 0 0 10px;
+  text-transform: uppercase;
+}
+
+h3 {
+  font-size: 13px;
+  margin: 0 0 4px;
+}
+
+p {
+  margin: 0 0 8px;
+}
+
+/* ---------------------------------------------------------------- 警告バナー */
+
+.banner {
+  display: flex;
+  gap: 9px;
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--status-warning) 16%, var(--surface-1));
+  border-left: 3px solid var(--status-warning);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-primary);
+}
+
+.banner-icon {
+  flex: none;
+  font-weight: 700;
+}
+
+.banner strong {
+  display: block;
+}
+
+/* ---------------------------------------------------------------- 見出し数値 */
+
+.stat {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+}
+
+.stat-value {
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+.stat-value small {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-left: 2px;
+}
+
+.stat-label {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+
+/* ---------------------------------------------------------------- プリセット */
+
+.presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.preset-btn,
+.ghost-btn {
+  font: inherit;
+  font-size: 12px;
+  padding: 5px 10px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-raised);
+  color: var(--text-primary);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.preset-btn:hover,
+.ghost-btn:hover {
+  background: var(--surface-2);
+}
+
+.preset-btn[aria-pressed="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.preset-note {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  margin-top: 8px;
+  min-height: 2.6em;
+}
+
+/* ---------------------------------------------------------------- スライダー */
+
+.slider-group + .slider-group {
+  margin-top: 16px;
+}
+
+.slider-group-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 8px;
+  padding-bottom: 5px;
+  border-bottom: 1px solid var(--border);
+}
+
+.slider-group-title span:last-child {
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.slider {
+  margin-bottom: 11px;
+}
+
+.slider-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.slider-head label {
+  cursor: help;
+  flex: 1;
+}
+
+.slider-value {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.slider input[type="range"] {
+  width: 100%;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.slider.is-negative .slider-value::before {
+  content: "減点 ";
+  color: var(--text-muted);
+}
+
+/* ---------------------------------------------------------------- レイヤー切替 */
+
+.toggles {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.swatch {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 1.5px solid var(--surface-raised);
+  outline: 1px solid var(--border-strong);
+  flex: none;
+}
+
+.swatch.demand {
+  background: var(--cat-demand);
+}
+
+.swatch.host {
+  background: var(--cat-host);
+}
+
+/* ---------------------------------------------------------------- 地図 */
+
+#map-wrap {
+  position: relative;
+  min-width: 0;
+}
+
+#map {
+  position: absolute;
+  inset: 0;
+  background: #eceae4;
+}
+
+.maplibregl-popup-content {
+  font-family: var(--font);
+  font-size: 12px;
+  padding: 9px 11px;
+  border-radius: var(--radius);
+  box-shadow: 0 2px 12px rgb(0 0 0 / 0.18);
+}
+
+/* ---------------------------------------------------------------- 凡例 */
+
+#legend {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  background: color-mix(in srgb, var(--surface-raised) 94%, transparent);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  font-size: 11px;
+  box-shadow: 0 1px 6px rgb(0 0 0 / 0.1);
+  max-width: 250px;
+  color: var(--text-primary);
+}
+
+.legend-title {
+  font-weight: 700;
+  font-size: 11.5px;
+  margin-bottom: 6px;
+}
+
+.legend-ramp {
+  height: 10px;
+  border-radius: 2px;
+  background: linear-gradient(
+    to right,
+    var(--seq-100),
+    var(--seq-300),
+    var(--seq-500),
+    var(--seq-700)
+  );
+  border: 1px solid var(--border);
+}
+
+.legend-scale {
+  display: flex;
+  justify-content: space-between;
+  color: var(--text-secondary);
+  margin-top: 3px;
+}
+
+.legend-note {
+  margin-top: 7px;
+  padding-top: 7px;
+  border-top: 1px solid var(--border);
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+
+/* ---------------------------------------------------------------- 提言リスト */
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  padding: 10px 16px 0;
+}
+
+.tab {
+  font: inherit;
+  font-size: 12.5px;
+  padding: 6px 11px;
+  border: 1px solid transparent;
+  border-bottom: none;
+  background: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-radius: var(--radius) var(--radius) 0 0;
+}
+
+.tab[aria-selected="true"] {
+  background: var(--surface-2);
+  border-color: var(--border);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 11px 13px;
+  margin-bottom: 9px;
+  background: var(--surface-raised);
+  cursor: pointer;
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+
+.card:hover {
+  border-color: var(--border-strong);
+  box-shadow: 0 1px 6px rgb(0 0 0 / 0.07);
+}
+
+.card.is-active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.card-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 5px;
+}
+
+.rank {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  background: var(--accent);
+  border-radius: 3px;
+  padding: 1px 6px;
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.rank.is-unreachable {
+  background: var(--status-critical);
+}
+
+.card-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  flex: 1;
+  min-width: 0;
+}
+
+.card-kind {
+  font-size: 11px;
+  color: var(--text-muted);
+  flex: none;
+}
+
+.card-narrative {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.55;
+}
+
+.card-meta {
+  display: flex;
+  gap: 12px;
+  margin-top: 7px;
+  padding-top: 7px;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.card-meta b {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+/* ---------------------------------------------------------------- 要因バー */
+
+.factors {
+  margin-top: 9px;
+}
+
+.factor {
+  display: grid;
+  grid-template-columns: 1fr 42px;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  margin-bottom: 5px;
+}
+
+.factor-bar {
+  height: 5px;
+  border-radius: 3px;
+  background: var(--surface-2);
+  overflow: hidden;
+  margin-top: 2px;
+}
+
+.factor-bar > i {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent);
+}
+
+.factor-bar.is-negative > i {
+  background: var(--text-muted);
+}
+
+.factor-num {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  text-align: right;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.factor-label {
+  color: var(--text-primary);
+}
+
+.factor-source {
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+
+/* ---------------------------------------------------------------- 表 */
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.data-table th,
+.data-table td {
+  text-align: left;
+  padding: 5px 7px;
+  border-bottom: 1px solid var(--border);
+}
+
+.data-table th {
+  color: var(--text-muted);
+  font-weight: 600;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.data-table td.num {
+  text-align: right;
+  font-family: var(--mono);
+}
+
+.empty {
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 18px 0;
+  text-align: center;
+}
+
+/* ---------------------------------------------------------------- 出典 */
+
+.sources {
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.sources li {
+  margin-bottom: 4px;
+}
+
+.sources a {
+  color: var(--accent);
+}
+
+details > summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-secondary);
+  user-select: none;
+}
+
+/* ---------------------------------------------------------------- 応答性 */
+
+@media (max-width: 1180px) {
+  #app {
+    grid-template-columns: 300px 1fr;
+    grid-template-rows: 1fr 42vh;
+  }
+  #controls {
+    grid-row: 1 / 3;
+  }
+  #detail {
+    grid-column: 2;
+    border-left: none;
+    border-top: 1px solid var(--border);
+  }
+}
+
+@media (max-width: 760px) {
+  #app {
+    grid-template-columns: 1fr;
+    grid-template-rows: 46vh 1fr;
+    height: auto;
+    min-height: 100vh;
+  }
+  #controls {
+    grid-row: auto;
+    order: 3;
+    border-right: none;
+  }
+  #map-wrap {
+    order: 1;
+    min-height: 46vh;
+  }
+  #detail {
+    order: 2;
+  }
+}
