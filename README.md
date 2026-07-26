@@ -51,6 +51,7 @@ overwhelm される場所に置くものだから。
 用途地域は「その土地が法的にどこまで騒がしくなり得るか」の上限を定めた規制であり、
 実測点が疎な感覚負荷を面として推定するのに使える。
 詳細と重みの根拠は [`docs/methodology.md`](docs/methodology.md)。
+作業を中断・再開するときは [`docs/status.md`](docs/status.md) が起点。
 
 ---
 
@@ -204,6 +205,7 @@ calmgap-tokyo/
 │  ├─ raw/           ダウンロード生データ（.gitignore）
 │  └─ processed/     正規化後 GeoJSON
 └─ docs/
+   ├─ status.md      現況まとめ・再開手順・残作業
    └─ methodology.md スコア定義・重みの根拠・出典・既知の限界
 ```
 
