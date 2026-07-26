@@ -38,6 +38,7 @@ import requests
 from .config import (
     CLIP_BUFFER_M,
     CRS_GEOGRAPHIC,
+    CRS_PROJECTED,
     DATA_PROCESSED,
     DATA_RAW,
     SOURCES,
@@ -292,6 +293,9 @@ TOKYO_LON_RANGE = (138.9, 140.0)
 TOKYO_LAT_RANGE = (34.9, 36.2)
 # 等価騒音レベル LAeq の現実的な幅。要請限度は昼間 65〜75dB 前後。
 NOISE_DB_RANGE = (30.0, 110.0)
+# 同一施設とみなす距離。出典が違えば建物重心・正面入口・住所ジオコーディングで
+# 数十 m ずれる。100m は「同名の別施設」を潰さずにゆれを吸収できる幅。
+DEDUPE_DISTANCE_M = 100.0
 # 列が特定できないときの既定値（--assume-missing でのみ使う）。
 SCHOOL_STUDENTS_FALLBACK = 150.0
 WAMNET_CAPACITY_FALLBACK = 20.0
@@ -1582,13 +1586,25 @@ NORMALIZERS: dict[str, tuple[str, str]] = {
 }
 
 
-def run_normalizer(kind: str, path: Path, assume_missing: bool = False) -> Path:
+def run_normalizer(
+    kind: str,
+    paths: list[Path],
+    assume_missing: bool = False,
+    merge: str | None = None,
+) -> Path:
     """指定した正規化を実行し、data/processed へ書き出す。
+
+    ファイルは複数渡せる（区ごとに分かれた公共施設一覧など）。
+    まとめて正規化し、同一施設を寄せてから 1 ファイルに書く。
 
     assume_missing は「その列が本当に収録されていない年度」のための逃げ道。
     受け付ける正規化（生徒数・定員）にだけ渡す。既定では渡さない ——
     列を取り違えたときに既定値で埋めて通してしまうのを防ぐのが目的なので、
     逃げ道は明示的に指定したときだけ開く。
+
+    merge は既に別の出典が入っているレイヤーへ書くときの指定
+    （"append" 統合 / "replace" 入れ替え）。既定は None で、
+    出典が消える場合は書かずに止まる。
     """
     if kind not in NORMALIZERS:
         raise SystemExit(
@@ -1604,12 +1620,126 @@ def run_normalizer(kind: str, path: Path, assume_missing: bool = False) -> Path:
                 "既定値で代用できる列を持つのは p29（生徒数）と wamnet（定員）だけ。"
             )
         kwargs["assume_missing"] = True
-    gdf = func(path, **kwargs)
+
+    # 存在しないパスをそのまま渡すと pandas / GDAL の traceback になり、
+    # 「名前が違う」のか「壊れている」のか分からない。--inspect と同じ扱いで
+    # 似た名前を並べて切り分ける。
+    missing = [p for p in paths if not p.exists()]
+    if missing:
+        for p in missing:
+            inspect_columns(p)
+        raise SystemExit("入力ファイルが見つからない。上の一覧から正しいパスを選ぶこと。")
+
+    frames = []
+    for p in paths:
+        if len(paths) > 1:
+            print(f"\n=== {p.name} ===")
+        frames.append(func(p, **kwargs))
+    gdf = frames[0] if len(frames) == 1 else _concat_layers(frames)
+
     out = DATA_PROCESSED / PROCESSED_FILES[layer_key]
+    gdf = _merge_with_existing(gdf, out, kind=kind, layer_key=layer_key, merge=merge)
+
     gdf.to_file(out, driver="GeoJSON")
     print(f"\n[normalize] {out.relative_to(out.parents[2])} に {len(gdf):,}件を書き出した")
     print("次: python -m etl.build --live")
     return out
+
+
+def _concat_layers(frames: list[gpd.GeoDataFrame]) -> gpd.GeoDataFrame:
+    out = gpd.GeoDataFrame(
+        pd.concat(frames, ignore_index=True), crs=frames[0].crs
+    )
+    return dedupe_points(out, tag="merge")
+
+
+def dedupe_points(gdf: gpd.GeoDataFrame, tag: str) -> gpd.GeoDataFrame:
+    """同じ施設が 2 度入るのを防ぐ。
+
+    区の公共施設一覧には P14 由来の児童館も載っている。両方入れると
+    提言リストで同じ施設が 2 行に割れ、「何メッシュ分を受け持つか」が
+    分散して費用対効果の説明が壊れる（build_proposals は施設名で束ねる）。
+
+    名称が同じで位置が DEDUPE_DISTANCE_M 以内なら同一施設とみなす。
+    座標は出典ごとに数十 m ずれる（建物重心 / 正面入口 / 住所ジオコーディング）ので
+    完全一致では落ちない。
+
+    座標を丸めて格子で寄せる方法は使わない。格子の境目に落ちた 2 点は
+    数十 m しか離れていなくても別扱いになる（実際に 44m ずれの例で外した）。
+    名称でまとめてから実距離で見る。同名の組は小さいので総当たりで足りる。
+    """
+    if "name" not in gdf.columns or len(gdf) == 0:
+        return gdf
+
+    # 全角空白・記号のゆれだけを吸収する。「区立」の有無のような
+    # 実質的な差は残す——別施設を潰す方が、重複を残すより悪い。
+    norm = gdf["name"].astype(str).str.replace(r"[\s　・]", "", regex=True)
+    metric = gdf.to_crs(CRS_PROJECTED).geometry
+
+    drop: set = set()
+    for _, group in norm.groupby(norm):
+        idx = list(group.index)
+        if len(idx) < 2:
+            continue
+        kept: list = []
+        for i in idx:
+            if any(metric[i].distance(metric[j]) <= DEDUPE_DISTANCE_M for j in kept):
+                drop.add(i)
+            else:
+                kept.append(i)
+
+    if drop:
+        print(
+            f"[{tag}] 同名かつ {DEDUPE_DISTANCE_M:.0f}m 以内の施設 "
+            f"{len(drop):,}件を統合した"
+        )
+    return gdf[~gdf.index.isin(drop)].reset_index(drop=True)
+
+
+def _merge_with_existing(
+    gdf: gpd.GeoDataFrame,
+    out: Path,
+    *,
+    kind: str,
+    layer_key: str,
+    merge: str | None,
+) -> gpd.GeoDataFrame:
+    """既存の正規化済みデータを黙って捨てない。
+
+    ひとつのレイヤーを複数の種別が書く。hosts は p14-hosts（児童館）と
+    facilities（区の公共施設一覧）、welfare は p14 と wamnet。
+    あとから流した方が既存を丸ごと置き換えるため、
+    **児童館 154 件を消したことに気付かないまま「到達不可」が増える**
+    といった壊れ方をする。出典が消えるなら止めて選ばせる。
+    """
+    if not out.exists() or merge == "replace":
+        return gdf
+
+    existing = gpd.read_file(out)
+    if "source" not in existing.columns or "source" not in gdf.columns:
+        return gdf
+
+    lost = sorted(set(existing["source"]) - set(gdf["source"]))
+    if not lost:
+        # 同じ出典を入れ直しただけ。置き換えでよい。
+        return gdf
+
+    if merge is None:
+        counts = existing["source"].value_counts()
+        detail = "\n".join(f"        {s}: {counts.get(s, 0):,}件" for s in lost)
+        raise SystemExit(
+            f"\n{out.name} には、いま入れようとしている {kind} に含まれない出典がある:\n"
+            f"{detail}\n\n"
+            "このまま書くとその分が消える。どちらか選ぶこと:\n"
+            f"    --append   既存と統合する（同一施設は名称と位置で 1 件に寄せる）\n"
+            f"    --replace  既存を捨てて入れ替える\n"
+        )
+
+    merged = _concat_layers([existing, gdf])
+    print(f"[merge] 既存 {len(existing):,}件 + 新規 {len(gdf):,}件 → {len(merged):,}件")
+    for src, n in merged["source"].value_counts().items():
+        print(f"        {src}: {n:,}件")
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -1630,9 +1760,20 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument(
         "--normalize",
-        nargs=2,
-        metavar=("種別", "ファイル"),
-        help=f"正規化して data/processed へ書き出す。種別: {', '.join(sorted(NORMALIZERS))}",
+        nargs="+",
+        metavar="種別/ファイル",
+        help="正規化して data/processed へ書き出す。"
+        f"「種別 ファイル [ファイル...]」の順。種別: {', '.join(sorted(NORMALIZERS))}",
+    )
+    ap.add_argument(
+        "--append",
+        action="store_true",
+        help="既に入っている別出典と統合する（同一施設は名称と位置で 1 件に寄せる）",
+    )
+    ap.add_argument(
+        "--replace",
+        action="store_true",
+        help="既に入っている別出典を捨てて入れ替える",
     )
     args = ap.parse_args(argv)
 
@@ -1641,8 +1782,17 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.normalize:
-        kind, path = args.normalize
-        run_normalizer(kind, Path(path), assume_missing=args.assume_missing)
+        if len(args.normalize) < 2:
+            ap.error("--normalize には種別とファイルが要る（例: --normalize p14 <ファイル>）")
+        if args.append and args.replace:
+            ap.error("--append と --replace は同時に指定できない")
+        kind, *files = args.normalize
+        run_normalizer(
+            kind,
+            [Path(f) for f in files],
+            assume_missing=args.assume_missing,
+            merge=("append" if args.append else "replace" if args.replace else None),
+        )
         return 0
 
     if args.check:

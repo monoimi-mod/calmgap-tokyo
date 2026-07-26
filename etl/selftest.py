@@ -555,6 +555,95 @@ def _facilities_detects_name_by_value():
         assert "図書館" in kinds, kinds
 
 
+# ---------------------------------------------------------------------------
+# 複数出典が同じレイヤーへ書くとき
+# ---------------------------------------------------------------------------
+
+# hosts は p14-hosts（児童館）と facilities（区の公共施設一覧）が、
+# welfare は p14 と wamnet が書く。あとから流した方が既存を丸ごと
+# 置き換えるため、児童館 154 件を消したことに気付かないまま
+# 「既存施設では到達不可」が増える——という壊れ方をしていた。
+
+
+def _hosts_frame(rows: list[tuple[str, float, float, str]]) -> gpd.GeoDataFrame:
+    from shapely.geometry import Point
+
+    return gpd.GeoDataFrame(
+        {
+            "name": [r[0] for r in rows],
+            "host_kind": ["児童館"] * len(rows),
+            "source": [r[3] for r in rows],
+        },
+        geometry=[Point(r[2], r[1]) for r in rows],
+        crs="EPSG:4326",
+    )
+
+
+@check("既存の出典が消えるなら、指定が無い限り書かずに止まる")
+def _merge_requires_choice():
+    with tempfile.TemporaryDirectory() as d:
+        out = Path(d) / "hosts.geojson"
+        _hosts_frame([("A児童館", 35.658, 139.701, "P14")]).to_file(
+            out, driver="GeoJSON"
+        )
+        new = _hosts_frame([("B図書館", 35.659, 139.702, "公共施設一覧")])
+
+        try:
+            with _quiet():
+                fetch._merge_with_existing(
+                    new, out, kind="facilities", layer_key="hosts", merge=None
+                )
+        except SystemExit as e:
+            assert "--append" in str(e) and "P14" in str(e), str(e)
+        else:
+            raise AssertionError("既存の出典を黙って捨てた")
+
+        # append なら両方残る。replace なら入れ替わる。
+        with _quiet():
+            merged = fetch._merge_with_existing(
+                new, out, kind="facilities", layer_key="hosts", merge="append"
+            )
+            replaced = fetch._merge_with_existing(
+                new, out, kind="facilities", layer_key="hosts", merge="replace"
+            )
+        assert len(merged) == 2, len(merged)
+        assert set(merged["source"]) == {"P14", "公共施設一覧"}, set(merged["source"])
+        assert len(replaced) == 1, len(replaced)
+
+
+@check("同じ出典を入れ直すだけなら止まらない")
+def _merge_same_source_replaces():
+    with tempfile.TemporaryDirectory() as d:
+        out = Path(d) / "hosts.geojson"
+        _hosts_frame([("A児童館", 35.658, 139.701, "P14")]).to_file(
+            out, driver="GeoJSON"
+        )
+        new = _hosts_frame(
+            [("A児童館", 35.658, 139.701, "P14"), ("B児童館", 35.66, 139.70, "P14")]
+        )
+        with _quiet():
+            got = fetch._merge_with_existing(
+                new, out, kind="p14-hosts", layer_key="hosts", merge=None
+            )
+        assert len(got) == 2, len(got)
+
+
+@check("同名で近い施設は 1 件に寄せ、同名でも離れていれば残す")
+def _dedupe_by_name_and_distance():
+    # 区の一覧と P14 で同じ児童館。名称に全角空白、座標は 44m ずれ。
+    # 座標を丸めて格子で寄せる実装ではこれを取り逃がした（格子の境目）。
+    rows = [
+        ("四番町児童館", 35.68830, 139.73660, "P14"),
+        ("四番　町児童館", 35.68870, 139.73660, "公共施設一覧"),
+        # 同名だが 1km 以上離れた別施設（分館など）は残す。
+        ("四番町児童館", 35.70000, 139.73660, "公共施設一覧"),
+    ]
+    with _quiet():
+        got = fetch.dedupe_points(_hosts_frame(rows), tag="test")
+    assert len(got) == 2, [n for n in got["name"]]
+    assert got.iloc[0]["source"] == "P14", "先に入っていた側を残していない"
+
+
 def main() -> int:
     print("calmgap-tokyo セルフテスト\n")
     # モジュール読み込み時に @check が実行済み。
