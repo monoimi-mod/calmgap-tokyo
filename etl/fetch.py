@@ -143,6 +143,27 @@ def inspect_columns(path: Path, n: int = 5) -> None:
     「1 県 1 ファイル」だったり「市区町村ごとに分割」だったりするため、
     まず何が入っているかを一望できないと手の付けようがない。
     """
+    if not path.exists():
+        # 存在しないパスを GDAL へ渡すと DataSourceError になって
+        # 「名前が違う」のか「壊れている」のか分からない。ここで切り分ける。
+        print(f"{path} が存在しない。")
+        parent = path.parent
+        if parent.exists():
+            stem = path.name.lower()[:3]
+            near = sorted(
+                p.name for p in parent.iterdir() if stem and stem in p.name.lower()
+            )
+            listing = near or sorted(p.name for p in parent.iterdir())[:40]
+            label = "似た名前" if near else f"{parent} の中身（先頭40件）"
+            print(f"\n{label}:")
+            for name in listing:
+                print(f"    {name}")
+            if not near:
+                print("\nZIP のままなら先に展開すること。")
+        else:
+            print(f"親ディレクトリ {parent} も存在しない。")
+        return
+
     if path.is_dir():
         files = sorted(
             p
