@@ -43,6 +43,12 @@ from .config import (
     Source,
 )
 from .schema import (
+    P14_HOST_SUBCLASS,
+    P14_SUBCLASS,
+    P14_SUBCLASS_DEFAULT_SCOPE,
+    is_disability_name,
+    assumed_capacity,
+    classify_welfare_by_name,
     PSYCH_CLINIC_KEYWORDS,
     SCHOOL_CLASS_SPECIAL_NEEDS,
     ZONING_LOAD,
@@ -68,10 +74,19 @@ COLUMN_MAP: dict[str, dict[str, tuple[str, ...]]] = {
         "name": ("P29_005", "P29_006"),
         "students": ("P29_009",),
     },
+    # 実データ P14-21_13（東京都・2022-03-11 版）で確認済み。
+    #   P14_001 都道府県名 / P14_002 市区町村名 / P14_003 行政区域コード
+    #   P14_004 所在地     / P14_005 大分類     / P14_006 中分類
+    #   P14_007 小分類     / P14_008 名称       / P14_009 設置主体コード
+    #   P14_010 位置正確度コード
+    # 定員フィールドは存在しない（schema.P14_SUBCLASS のコメント参照）。
     "ksj_p14_welfare": {
-        "kind": ("P14_006", "P14_005"),
-        "name": ("P14_007", "P14_006"),
-        "capacity": ("P14_009", "P14_008"),
+        "pref": ("P14_001",),
+        "city": ("P14_002",),
+        "address": ("P14_004",),
+        "major": ("P14_005",),
+        "subclass": ("P14_007",),
+        "name": ("P14_008",),
     },
     "ksj_p04_medical": {
         "name": ("P04_002",),
@@ -297,37 +312,143 @@ def normalize_schools(path: Path) -> gpd.GeoDataFrame:
     return out.reset_index(drop=True)
 
 
-def normalize_welfare(path: Path) -> gpd.GeoDataFrame:
-    """国土数値情報 P14 福祉施設から障害福祉サービス事業所を抽出する。"""
-    gdf = clip_to_study_area(gpd.read_file(path).to_crs(CRS_GEOGRAPHIC))
-    m = COLUMN_MAP["ksj_p14_welfare"]
-    kind_col = pick_column(gdf, m["kind"])
-    name_col = pick_column(gdf, m["name"])
-    cap_col = pick_column(gdf, m["capacity"])
+def normalize_welfare(path: Path, clip: bool = True) -> gpd.GeoDataFrame:
+    """国土数値情報 P14 福祉施設から障害福祉サービス事業所を抽出する。
 
-    kinds = gdf[kind_col].astype(str) if kind_col else pd.Series("", index=gdf.index)
-    capacity = (
-        pd.to_numeric(gdf[cap_col], errors="coerce").fillna(20.0)
-        if cap_col
-        else pd.Series(20.0, index=gdf.index)
+    P14 は座標の網羅性が高い一方、**定員が無く、種別も分離できない**
+    （schema.P14_SUBCLASS のコメント参照）。そこで:
+
+      1. 小分類コードで障害福祉関係だけに絞る（高齢者介護・保育を除外）
+      2. 施設名称のキーワードでサービス種別を推定する
+      3. 種別ごとの仮定員を当てる
+
+    2 と 3 は WAM NET（実際の種別と定員を持つ）が入るまでの暫定措置。
+    推定に頼った件数は必ずログへ出し、どれだけ仮定に依存しているかを可視化する。
+    """
+    gdf = gpd.read_file(path).to_crs(CRS_GEOGRAPHIC)
+    total = len(gdf)
+    m = COLUMN_MAP["ksj_p14_welfare"]
+
+    sub_col = pick_column(gdf, m["subclass"])
+    name_col = pick_column(gdf, m["name"])
+    if not sub_col:
+        raise ValueError(
+            f"{path.name} に小分類コード列が無い。実列名を確認すること:\n"
+            f"    python -m etl.fetch --inspect {path}"
+        )
+
+    # --- 1. 障害福祉関係だけに絞る ---
+    # P14 は障害福祉と高齢者介護を分類コードで分離できない
+    # （schema.P14_SUBCLASS の冒頭コメント参照）。
+    # そのため「コードで断定できるもの」＋「名称が障害系のもの」だけを残し、
+    # 判断できないものは落とす。取りこぼしは許すが混入は許さない。
+    codes = gdf[sub_col].astype(str)
+    names_all = gdf[name_col].astype(str) if name_col else pd.Series("", index=gdf.index)
+
+    unknown = sorted(set(codes) - set(P14_SUBCLASS))
+    if unknown:
+        print(
+            f"[p14] 未知の小分類コード {len(unknown)} 種は安全側に倒して除外: "
+            f"{unknown[:8]} — 障害福祉関係なら schema.P14_SUBCLASS へ追加すること",
+            file=sys.stderr,
+        )
+
+    scope = codes.map(
+        lambda c: P14_SUBCLASS.get(c, ("", P14_SUBCLASS_DEFAULT_SCOPE))[1]
     )
-    weights = kinds.map(welfare_weight)
+    gated_hit = names_all.map(is_disability_name)
+    keep = (scope == "include") | ((scope == "name_gated") & gated_hit)
+
+    n_gated_total = int((scope == "name_gated").sum())
+    n_gated_kept = int(((scope == "name_gated") & gated_hit).sum())
+    gdf = gdf[keep].copy()
+
+    print(
+        f"[p14] {total:,}件 → 障害福祉と判定 {len(gdf):,}件\n"
+        f"       うちコードで断定 {int((scope == 'include').sum()):,}件 / "
+        f"名称で判定 {n_gated_kept:,}件\n"
+        f"       混在コードの {n_gated_total - n_gated_kept:,}件は"
+        f"高齢者介護の可能性があるため除外（取りこぼし込み）"
+    )
+
+    if clip:
+        gdf = clip_to_study_area(gdf)
+        print(f"[p14] 研究領域内 {len(gdf):,}件")
+
+    if len(gdf) == 0:
+        raise ValueError("研究領域内に該当施設が 0 件。STUDY_BBOX を確認すること。")
+
+    # --- 2. 名称からサービス種別を推定 ---
+    names = gdf[name_col].astype(str) if name_col else pd.Series("", index=gdf.index)
+    classified = names.map(classify_welfare_by_name)
+    gdf["kind"] = [c[0] for c in classified]
+    inferred = sum(1 for c in classified if c[1])
+    print(
+        f"[p14] 種別を名称から推定: {inferred:,}/{len(gdf):,}件 "
+        f"({inferred / len(gdf) * 100:.0f}%)。残りは既定重みで扱う"
+    )
+
+    # --- 3. 仮定員を当てる ---
+    gdf["capacity"] = gdf["kind"].map(assumed_capacity)
+    gdf["weight"] = gdf["kind"].map(welfare_weight)
 
     out = gpd.GeoDataFrame(
         {
-            "name": gdf[name_col] if name_col else "",
-            "kind": kinds,
-            "capacity": capacity,
-            "weight": weights,
-            "demand_value": capacity * weights,
+            "name": names,
+            "kind": gdf["kind"],
+            "subclass": gdf[sub_col].astype(str),
+            "capacity": gdf["capacity"],
+            "capacity_estimated": True,  # WAM NET が入れば False になる
+            "weight": gdf["weight"],
+            "demand_value": gdf["capacity"] * gdf["weight"],
             "source": SOURCES["ksj_p14_welfare"].label,
             "synthetic": False,
         },
-        geometry=gdf.geometry.centroid,
+        geometry=gdf.geometry,
         crs=CRS_GEOGRAPHIC,
     )
     out["lon"] = out.geometry.x
     out["lat"] = out.geometry.y
+
+    top = out["kind"].value_counts().head(6)
+    print("[p14] 推定された種別の内訳:")
+    for kind, n in top.items():
+        print(f"        {kind:<28} {n:4d}件 (重み {welfare_weight(kind):.2f})")
+
+    return out.reset_index(drop=True)
+
+
+def normalize_hosts_from_p14(path: Path, clip: bool = True) -> gpd.GeoDataFrame:
+    """P14 からホスト施設候補（児童館等）を抽出する。
+
+    実データを見て分かった副産物。児童館は東京都に 587 件あり、
+    区市町村ごとにバラバラな公共施設一覧を集める前に、
+    提言の割当先をひとまず全都分そろえられる。
+    """
+    gdf = gpd.read_file(path).to_crs(CRS_GEOGRAPHIC)
+    m = COLUMN_MAP["ksj_p14_welfare"]
+    sub_col = pick_column(gdf, m["subclass"])
+    name_col = pick_column(gdf, m["name"])
+    city_col = pick_column(gdf, m["city"])
+
+    gdf = gdf[gdf[sub_col].astype(str).isin(P14_HOST_SUBCLASS)].copy()
+    if clip:
+        gdf = clip_to_study_area(gdf)
+
+    out = gpd.GeoDataFrame(
+        {
+            "name": gdf[name_col].astype(str) if name_col else "",
+            "host_kind": gdf[sub_col].astype(str).map(P14_HOST_SUBCLASS),
+            "ward": gdf[city_col].astype(str) if city_col else "",
+            "source": SOURCES["ksj_p14_welfare"].label,
+            "synthetic": False,
+        },
+        geometry=gdf.geometry,
+        crs=CRS_GEOGRAPHIC,
+    )
+    out["lon"] = out.geometry.x
+    out["lat"] = out.geometry.y
+    print(f"[p14] ホスト施設候補 {len(out):,}件")
     return out.reset_index(drop=True)
 
 
@@ -532,28 +653,51 @@ def save_processed(layers: dict) -> None:
 
 
 def load_processed() -> dict:
-    """data/processed から全レイヤーを読む。build.py --live の入口。"""
+    """data/processed にある実データレイヤーだけを読む。
+
+    全部そろっている必要はない。オープンデータは 1 本ずつしか片付かないので、
+    「落とせた分だけ実データ、残りは模擬データ」で地図を更新できる方が
+    作業が進む。どのレイヤーが実データかは build.py が集計して表示する。
+    """
     layers: dict = {}
-    missing: list[str] = []
     for key, filename in PROCESSED_FILES.items():
         path = DATA_PROCESSED / filename
         if path.exists():
             layers[key] = gpd.read_file(path)
-        else:
-            missing.append(filename)
-
-    if missing:
-        raise FileNotFoundError(
-            "data/processed に未生成のレイヤーがある: "
-            + ", ".join(missing)
-            + "\n先に `python -m etl.fetch` を実行するか、"
-            "模擬データで動かす場合は --live を外すこと。"
-        )
 
     pop_path = DATA_PROCESSED / "population.csv"
     if pop_path.exists():
         layers["population"] = read_csv_japanese(pop_path)
     return layers
+
+
+# 落としたファイルを正規化して data/processed へ置くための対応表。
+#   python -m etl.fetch --normalize p14 data/raw/P14-21_13.geojson
+NORMALIZERS: dict[str, tuple[str, str]] = {
+    "p14": ("welfare", "normalize_welfare"),
+    "p14-hosts": ("hosts", "normalize_hosts_from_p14"),
+    "wamnet": ("welfare", "normalize_wamnet"),
+    "p29": ("schools", "normalize_schools"),
+    "p04": ("clinics", "normalize_clinics"),
+    "a29": ("zoning", "normalize_zoning"),
+    "noise": ("noise", "normalize_noise"),
+    "facilities": ("hosts", "normalize_hosts"),
+}
+
+
+def run_normalizer(kind: str, path: Path) -> Path:
+    """指定した正規化を実行し、data/processed へ書き出す。"""
+    if kind not in NORMALIZERS:
+        raise SystemExit(
+            f"未知の種別 {kind!r}。使えるのは: {', '.join(sorted(NORMALIZERS))}"
+        )
+    layer_key, func_name = NORMALIZERS[kind]
+    gdf = globals()[func_name](path)
+    out = DATA_PROCESSED / PROCESSED_FILES[layer_key]
+    gdf.to_file(out, driver="GeoJSON")
+    print(f"\n[normalize] {out.relative_to(out.parents[2])} に {len(gdf):,}件を書き出した")
+    print("次: python -m etl.build --live")
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -566,10 +710,21 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--check", action="store_true", help="到達性の確認のみ")
     ap.add_argument("--force", action="store_true", help="キャッシュを無視して再取得")
     ap.add_argument("--inspect", type=Path, help="落としたファイルの列名を表示")
+    ap.add_argument(
+        "--normalize",
+        nargs=2,
+        metavar=("種別", "ファイル"),
+        help=f"正規化して data/processed へ書き出す。種別: {', '.join(sorted(NORMALIZERS))}",
+    )
     args = ap.parse_args(argv)
 
     if args.inspect:
         inspect_columns(args.inspect)
+        return 0
+
+    if args.normalize:
+        kind, path = args.normalize
+        run_normalizer(kind, Path(path))
         return 0
 
     if args.check:

@@ -54,20 +54,44 @@ from .config import (
 # ---------------------------------------------------------------------------
 
 
-def load_layers(live: bool) -> dict:
-    """全レイヤーを読み込む。live=False なら模擬データ。
+def load_layers(live: bool) -> tuple[dict, dict[str, str]]:
+    """全レイヤーを読み込む。live=False なら全て模擬データ。
 
-    実データ側は etl/fetch.py が data/raw へ落とし、
-    data/processed へ共通スキーマで正規化したものをここで読む。
-    どちらの経路でも返す辞書の形は同一であり、
-    以降のパイプラインはデータの出所を知らない。
+    live=True のとき、data/processed にある実データで模擬データを
+    **1 レイヤーずつ差し替える**。オープンデータは 1 本ずつしか片付かないので、
+    全部そろうまで地図が動かないより、落とせた分から反映できる方が作業が進む。
+
+    Returns
+    -------
+    (レイヤー辞書, レイヤー名 → "real" | "synthetic" の対応)
     """
+    layers = fixtures.generate_all()
+    provenance = {k: "synthetic" for k in layers if not k.startswith("_")}
+
     if not live:
-        return fixtures.generate_all()
+        return layers, provenance
 
     from . import fetch
 
-    return fetch.load_processed()
+    real = fetch.load_processed()
+    for key, gdf in real.items():
+        if gdf is None or len(gdf) == 0:
+            print(f"[live] {key}: 実データが空のため模擬データを使う")
+            continue
+        layers[key] = gdf
+        provenance[key] = "real"
+
+    n_real = sum(1 for v in provenance.values() if v == "real")
+    print(f"\n[live] 実データ {n_real}/{len(provenance)} レイヤー")
+    for key in sorted(provenance):
+        mark = "実データ" if provenance[key] == "real" else "模擬  "
+        n = len(layers[key]) if hasattr(layers.get(key), "__len__") else 0
+        print(f"       {mark}  {key:<10} {n:>6,d}件")
+    if n_real < len(provenance):
+        print("       残りは data/processed に置けば自動で切り替わる:")
+        print("       python -m etl.fetch --normalize <種別> <ファイル>\n")
+
+    return layers, provenance
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +252,7 @@ def write_outputs(
     proposals: list[dict],
     live: bool,
     level: int,
+    provenance: dict[str, str],
 ) -> None:
     WEB_DATA.mkdir(parents=True, exist_ok=True)
 
@@ -275,13 +300,12 @@ def write_outputs(
     meta = {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "data_mode": "live" if live else "fixture",
-        "synthetic": not live,
-        "synthetic_notice": (
-            None
-            if live
-            else "このビルドは模擬データで生成されている。"
-            "地図上の数値・施設名はすべて架空であり、実際の提言として引用できない。"
-        ),
+        "layer_provenance": provenance,
+        "real_layer_count": sum(1 for v in provenance.values() if v == "real"),
+        "layer_total": len(provenance),
+        # 1 レイヤーでも模擬が残っていれば、数値を引用してはいけない。
+        "synthetic": any(v == "synthetic" for v in provenance.values()),
+        "synthetic_notice": _synthetic_notice(provenance),
         "target_wards": TARGET_WARDS,
         "bbox": list(STUDY_BBOX),
         "mesh_level": level,
@@ -320,6 +344,17 @@ def write_outputs(
         },
     }
     _write_json(WEB_DATA / "meta.json", meta)
+
+
+def _synthetic_notice(provenance: dict[str, str]) -> str | None:
+    """模擬データが残っている場合の警告文。UI のバナーに出る。"""
+    fake = sorted(k for k, v in provenance.items() if v == "synthetic")
+    if not fake:
+        return None
+    return (
+        f"{len(fake)}/{len(provenance)} レイヤーが模擬データ（{'・'.join(fake)}）。"
+        "これらに由来する数値・施設名は架空であり、実際の提言として引用できない。"
+    )
 
 
 def _round_geometry(geom: dict, ndigits: int = 6) -> dict:
@@ -388,7 +423,7 @@ def main(argv: list[str] | None = None) -> int:
         print("  実データで動かすには: python -m etl.fetch && python -m etl.build --live")
         print("=" * 70)
 
-    layers = load_layers(args.live)
+    layers, provenance = load_layers(args.live)
     mesh_gdf = build_mesh_table(layers, args.level)
 
     normalized = score.normalize_components(mesh_gdf.drop(columns="geometry"))
@@ -408,7 +443,9 @@ def main(argv: list[str] | None = None) -> int:
     cards = hostlib.build_cards(scored, args.top)
     proposals = hostlib.build_proposals(cards)
 
-    write_outputs(mesh_gdf, scored, layers, cards, proposals, args.live, args.level)
+    write_outputs(
+        mesh_gdf, scored, layers, cards, proposals, args.live, args.level, provenance
+    )
 
     print(f"\n[提言] 施設単位に集約した候補 {len(proposals)} 件（上位 3 件）:")
     for p in proposals[:3]:

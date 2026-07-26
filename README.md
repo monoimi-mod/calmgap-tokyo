@@ -85,8 +85,11 @@ node tools/parity_check.mjs    # Python と TypeScript のスコアが一致す�
 
 **既定では模擬データで動作する。地図上の数値・施設名はすべて架空であり、実際の提言として引用できない。**
 
+現在の実データ投入状況: **2/9 レイヤー**（国土数値情報 P14 福祉施設・児童館）。
+残り 7 レイヤーは模擬データのまま。
+
 開発環境から各オープンデータ配信サーバへの接続が組織のネットワークポリシーで
-遮断されていたため、実データを 1 件も取得できていない。
+遮断されているため、取得はローカル環境で行う必要がある。
 そこで ETL・スコアリング・地図 UI を実データの取得可否から切り離せるよう、
 `etl/fixtures.py` が空間的に一貫した模擬データを生成する構成にしてある。
 
@@ -97,13 +100,23 @@ node tools/parity_check.mjs    # Python と TypeScript のスコアが一致す�
   `source="SYNTHETIC FIXTURE"` を持ち、施設名には「模擬」を冠してある。
 - 模擬モードのビルドでは画面上部に警告バナーが出る（`meta.json` の `synthetic` で制御）。
 
-### 実データへの切り替え
+### 実データへの切り替え（1レイヤーずつ）
+
+全レイヤーがそろうまで待つ必要はない。**落とせた分だけ実データに差し替わる。**
 
 ```bash
-python -m etl.fetch --check                 # 各配信元への到達性を確認
-python -m etl.fetch --inspect data/raw/xxx  # 落としたファイルの実際の列名を表示
-python -m etl.build --live                  # data/processed を読んで本番ビルド
+python -m etl.fetch --inspect data/raw/P14-21_13.geojson    # 実際の列名を確認
+python -m etl.fetch --normalize p14 data/raw/P14-21_13.geojson
+python -m etl.build --live                                   # 実データ 2/9 レイヤーで再生成
 ```
+
+`--normalize` の種別: `p14` `p14-hosts` `wamnet` `p29` `p04` `a29` `noise` `facilities`
+
+ビルド時にどのレイヤーが実データかが表示され、画面のバナーにも
+「実データ 2/9 レイヤー」「模擬: zoning・noise…」と出る。
+**1 レイヤーでも模擬が残っている限り、数値は提言として引用できない。**
+
+現在 P14 福祉施設（東京都）は投入済みで、`data/processed/` に正規化済みのものが入っている。
 
 `etl/fetch.py` の取得処理は **実サーバに対して未検証**。
 列名マッピング（`COLUMN_MAP`）は各データの仕様書に基づく想定値なので、

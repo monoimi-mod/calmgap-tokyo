@@ -579,10 +579,27 @@ export function renderBanner(meta: Meta): void {
   }
   el.hidden = false;
   el.className = "banner";
+
+  const real = meta.real_layer_count ?? 0;
+  const total = meta.layer_total ?? 0;
+  const fake = Object.entries(meta.layer_provenance ?? {})
+    .filter(([, v]) => v === "synthetic")
+    .map(([k]) => k);
+
+  // 全部が模擬か、一部だけ実データが入っているかで文言を変える。
+  // 「どこまで本物か」が一目で分かることが、この作品の誠実さの担保になる。
+  const heading =
+    real > 0
+      ? `一部が模擬データ（実データ ${real}/${total} レイヤー）`
+      : "模擬データで動作中";
+
   el.innerHTML = `<span class="banner-icon">⚠</span><span>
-      <strong>模擬データで動作中</strong>
-      地図上の数値・施設名はすべて架空です。実際の提言として引用できません。
-      実データ接続後に <code>python -m etl.build --live</code> で再生成してください。
+      <strong>${heading}</strong>
+      ${
+        fake.length
+          ? `模擬: ${escapeHtml(fake.join("・"))}。これらに由来する数値・施設名は架空で、実際の提言として引用できません。`
+          : ""
+      }
     </span>`;
 }
 

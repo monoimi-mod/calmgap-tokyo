@@ -21,6 +21,10 @@ export interface Meta {
   data_mode: "live" | "fixture";
   synthetic: boolean;
   synthetic_notice: string | null;
+  /** レイヤー名 → "real" | "synthetic"。1レイヤーずつ実データへ差し替わる。 */
+  layer_provenance: Record<string, "real" | "synthetic">;
+  real_layer_count: number;
+  layer_total: number;
   target_wards: string[];
   bbox: [number, number, number, number];
   mesh_level: number;
