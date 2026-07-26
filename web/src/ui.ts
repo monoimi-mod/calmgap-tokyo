@@ -18,6 +18,8 @@ export interface AppState {
   selected: string | null;
   tab: "proposals" | "selected" | "table";
   activePreset: string;
+  /** 地図に塗る値。提言リストの順位は常に優先度で決まる。 */
+  displayMode: "priority" | "demand" | "load";
 }
 
 const fmt = (n: number, d = 2) => n.toFixed(d);
@@ -96,7 +98,61 @@ export function buildProposals(
   return [...list, ...unreachable];
 }
 
-/** 予算会議にそのまま出せる日本語の根拠文。etl/hosts.py の _narrative と対応。 */
+const num = (n: number) => n.toLocaleString("ja-JP");
+
+/**
+ * そのメッシュの「実数」。ETL が f_* として配信している表示専用の値。
+ *
+ * スコアは順位に正規化された相対値なので、それ単体では提言文にならない。
+ * 「需要 0.94」ではなく「徒歩圏に事業所 4 件・定員 77 人」と書けて初めて
+ * 予算会議の資料になる。
+ */
+export function factsOf(row: MeshProps): { label: string; value: string }[] {
+  const f: { label: string; value: string }[] = [];
+  const g = (k: string) => row[k] as number | undefined;
+  const s = (k: string) => row[k] as string | undefined;
+
+  if (g("f_welfare_n")) {
+    const cap = g("f_welfare_cap");
+    f.push({
+      label: "徒歩圏の障害福祉サービス事業所",
+      value: `${num(g("f_welfare_n")!)}件${cap ? `（定員 ${num(cap)}人）` : ""}`,
+    });
+  }
+  if (g("f_school_n")) {
+    f.push({ label: "特別支援学校", value: `${num(g("f_school_n")!)}校` });
+  }
+  if (g("f_clinic_n")) {
+    f.push({ label: "精神科・心療内科", value: `${num(g("f_clinic_n")!)}件` });
+  }
+  if (s("f_station_name")) {
+    const r = g("f_station_riders");
+    const d = g("f_station_dist");
+    f.push({
+      label: "最寄り駅",
+      value:
+        `${s("f_station_name")}` +
+        (r ? `（乗降 ${num(r)}人/日）` : "") +
+        (d != null ? ` ${num(d)}m` : ""),
+    });
+  }
+  if (s("f_zoning_name")) {
+    f.push({ label: "用途地域", value: s("f_zoning_name")! });
+  }
+  if (g("f_noise_db")) {
+    f.push({ label: "推定騒音", value: `${g("f_noise_db")} dB (LAeq)` });
+  }
+  f.push({
+    label: "緑・公園被覆",
+    value: g("f_green_pct") ? `${g("f_green_pct")}%` : "0%（屋外に退避先なし）",
+  });
+  return f;
+}
+
+/**
+ * 予算会議にそのまま出せる日本語の根拠文。etl/hosts.py の _narrative と対応。
+ * 正規化スコアの言い換えではなく、実数を並べて根拠にする。
+ */
 function narrate(
   state: AppState,
   idx: number,
@@ -110,24 +166,45 @@ function narrate(
 
   parts.push(
     `優先度 第${rank}位（対象地域内 上位${pctRank(score.priority[idx])}%）。`,
-    `需要スコア ${fmt(score.demand[idx])} / 負荷スコア ${fmt(score.load[idx])}。`,
+    `需要 ${fmt(score.demand[idx])} × 負荷 ${fmt(score.load[idx])}。`,
   );
 
-  const d = topFactors(row, meta.components, "demand", weights, 2);
-  const l = topFactors(row, meta.components, "load", weights, 2).filter(
-    (f) => f.contribution > 0,
-  );
-
-  if (d.length) {
-    parts.push(`需要側は${d.map((f) => shortLabel(f.component)).join("・")}が押し上げている。`);
+  // --- 需要側を実数で述べる ---
+  const demandBits: string[] = [];
+  const wn = row.f_welfare_n as number | undefined;
+  const wc = row.f_welfare_cap as number | undefined;
+  if (wn) {
+    demandBits.push(
+      `徒歩圏に障害福祉サービス事業所${num(wn)}件` + (wc ? `（定員計${num(wc)}人）` : ""),
+    );
   }
-  if (l.length) {
-    parts.push(`負荷側は${l.map((f) => shortLabel(f.component)).join("・")}が支配的。`);
+  if (row.f_school_n) demandBits.push(`特別支援学校${num(row.f_school_n as number)}校`);
+  if (row.f_clinic_n) demandBits.push(`精神科・心療内科${num(row.f_clinic_n as number)}件`);
+  const stName = row.f_station_name as string | undefined;
+  const stRiders = row.f_station_riders as number | undefined;
+  if (stName) {
+    demandBits.push(
+      `最寄りの${stName}は乗降${stRiders ? `${num(stRiders)}人/日` : "規模大"}`,
+    );
+  }
+  if (demandBits.length) parts.push(`${demandBits.join("、")}。`);
+
+  // --- 負荷側を実数で述べる ---
+  const loadBits: string[] = [];
+  if (row.f_zoning_name) loadBits.push(`用途地域は${row.f_zoning_name}`);
+  if (row.f_noise_db) loadBits.push(`推定騒音${row.f_noise_db}dB`);
+  const green = (row.f_green_pct as number) ?? 0;
+  loadBits.push(green > 0 ? `緑・公園被覆${green}%` : "緑・公園被覆なし");
+  parts.push(`${loadBits.join("、")}。`);
+
+  if (green < 3) {
+    parts.push("屋外に代替の退避先が存在しない。");
   }
 
-  const green = (row.n_green as number) ?? 0;
-  if (green < 0.15) {
-    parts.push("緑・公園被覆がほぼ無く、屋外に代替の退避先が存在しない。");
+  // 重みを大きく動かしたときに、何が効いているかを補足する。
+  const top = topFactors(row, meta.components, "demand", weights, 1);
+  if (top.length && top[0].normalized > 0.9) {
+    parts.push(`現在の重みでは${shortLabel(top[0].component)}が需要側の最大要因。`);
   }
 
   const host = (row.host as string) ?? "";
@@ -135,7 +212,7 @@ function narrate(
     const dist = row.host_d as number | undefined;
     parts.push(
       dist != null
-        ? `設置候補: ${host}（メッシュ重心から約${dist}m）。`
+        ? `設置候補: ${host}（メッシュ重心から約${num(dist)}m）。`
         : `設置候補: ${host}。`,
     );
   } else {
@@ -223,6 +300,65 @@ export function syncSliders(weights: Weights, meta: Meta): void {
     const v = weights[c.key] ?? c.weight;
     input.value = String(v);
     if (val) val.textContent = fmt(v, 1);
+  }
+}
+
+/* ------------------------------------------------------------------ 表示モード */
+
+/**
+ * 地図に何を塗るか。
+ *
+ * 「需要 × 負荷」と主張する以上、掛ける前の 2 つを別々に見せられないと
+ * 検証しようがない。需要だけ・負荷だけ・掛け算結果を切り替えて
+ * 見比べられることが、このモデルの説明そのものになる。
+ */
+export const DISPLAY_MODES: {
+  id: "priority" | "demand" | "load";
+  label: string;
+  legend: string;
+  note: string;
+}[] = [
+  {
+    id: "priority",
+    label: "設置優先度",
+    legend: "設置優先度（需要 × 負荷）",
+    note: "需要と負荷の掛け算。両方が揃った場所だけが濃くなる。",
+  },
+  {
+    id: "demand",
+    label: "需要のみ",
+    legend: "需要スコア",
+    note: "通わざるを得ない人の量だけを見る。住宅地や郊外の通所拠点も濃く出る。",
+  },
+  {
+    id: "load",
+    label: "負荷のみ",
+    legend: "負荷スコア",
+    note: "過負荷になり得る量だけを見る。人のいない工業地帯も濃く出る。",
+  },
+];
+
+export function renderDisplayModes(
+  active: string,
+  onPick: (id: "priority" | "demand" | "load") => void,
+): void {
+  const host = document.getElementById("display-modes")!;
+  host.innerHTML = "";
+  for (const m of DISPLAY_MODES) {
+    const b = document.createElement("button");
+    b.className = "preset-btn";
+    b.type = "button";
+    b.textContent = m.label;
+    b.setAttribute("aria-pressed", String(m.id === active));
+    b.addEventListener("click", () => onPick(m.id));
+    host.appendChild(b);
+  }
+  document.getElementById("display-note")!.textContent =
+    DISPLAY_MODES.find((m) => m.id === active)?.note ?? "";
+  const legendTitle = document.querySelector(".legend-title");
+  if (legendTitle) {
+    legendTitle.textContent =
+      DISPLAY_MODES.find((m) => m.id === active)?.legend ?? "設置優先度";
   }
 }
 
@@ -335,6 +471,24 @@ function renderSelected(body: HTMLElement, state: AppState): void {
   narrative.style.margin = "10px 0 14px";
   narrative.textContent = narrate(state, idx, rank, weights, meta);
   body.appendChild(narrative);
+
+  // --- 実数（スコアの根拠になる生の数字） ---
+  const facts = factsOf(row);
+  if (facts.length) {
+    const box = document.createElement("div");
+    box.innerHTML =
+      '<h2>このメッシュの実数</h2>' +
+      '<table class="data-table">' +
+      facts
+        .map(
+          (f) =>
+            `<tr><th style="text-transform:none;letter-spacing:0">${escapeHtml(f.label)}</th>` +
+            `<td class="num">${escapeHtml(f.value)}</td></tr>`,
+        )
+        .join("") +
+      "</table>";
+    body.appendChild(box);
+  }
 
   for (const side of ["demand", "load"] as const) {
     const section = document.createElement("div");

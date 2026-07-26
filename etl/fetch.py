@@ -48,6 +48,7 @@ from .schema import (
     ZONING_LOAD,
     ZONING_LOAD_DEFAULT,
     host_type,
+    normalize_welfare_type,
     welfare_weight,
 )
 
@@ -234,11 +235,14 @@ def clip_to_study_area(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
 
 
 def geocode_missing(df: pd.DataFrame, address_col: str) -> pd.DataFrame:
-    """住所しか持たないレコードへ座標を与える。
+    """住所しか持たないレコードへ座標を与える。**最後の手段**。
 
-    WAM NET の事業所一覧には座標が無く、住所からのジオコーディングが要る。
-    大量リクエストを外部サービスへ投げるのは規約上も礼儀上も避けたいので、
-    座標つきの国土数値情報 P14 を優先し、本関数は差分の補完に限定する。
+    まず COLUMN_MAP の緯度経度列を探すこと。WAM NET の事業所一覧は
+    年度によって座標を収録しており、その場合ジオコーディングは
+    API 制限・処理時間・精度・利用規約のすべてで不利になるだけで、
+    既にある座標より良い結果には決してならない。
+    座標つきの国土数値情報 P14 でも代替できる。
+    本関数は、どちらも取れなかった差分の補完に限定する。
 
     実運用では以下のいずれかを選ぶ:
       - 国土地理院 地理院地図 Geocoding API（少量・低速）
@@ -320,6 +324,79 @@ def normalize_welfare(path: Path) -> gpd.GeoDataFrame:
             "synthetic": False,
         },
         geometry=gdf.geometry.centroid,
+        crs=CRS_GEOGRAPHIC,
+    )
+    out["lon"] = out.geometry.x
+    out["lat"] = out.geometry.y
+    return out.reset_index(drop=True)
+
+
+def normalize_wamnet(path: Path, geocode: bool = False) -> gpd.GeoDataFrame:
+    """WAM NET 障害福祉サービス等事業所一覧を点データにする。
+
+    **座標列があればジオコーディングしない。** 年度によって緯度経度が
+    収録されている。住所から引き直すのは API 制限・処理時間・精度・
+    利用規約のすべてで不利であり、既にある座標より良くなることはない。
+
+    座標が無い年度のときだけ geocode=True で補完経路に入る（既定は無効）。
+    その場合も国土数値情報 P14（座標つき）で代替できないか先に検討すること。
+
+    WAM NET を使う利点は P14 より **サービス種別と定員が細かい** こと。
+    需要重み（schema.WELFARE_DEMAND_WEIGHT）は種別ごとに大きく違うため、
+    種別が取れるかどうかが需要スコアの質を直接左右する。
+    """
+    df = read_csv_japanese(path)
+    m = COLUMN_MAP["wamnet_jigyosho"]
+
+    name_col = pick_column(df, m["name"])
+    kind_col = pick_column(df, m["kind"])
+    cap_col = pick_column(df, m["capacity"])
+    lon_col = pick_column(df, m["lon"])
+    lat_col = pick_column(df, m["lat"])
+
+    if lon_col and lat_col:
+        print(f"[wamnet] 座標列を検出（{lat_col}/{lon_col}）。ジオコーディングは行わない。")
+        gdf = _to_points(df, lon_col, lat_col)
+        dropped = len(df) - len(gdf)
+        if dropped:
+            print(f"[wamnet] 座標が空の {dropped:,} 件を除外")
+    else:
+        addr_col = pick_column(df, m["address"])
+        if not (geocode and addr_col):
+            raise ValueError(
+                f"{path.name} に緯度経度列が無い。実列名を確認したうえで "
+                "COLUMN_MAP['wamnet_jigyosho'] を修正するか、"
+                "座標つきの国土数値情報 P14（normalize_welfare）を使うこと:\n"
+                f"    python -m etl.fetch --inspect {path}"
+            )
+        df = geocode_missing(df, addr_col)
+        gdf = _to_points(df, "lon", "lat")
+
+    gdf = clip_to_study_area(gdf)
+
+    kinds = (
+        gdf[kind_col].astype(str).map(normalize_welfare_type)
+        if kind_col
+        else pd.Series("", index=gdf.index)
+    )
+    capacity = (
+        pd.to_numeric(gdf[cap_col], errors="coerce").fillna(20.0)
+        if cap_col
+        else pd.Series(20.0, index=gdf.index)
+    )
+    weights = kinds.map(welfare_weight)
+
+    out = gpd.GeoDataFrame(
+        {
+            "name": gdf[name_col] if name_col else "",
+            "kind": kinds,
+            "capacity": capacity,
+            "weight": weights,
+            "demand_value": capacity * weights,
+            "source": SOURCES["wamnet_jigyosho"].label,
+            "synthetic": False,
+        },
+        geometry=gdf.geometry,
         crs=CRS_GEOGRAPHIC,
     )
     out["lon"] = out.geometry.x

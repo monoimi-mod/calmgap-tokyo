@@ -30,6 +30,7 @@ import numpy as np
 import pandas as pd
 
 from . import aggregate, fixtures, hosts as hostlib, mesh as meshlib, score
+from .schema import ZONING_NAME
 from .config import (
     ALL_COMPONENTS,
     BANDWIDTH_M,
@@ -132,7 +133,50 @@ def build_mesh_table(layers: dict, level: int) -> gpd.GeoDataFrame:
         mesh_gdf, layers["parks"]
     ).to_numpy()
 
+    _attach_facts(mesh_gdf, layers)
     return mesh_gdf
+
+
+def _attach_facts(mesh_gdf: gpd.GeoDataFrame, layers: dict) -> None:
+    """根拠カードに載せる「実数」を付ける。
+
+    スコアは順位に正規化された相対値であり、それ単体では提言文にならない。
+    「需要 0.94」ではなく「徒歩圏に事業所 7 件・定員 138 人、
+    最寄りは渋谷駅で乗降 62 万人」と書けて初めて予算会議の資料になる。
+    スコア計算には一切使わず、表示専用の列として持つ（接頭辞 f_）。
+    """
+    walk = BANDWIDTH_M["welfare_capacity"]
+
+    mesh_gdf["f_welfare_n"] = aggregate.count_within(
+        mesh_gdf, layers["welfare"], walk
+    ).to_numpy()
+    mesh_gdf["f_welfare_cap"] = aggregate.count_within(
+        mesh_gdf, layers["welfare"], walk, "capacity"
+    ).to_numpy()
+    mesh_gdf["f_school_n"] = aggregate.count_within(
+        mesh_gdf, layers["schools"], BANDWIDTH_M["sped_school"]
+    ).to_numpy()
+    mesh_gdf["f_clinic_n"] = aggregate.count_within(
+        mesh_gdf, layers["clinics"], walk
+    ).to_numpy()
+
+    station = aggregate.nearest_feature(
+        mesh_gdf, layers["stations"], ["name", "capacity"], max_distance_m=1500.0
+    )
+    mesh_gdf["f_station_name"] = station["name"].to_numpy()
+    mesh_gdf["f_station_riders"] = station["capacity"].to_numpy()
+    mesh_gdf["f_station_dist"] = station["distance_m"].to_numpy()
+
+    zoning_code = aggregate.polygon_dominant_class(
+        mesh_gdf, layers["zoning"], "zoning_code"
+    )
+    mesh_gdf["f_zoning_name"] = [
+        ZONING_NAME.get(int(c)) if pd.notna(c) else None for c in zoning_code
+    ]
+
+    # 騒音と緑被覆は生値がそのまま意味を持つので、丸めるだけ。
+    mesh_gdf["f_noise_db"] = np.round(mesh_gdf["noise"].to_numpy(), 1)
+    mesh_gdf["f_green_pct"] = np.round(mesh_gdf["green"].to_numpy() * 100, 1)
 
 
 # ---------------------------------------------------------------------------
@@ -152,6 +196,27 @@ def _feature_properties(row: pd.Series) -> dict:
         props["host_kind"] = row["host_kind"]
         if pd.notna(row.get("host_distance_m")):
             props["host_d"] = int(row["host_distance_m"])
+
+    # 根拠カード用の実数（スコアには使わない）。
+    # 0 や欠損は載せない — 「事業所 0 件」を書き出しても提言文に使わないため、
+    # 全メッシュ分で見ると無駄が大きい。
+    for key, cast in (
+        ("f_welfare_n", int),
+        ("f_welfare_cap", int),
+        ("f_school_n", int),
+        ("f_clinic_n", int),
+        ("f_station_riders", int),
+        ("f_station_dist", int),
+        ("f_noise_db", float),
+        ("f_green_pct", float),
+    ):
+        v = row.get(key)
+        if pd.notna(v) and float(v) != 0.0:
+            props[key] = cast(v)
+    for key in ("f_station_name", "f_zoning_name"):
+        v = row.get(key)
+        if v is not None and pd.notna(v):
+            props[key] = str(v)
     return props
 
 

@@ -123,10 +123,13 @@ export async function initMap(
     source: "mesh",
     paint: {
       // 単一色相 light→dark。順位（パーセンタイル）を直接色に写す。
+      // 参照する属性は `v`。表示モード（優先度/需要/負荷）の切替は
+      // main.ts が各 feature の v を差し替えることで行い、
+      // 塗り分けの定義自体は 1 つに保つ。
       "fill-color": [
         "interpolate",
         ["linear"],
-        ["get", "priority"],
+        ["get", "v"],
         0.0, SEQ[100],
         0.35, SEQ[200],
         0.6, SEQ[300],
@@ -139,7 +142,7 @@ export async function initMap(
       "fill-opacity": [
         "interpolate",
         ["linear"],
-        ["get", "priority"],
+        ["get", "v"],
         0.0, 0.12,
         0.5, 0.45,
         0.85, 0.72,

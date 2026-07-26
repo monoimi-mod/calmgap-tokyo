@@ -124,6 +124,110 @@ def points_to_mesh(
     return pd.Series(out, index=index, dtype=float)
 
 
+def count_within(
+    mesh_gdf: gpd.GeoDataFrame,
+    points: gpd.GeoDataFrame,
+    radius_m: float,
+    value_col: str | None = None,
+) -> pd.Series:
+    """半径内の点を素朴に数える／合計する（距離減衰なし）。
+
+    スコア計算にはカーネル重み付き（points_to_mesh）を使うが、
+    根拠カードに載せる数字はこちらを使う。
+    「徒歩圏に就労移行支援が 4 施設、定員合計 82 人」と書けなければ
+    予算会議の資料にならない。重み付き 3.7 施設では説明できない。
+    """
+    index = pd.Index(mesh_gdf["mesh_code"], name="mesh_code")
+    if points is None or len(points) == 0:
+        return pd.Series(np.zeros(len(mesh_gdf)), index=index, dtype=float)
+
+    mesh_xy = _xy(mesh_gdf)
+    pt_xy = _xy(points)
+    values = (
+        points[value_col].fillna(0).to_numpy(dtype=float)
+        if value_col
+        else np.ones(len(points), dtype=float)
+    )
+
+    out = np.zeros(len(mesh_gdf), dtype=float)
+    block = max(1, int(4_000_000 / max(len(pt_xy), 1)))
+    for start in range(0, len(mesh_xy), block):
+        chunk = mesh_xy[start : start + block]
+        d2 = (
+            (chunk[:, 0][:, None] - pt_xy[None, :, 0]) ** 2
+            + (chunk[:, 1][:, None] - pt_xy[None, :, 1]) ** 2
+        )
+        out[start : start + block] = ((d2 <= radius_m**2) * values).sum(axis=1)
+
+    return pd.Series(out, index=index, dtype=float)
+
+
+def nearest_feature(
+    mesh_gdf: gpd.GeoDataFrame,
+    points: gpd.GeoDataFrame,
+    columns: list[str],
+    max_distance_m: float = 2000.0,
+) -> pd.DataFrame:
+    """各メッシュの最寄り点の属性と距離を返す。
+
+    「最寄り駅は渋谷駅、乗降 62 万人、480m」のように、
+    根拠カードで固有名詞を出すために使う。
+    """
+    index = pd.Index(mesh_gdf["mesh_code"], name="mesh_code")
+    base = pd.DataFrame({"mesh_code": index}).reset_index(drop=True)
+    for c in columns:
+        base[c] = None
+    base["distance_m"] = np.nan
+
+    if points is None or len(points) == 0:
+        return base
+
+    mesh_xy = _xy(mesh_gdf)
+    pt_xy = _xy(points)
+    d = np.sqrt(
+        (mesh_xy[:, 0][:, None] - pt_xy[None, :, 0]) ** 2
+        + (mesh_xy[:, 1][:, None] - pt_xy[None, :, 1]) ** 2
+    )
+    best = np.argmin(d, axis=1)
+    dist = d[np.arange(len(d)), best]
+    ok = dist <= max_distance_m
+
+    for c in columns:
+        vals = points[c].to_numpy()
+        base[c] = np.where(ok, vals[best], None)
+    base["distance_m"] = np.where(ok, dist.round(0), np.nan)
+    return base
+
+
+def polygon_dominant_class(
+    mesh_gdf: gpd.GeoDataFrame,
+    polygons: gpd.GeoDataFrame,
+    class_col: str,
+) -> pd.Series:
+    """メッシュ内で最大面積を占めるポリゴン区分を返す。
+
+    負荷スコアは面積加重平均（連続値）で計算するが、
+    根拠カードには「商業地域」という区分名そのものを出したい。
+    平均値 0.82 では審査員にも行政にも伝わらない。
+    """
+    index = pd.Index(mesh_gdf["mesh_code"], name="mesh_code")
+    if polygons is None or len(polygons) == 0:
+        return pd.Series([None] * len(mesh_gdf), index=index, dtype=object)
+
+    m = mesh_gdf[["mesh_code", "geometry"]].to_crs(CRS_PROJECTED)
+    p = polygons[[class_col, "geometry"]].to_crs(CRS_PROJECTED)
+
+    inter = gpd.overlay(m, p, how="intersection", keep_geom_type=True)
+    if len(inter) == 0:
+        return pd.Series([None] * len(mesh_gdf), index=index, dtype=object)
+
+    inter["_area"] = inter.geometry.area
+    grouped = inter.groupby(["mesh_code", class_col])["_area"].sum().reset_index()
+    winner = grouped.loc[grouped.groupby("mesh_code")["_area"].idxmax()]
+    lookup = winner.set_index("mesh_code")[class_col]
+    return pd.Series(index.map(lookup), index=index, dtype=object)
+
+
 def nearest_distance(
     mesh_gdf: gpd.GeoDataFrame, targets: gpd.GeoDataFrame
 ) -> pd.Series:

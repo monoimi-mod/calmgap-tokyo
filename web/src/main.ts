@@ -20,6 +20,7 @@ import {
   renderMethodology,
   renderPresets,
   renderSliders,
+  renderDisplayModes,
   renderStat,
   syncSliders,
   type AppState,
@@ -59,6 +60,7 @@ async function boot(): Promise<void> {
     selected: null,
     tab: "proposals",
     activePreset: "default",
+    displayMode: "priority",
   };
   state.score = recompute(state);
 
@@ -86,10 +88,13 @@ async function boot(): Promise<void> {
         // properties を直接書き換えて同じオブジェクトを差し戻す。
         // 2,800 区画程度なら再アップロードのほうが
         // setFeatureState を 2,800 回呼ぶより速い。
+        const shown = state.score[state.displayMode];
         for (let i = 0; i < rows.length; i++) {
           rows[i].priority = state.score.priority[i];
           rows[i].demand = state.score.demand[i];
           rows[i].load = state.score.load[i];
+          // 地図が塗るのは常に `v`。表示モードはここで差し替える。
+          rows[i].v = shown[i];
         }
         handles.setMeshData(meshFC);
       }
@@ -147,6 +152,13 @@ async function boot(): Promise<void> {
   }
 
   renderPresets("default", applyPreset);
+
+  function applyDisplayMode(id: "priority" | "demand" | "load"): void {
+    state.displayMode = id;
+    renderDisplayModes(id, applyDisplayMode);
+    render();
+  }
+  renderDisplayModes("priority", applyDisplayMode);
 
   document.getElementById("reset-btn")!.addEventListener("click", () => {
     applyPreset("default");
