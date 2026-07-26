@@ -33,6 +33,8 @@ export interface Meta {
   priority_alpha: number;
   priority_beta: number;
   host_max_distance_m: number;
+  /** 重みプリセット。etl/config.py の PRESETS が単一の情報源。 */
+  presets: { id: string; label: string; note: string; weights: Weights }[];
   components: ComponentDef[];
   sources: { key: string; label: string; url: string; license: string; note: string }[];
   layer_counts: Record<string, number>;
@@ -95,3 +97,29 @@ export interface Proposal {
 }
 
 export type Weights = Record<string, number>;
+
+/** sensitivity.json。感度分析の結果（任意・無ければ表示しない）。 */
+export interface Sensitivity {
+  random_perturbation: {
+    perturbation: number;
+    trials: number;
+    overlap_mean: Record<string, number>;
+    overlap_min: Record<string, number>;
+    rank_shift_median: number;
+    rank_shift_p90: number;
+  };
+  leave_one_out: {
+    key: string;
+    label: string;
+    side: string;
+    weight: number;
+    overlap_top10: number;
+  }[];
+  preset_agreement: {
+    top_k: number;
+    preset_ids: string[];
+    common_count: number;
+    common_ratio: number;
+    common_meshes: string[];
+  };
+}

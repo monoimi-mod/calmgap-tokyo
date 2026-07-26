@@ -29,7 +29,7 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 
-from . import aggregate, fixtures, hosts as hostlib, mesh as meshlib, score
+from . import aggregate, fixtures, hosts as hostlib, mesh as meshlib, score, sensitivity
 from .schema import ZONING_NAME
 from .config import (
     ALL_COMPONENTS,
@@ -41,6 +41,7 @@ from .config import (
     PRIORITY_ALPHA,
     PRIORITY_BETA,
     PUBLISH_DECIMALS,
+    PRESETS,
     CRS_GEOGRAPHIC,
     SOURCES,
     STUDY_BBOX,
@@ -327,6 +328,15 @@ def write_outputs(
         "priority_alpha": PRIORITY_ALPHA,
         "priority_beta": PRIORITY_BETA,
         "host_max_distance_m": HOST_MAX_DISTANCE_M,
+        "presets": [
+            {
+                "id": p["id"],
+                "label": p["label"],
+                "note": p["note"],
+                "weights": p["weights"],
+            }
+            for p in PRESETS
+        ],
         "components": [
             {
                 "key": c.key,
@@ -428,6 +438,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--top", type=int, default=TOP_N_CARDS, help="根拠カードの件数")
     ap.add_argument("--report", action="store_true", help="点検表を表示する")
+    ap.add_argument(
+        "--sensitivity",
+        action="store_true",
+        help="感度分析を実行し sensitivity.json を書き出す",
+    )
     args = ap.parse_args(argv)
 
     if not args.live:
@@ -464,6 +479,11 @@ def main(argv: list[str] | None = None) -> int:
     for p in proposals[:3]:
         name = p["host_name"] or "（既存施設では到達不可）"
         print(f"  {p['best_rank']:>2}位 {name} — {p['narrative'][:80]}…")
+
+    if args.sensitivity:
+        result = sensitivity.run(normalized)
+        _write_json(WEB_DATA / "sensitivity.json", result)
+        print(sensitivity.format_report(result))
 
     if args.report:
         print("\n[点検] 優先度 上位10メッシュ")

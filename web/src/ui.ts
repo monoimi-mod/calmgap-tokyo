@@ -7,8 +7,8 @@
  * （proposals.json は既定重みでの静的な書き出しであり、資料添付用に残してある）
  */
 
-import { compose, topFactors, PRESETS, type ScoreResult } from "./score";
-import type { ComponentDef, Meta, MeshProps, Weights } from "./types";
+import { compose, topFactors, type ScoreResult } from "./score";
+import type { ComponentDef, Meta, MeshProps, Sensitivity, Weights } from "./types";
 
 export interface AppState {
   meta: Meta;
@@ -380,12 +380,13 @@ export function renderDisplayModes(
 /* ------------------------------------------------------------------ プリセット */
 
 export function renderPresets(
+  meta: Meta,
   active: string,
   onPick: (id: string) => void,
 ): void {
   const host = document.getElementById("presets")!;
   host.innerHTML = "";
-  for (const p of PRESETS) {
+  for (const p of meta.presets) {
     const b = document.createElement("button");
     b.className = "preset-btn";
     b.type = "button";
@@ -394,7 +395,7 @@ export function renderPresets(
     b.addEventListener("click", () => onPick(p.id));
     host.appendChild(b);
   }
-  const note = PRESETS.find((p) => p.id === active)?.note ?? "";
+  const note = meta.presets.find((p) => p.id === active)?.note ?? "";
   document.getElementById("preset-note")!.textContent = note;
 }
 
@@ -622,6 +623,47 @@ export function renderLegendNote(meta: Meta): void {
   document.getElementById("legend-note")!.textContent =
     `${meta.mesh_label}・${meta.mesh_count.toLocaleString("ja-JP")}区画。` +
     "色は地域内の相対順位。";
+}
+
+/**
+ * 感度分析の結果。「重みは恣意的では?」への定量的な回答。
+ *
+ * スライダーで確かめられるようにしてあるが、審査員が実際に動かすとは限らない。
+ * 動かした結果がどうなるかを、あらかじめ数値で出しておく。
+ */
+export function renderSensitivity(s: Sensitivity | null): void {
+  const el = document.getElementById("sensitivity");
+  if (!el) return;
+  if (!s) {
+    el.hidden = true;
+    return;
+  }
+  el.hidden = false;
+
+  const rp = s.random_perturbation;
+  const pa = s.preset_agreement;
+  const top10 = rp.overlap_mean["10"] ?? 0;
+  // 依存が最も大きい（外すと最も入れ替わる）レイヤー。
+  const driver = s.leave_one_out[0];
+
+  el.innerHTML = `
+    <div class="stat">
+      <div class="stat-value">${Math.round(top10 * 100)}<small>%</small></div>
+      <div class="stat-label">
+        重みを ±${Math.round(rp.perturbation * 100)}% ランダムに動かしても
+        （${rp.trials.toLocaleString("ja-JP")}回試行）上位10区画に残り続けた割合。
+        順位の変動は中央値 ${rp.rank_shift_median} 位。
+      </div>
+    </div>
+    <p class="card-narrative" style="margin-top:10px">
+      立場の違う ${pa.preset_ids.length} つのプリセット全てで上位${pa.top_k}件に入った区画は
+      <b>${pa.common_count}件（${Math.round(pa.common_ratio * 100)}%）</b>。
+      重みの選び方に関係なく上位に来る場所がある、ということ。
+    </p>
+    <p class="card-narrative">
+      最も結果を左右するレイヤーは<b>${escapeHtml(shortLabel({ label: driver.label } as ComponentDef))}</b>で、
+      これを外すと上位10件の重なりは ${Math.round(driver.overlap_top10 * 100)}% まで下がる。
+    </p>`;
 }
 
 export function renderMethodology(meta: Meta): void {

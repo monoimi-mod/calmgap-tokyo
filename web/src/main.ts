@@ -10,14 +10,14 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import "./style.css";
 
 import { initMap, setPointData, type MapHandles } from "./map";
-import { PRESETS } from "./score";
-import type { Meta, MeshProps, Weights } from "./types";
+import type { Meta, MeshProps, Sensitivity, Weights } from "./types";
 import {
   recompute,
   renderBanner,
   renderDetail,
   renderLegendNote,
   renderMethodology,
+  renderSensitivity,
   renderPresets,
   renderSliders,
   renderDisplayModes,
@@ -67,6 +67,12 @@ async function boot(): Promise<void> {
   renderBanner(meta);
   renderLegendNote(meta);
   renderMethodology(meta);
+
+  // 感度分析は --sensitivity を付けたビルドでのみ出力される。
+  // 無くても地図は動くので、失敗しても起動は止めない。
+  loadJSON<Sensitivity>("sensitivity.json")
+    .then(renderSensitivity)
+    .catch(() => renderSensitivity(null));
 
   const handles: MapHandles = await initMap("map", meta, (meshCode) => {
     select(meshCode);
@@ -132,7 +138,7 @@ async function boot(): Promise<void> {
     // 手で動かした時点でプリセット選択は解除する。
     if (state.activePreset !== "custom") {
       state.activePreset = "custom";
-      renderPresets("custom", applyPreset);
+      renderPresets(meta, "custom", applyPreset);
       document.getElementById("preset-note")!.textContent =
         "重みを手動で調整中。プリセットを押すと戻ります。";
     }
@@ -140,18 +146,18 @@ async function boot(): Promise<void> {
   });
 
   function applyPreset(id: string): void {
-    const preset = PRESETS.find((p) => p.id === id);
+    const preset = meta.presets.find((p) => p.id === id);
     if (!preset) return;
     for (const c of meta.components) {
       state.weights[c.key] = preset.weights[c.key] ?? c.weight;
     }
     state.activePreset = id;
     syncSliders(state.weights, meta);
-    renderPresets(id, applyPreset);
+    renderPresets(meta, id, applyPreset);
     render();
   }
 
-  renderPresets("default", applyPreset);
+  renderPresets(meta, "default", applyPreset);
 
   function applyDisplayMode(id: "priority" | "demand" | "load"): void {
     state.displayMode = id;
