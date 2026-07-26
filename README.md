@@ -105,10 +105,15 @@ node tools/parity_check.mjs    # Python と TypeScript のスコアが一致す�
 全レイヤーがそろうまで待つ必要はない。**落とせた分だけ実データに差し替わる。**
 
 ```bash
-python -m etl.fetch --inspect data/raw/P14-21_13.geojson    # 実際の列名を確認
+python -m etl.fetch --inspect data/raw/P14-21_13_GML
 python -m etl.fetch --normalize p14 data/raw/P14-21_13.geojson
-python -m etl.build --live                                   # 実データ 3/9 レイヤーで再生成
+python -m etl.build --live
 ```
+
+`--inspect` と `--normalize` は**フォルダをそのまま渡せる**。
+国土数値情報は種別・年度によって「1 県 1 ファイル」だったり
+「都市計画区域ごとに数十ファイルへ分割」だったりするため、
+どれが本体かを判断せずに済むようにしてある（分割されていれば結合する）。
 
 `--normalize` の種別: `n03` `p14` `p14-hosts` `wamnet` `p29` `p04` `a29` `noise` `facilities`
 

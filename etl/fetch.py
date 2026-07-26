@@ -45,6 +45,7 @@ from .config import (
     Source,
 )
 from .schema import (
+    ZONING_NAME,
     P14_HOST_SUBCLASS,
     P14_SUBCLASS,
     P14_SUBCLASS_DEFAULT_SCOPE,
@@ -128,11 +129,51 @@ def pick_column(df: pd.DataFrame, candidates: tuple[str, ...]) -> str | None:
     return None
 
 
+# 中身を見る価値のある拡張子。SHP は .shx/.dbf/.prj を伴うが、
+# それらは .shp の付属ファイルなので単独では開かない。
+INSPECTABLE_SUFFIXES = (".shp", ".geojson", ".json", ".csv", ".txt", ".gml")
+
+
 def inspect_columns(path: Path, n: int = 5) -> None:
     """落としたファイルの実際の列名を表示する。
 
     COLUMN_MAP を実ファイルに合わせて直すための最初の一手。
+    ディレクトリを渡すと、その下にあるデータファイルを再帰的に列挙して
+    それぞれの件数と列名を出す。国土数値情報は年度やデータ種別によって
+    「1 県 1 ファイル」だったり「市区町村ごとに分割」だったりするため、
+    まず何が入っているかを一望できないと手の付けようがない。
     """
+    if path.is_dir():
+        files = sorted(
+            p
+            for p in path.rglob("*")
+            if p.is_file() and p.suffix.lower() in INSPECTABLE_SUFFIXES
+        )
+        if not files:
+            print(f"{path} にデータファイルが見つからない。")
+            print("ZIP のままなら先に展開すること。")
+            return
+
+        print(f"=== {path} 配下のデータファイル {len(files)} 件 ===\n")
+        for p in files:
+            size = p.stat().st_size
+            try:
+                if p.suffix.lower() in (".csv", ".txt"):
+                    df = read_csv_japanese(p, nrows=n)
+                    total = "?"
+                else:
+                    df = gpd.read_file(p, rows=n)
+                    total = f"{len(gpd.read_file(p, columns=[])):,}"
+                print(
+                    f"  {p.relative_to(path)}  ({size:,} B / {total} 件 / "
+                    f"{len(df.columns)} 列)"
+                )
+                print(f"      列: {list(df.columns)}")
+            except Exception as e:  # noqa: BLE001 — 読めないファイルも一覧には出す
+                print(f"  {p.relative_to(path)}  ({size:,} B) 読めない: {e}")
+            print()
+        return
+
     if path.suffix.lower() in (".csv", ".txt"):
         df = read_csv_japanese(path, nrows=n)
     else:
@@ -233,6 +274,55 @@ def check_reachability() -> int:
 # ---------------------------------------------------------------------------
 # 正規化ヘルパ
 # ---------------------------------------------------------------------------
+
+
+def read_vector(path: Path) -> gpd.GeoDataFrame:
+    """ファイル 1 本、またはディレクトリ配下の全ファイルを読んで結合する。
+
+    国土数値情報は種別・年度によって配布単位が変わる。
+    N03 行政区域は「1 県 1 ファイル」だが、A29 用途地域のように
+    **都市計画区域ごとに数十ファイルへ分割**されているものもある。
+    利用者にどれが本体かを判断させるのは筋が悪いので、
+    フォルダをそのまま渡せるようにして、こちらで結合する。
+
+    同じデータが .shp と .geojson の両方で入っていることがあるため、
+    GeoJSON があればそちらを優先する（Shift-JIS の DBF を避けられる）。
+    """
+    if path.is_file():
+        return gpd.read_file(path)
+
+    if not path.is_dir():
+        raise FileNotFoundError(f"{path} が存在しない")
+
+    geojson = sorted(p for p in path.rglob("*") if p.suffix.lower() in (".geojson",))
+    shp = sorted(p for p in path.rglob("*") if p.suffix.lower() == ".shp")
+    files = geojson or shp
+    if not files:
+        raise FileNotFoundError(
+            f"{path} に .shp / .geojson が無い。ZIP のままなら先に展開すること。"
+        )
+
+    fmt = "GeoJSON" if geojson else "SHP"
+    print(f"[read] {path} から {fmt} を {len(files)} ファイル読み込む")
+
+    frames = []
+    for p in files:
+        try:
+            g = gpd.read_file(p)
+        except UnicodeDecodeError:
+            g = gpd.read_file(p, encoding="cp932")
+        if len(g):
+            frames.append(g)
+
+    if not frames:
+        raise ValueError(f"{path} 配下のファイルがすべて空だった")
+
+    # 分割ファイルは列構成が揃っている前提だが、年度混在に備えて和集合で結合する。
+    merged = pd.concat(frames, ignore_index=True)
+    out = gpd.GeoDataFrame(merged, geometry="geometry", crs=frames[0].crs)
+    if len(frames) > 1:
+        print(f"[read] 結合後 {len(out):,} 件 / {len(out.columns)} 列")
+    return out
 
 
 def _to_points(df: pd.DataFrame, lon_col: str, lat_col: str) -> gpd.GeoDataFrame:
@@ -650,16 +740,36 @@ def normalize_clinics(path: Path) -> gpd.GeoDataFrame:
     return out.reset_index(drop=True)
 
 
-def normalize_zoning(path: Path) -> gpd.GeoDataFrame:
-    """国土数値情報 A29 用途地域を負荷スコアつきポリゴンにする。"""
-    gdf = clip_to_study_area(gpd.read_file(path).to_crs(CRS_GEOGRAPHIC))
+def normalize_zoning(path: Path, clip: bool = True) -> gpd.GeoDataFrame:
+    """国土数値情報 A29 用途地域を負荷スコアつきポリゴンにする。
+
+    A29 は都市計画区域ごとに分割配布されることがあるため、
+    ファイル 1 本でもフォルダでも受け取れる（read_vector が結合する）。
+    """
+    gdf = read_vector(path).to_crs(CRS_GEOGRAPHIC)
+    total = len(gdf)
+    if clip:
+        gdf = clip_to_study_area(gdf)
+    print(f"[a29] {total:,}件 → 研究領域内 {len(gdf):,}件")
+    if len(gdf) == 0:
+        raise ValueError("研究領域内に用途地域が 0 件。対象範囲か入力を確認すること。")
+
     col = pick_column(gdf, COLUMN_MAP["ksj_a29_youto"]["zoning_code"])
-    codes = (
-        pd.to_numeric(gdf[col], errors="coerce")
-        if col
-        else pd.Series(float("nan"), index=gdf.index)
-    )
-    return gpd.GeoDataFrame(
+    if not col:
+        raise ValueError(
+            f"用途地域コード列が見つからない。実列名を確認すること:\n"
+            f"    python -m etl.fetch --inspect {path}"
+        )
+
+    codes = pd.to_numeric(gdf[col], errors="coerce")
+    unknown = sorted(set(codes.dropna().astype(int)) - set(ZONING_LOAD))
+    if unknown:
+        print(
+            f"[a29] 未知の用途地域コード {unknown} は既定値 {ZONING_LOAD_DEFAULT} で扱う",
+            file=sys.stderr,
+        )
+
+    out = gpd.GeoDataFrame(
         {
             "zoning_code": codes,
             "zoning_load": codes.map(ZONING_LOAD).fillna(ZONING_LOAD_DEFAULT),
@@ -669,6 +779,13 @@ def normalize_zoning(path: Path) -> gpd.GeoDataFrame:
         geometry=gdf.geometry,
         crs=CRS_GEOGRAPHIC,
     ).reset_index(drop=True)
+
+    print("[a29] 用途地域の内訳:")
+    for code, n in codes.value_counts().head(13).items():
+        name = ZONING_NAME.get(int(code), "不明")
+        load = ZONING_LOAD.get(int(code), ZONING_LOAD_DEFAULT)
+        print(f"        {name:<22} {n:5d}件 (負荷 {load:.2f})")
+    return out
 
 
 def normalize_noise(path: Path) -> gpd.GeoDataFrame:
