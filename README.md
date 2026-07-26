@@ -126,6 +126,23 @@ python -m etl.build --live
 
 N03 行政区域と P14 福祉施設（東京都）は投入済みで、`data/processed/` に正規化済みのものが入っている。
 
+### ビルド後に git pull が止まる場合
+
+`web/public/data/` の中身は ETL の生成物だが、**追跡対象にしてある**。
+クローンしただけで地図が開けることを優先したため（審査でリポジトリを
+そのまま開く人がいる）。その代わり、ローカルで `python -m etl.build` を
+実行した後は差分が出て `git pull` が止まる。
+
+生成物なので捨ててよい。pull 後に再生成すれば同じものが戻る。
+
+```bash
+git checkout -- web/public/data/
+git pull
+python -m etl.build --live
+```
+
+---
+
 `etl/fetch.py` の取得処理は **実サーバに対して未検証**。
 列名マッピング（`COLUMN_MAP`）は各データの仕様書に基づく想定値なので、
 実ファイルを 1 度落とした時点で `--inspect` で必ず突き合わせること。
