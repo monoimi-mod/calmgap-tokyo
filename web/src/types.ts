@@ -46,6 +46,7 @@ export interface MeshProps {
   priority: number;
   host?: string;
   host_kind?: string;
+  host_ward?: string;
   host_d?: number;
   ward_coefficient?: number;
   /** n_<component key> が構成要素の数だけ入る。 */
@@ -73,6 +74,7 @@ export interface Card {
   load: number;
   host_name: string;
   host_kind: string;
+  host_ward: string;
   host_distance_m: number | null;
   demand_factors: Factor[];
   load_factors: Factor[];

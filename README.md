@@ -85,8 +85,8 @@ node tools/parity_check.mjs    # Python と TypeScript のスコアが一致す�
 
 **既定では模擬データで動作する。地図上の数値・施設名はすべて架空であり、実際の提言として引用できない。**
 
-現在の実データ投入状況: **2/9 レイヤー**（国土数値情報 P14 福祉施設・児童館）。
-残り 7 レイヤーは模擬データのまま。
+現在の実データ投入状況: **3/9 レイヤー**（国土数値情報 N03 行政区域 / P14 福祉施設 / P14 児童館）。
+残り 6 レイヤーは模擬データのまま。
 
 開発環境から各オープンデータ配信サーバへの接続が組織のネットワークポリシーで
 遮断されているため、取得はローカル環境で行う必要がある。
@@ -107,16 +107,19 @@ node tools/parity_check.mjs    # Python と TypeScript のスコアが一致す�
 ```bash
 python -m etl.fetch --inspect data/raw/P14-21_13.geojson    # 実際の列名を確認
 python -m etl.fetch --normalize p14 data/raw/P14-21_13.geojson
-python -m etl.build --live                                   # 実データ 2/9 レイヤーで再生成
+python -m etl.build --live                                   # 実データ 3/9 レイヤーで再生成
 ```
 
-`--normalize` の種別: `p14` `p14-hosts` `wamnet` `p29` `p04` `a29` `noise` `facilities`
+`--normalize` の種別: `n03` `p14` `p14-hosts` `wamnet` `p29` `p04` `a29` `noise` `facilities`
+
+**`n03`（行政区域）を最初に入れること。** これが入るまで研究領域は暫定の矩形で、
+対象2区の外（港区・目黒区・品川区の一部）まで含んでしまう。
 
 ビルド時にどのレイヤーが実データかが表示され、画面のバナーにも
-「実データ 2/9 レイヤー」「模擬: zoning・noise…」と出る。
+「実データ 3/9 レイヤー」「模擬: zoning・noise…」と出る。
 **1 レイヤーでも模擬が残っている限り、数値は提言として引用できない。**
 
-現在 P14 福祉施設（東京都）は投入済みで、`data/processed/` に正規化済みのものが入っている。
+N03 行政区域と P14 福祉施設（東京都）は投入済みで、`data/processed/` に正規化済みのものが入っている。
 
 `etl/fetch.py` の取得処理は **実サーバに対して未検証**。
 列名マッピング（`COLUMN_MAP`）は各データの仕様書に基づく想定値なので、

@@ -30,6 +30,8 @@ const pctRank = (p: number) => Math.max(1, Math.round((1 - p) * 100));
 export interface UiProposal {
   hostName: string;
   hostKind: string;
+  hostWard: string;
+  outOfArea: boolean;
   bestRank: number;
   priority: number;
   meshCodes: string[];
@@ -66,6 +68,8 @@ export function buildProposals(
         unreachable.push({
           hostName: "",
           hostKind: "",
+          hostWard: "",
+          outOfArea: false,
           bestRank: rank,
           priority: score.priority[idx],
           meshCodes: [row.c],
@@ -81,9 +85,12 @@ export function buildProposals(
     if (existing) {
       existing.meshCodes.push(row.c);
     } else {
+      const hw = (row.host_ward as string) ?? "";
       byHost.set(host, {
         hostName: host,
         hostKind: (row.host_kind as string) ?? "",
+        hostWard: hw,
+        outOfArea: Boolean(hw) && !meta.target_wards.includes(hw),
         bestRank: rank,
         priority: score.priority[idx],
         meshCodes: [row.c],
@@ -215,6 +222,14 @@ function narrate(
         ? `設置候補: ${host}（メッシュ重心から約${num(dist)}m）。`
         : `設置候補: ${host}。`,
     );
+    // 区境をまたぐ割当は残す（当事者に区境は関係ない）が、
+    // 提言先の自治体が変わるので明示する。
+    const ward = (row.host_ward as string) ?? "";
+    if (ward && !meta.target_wards.includes(ward)) {
+      parts.push(
+        `ただし${ward}の施設であり、対象区の所管外。区境をまたぐ連携が前提になる。`,
+      );
+    }
   } else {
     parts.push(
       `半径${meta.host_max_distance_m}m 以内に転用可能な公共施設が無い。` +
@@ -429,7 +444,7 @@ function renderProposals(
       <div class="card-head">
         <span class="rank${p.unreachable ? " is-unreachable" : ""}">${p.bestRank}</span>
         <span class="card-title">${escapeHtml(p.hostName || "候補施設なし（新設が必要）")}</span>
-        <span class="card-kind">${escapeHtml(p.hostKind)}</span>
+        <span class="card-kind">${escapeHtml(p.outOfArea ? `${p.hostWard}・区外` : p.hostKind)}</span>
       </div>
       <div class="card-narrative">${escapeHtml(p.narrative)}</div>
       ${covered}`;

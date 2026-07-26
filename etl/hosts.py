@@ -14,6 +14,7 @@ import pandas as pd
 
 from .config import (
     ALL_COMPONENTS,
+    TARGET_WARDS,
     DEMAND_COMPONENTS,
     HOST_MAX_DISTANCE_M,
     HOST_PREFERENCE,
@@ -51,6 +52,7 @@ def assign_hosts(
             "mesh_code": idx,
             "host_name": "",
             "host_kind": "",
+            "host_ward": "",
             "host_distance_m": np.nan,
             "host_lon": np.nan,
             "host_lat": np.nan,
@@ -89,6 +91,14 @@ def assign_hosts(
 
     names = h["name"].to_numpy()
     kinds = h["host_kind"].fillna("").to_numpy()
+    # 区界をまたいだ割当は消さない。すぐ隣の区の施設が実際に最寄りである
+    # ことは珍しくなく、当事者にとって区境は意味を持たない。
+    # ただし提言先の自治体が変わるので、区名を持ち回って UI で明示する。
+    wards = (
+        h["ward"].fillna("").to_numpy()
+        if "ward" in h.columns
+        else np.full(len(h), "")
+    )
     hlon = hosts.geometry.x.to_numpy()
     hlat = hosts.geometry.y.to_numpy()
 
@@ -97,6 +107,7 @@ def assign_hosts(
             "mesh_code": idx,
             "host_name": np.where(reachable, names[best], ""),
             "host_kind": np.where(reachable, kinds[best], ""),
+            "host_ward": np.where(reachable, wards[best], ""),
             "host_distance_m": np.where(
                 reachable, dist[np.arange(len(dist)), best].round(0), np.nan
             ),
@@ -162,11 +173,14 @@ def _narrative(row: pd.Series, rank: int) -> str:
     host = str(row.get("host_name") or "")
     if host:
         dist = row.get("host_distance_m")
-        parts.append(
-            f"設置候補: {host}（メッシュ重心から約{int(dist)}m）。"
-            if pd.notna(dist)
-            else f"設置候補: {host}。"
-        )
+        where = f"（メッシュ重心から約{int(dist)}m）" if pd.notna(dist) else ""
+        parts.append(f"設置候補: {host}{where}。")
+        ward = str(row.get("host_ward") or "")
+        if ward and ward not in TARGET_WARDS:
+            parts.append(
+                f"ただし{ward}の施設であり、対象区の所管外。"
+                "区境をまたぐ連携が前提になる。"
+            )
     else:
         parts.append(
             f"半径{int(HOST_MAX_DISTANCE_M)}m 以内に転用可能な公共施設が無い。"
@@ -193,6 +207,7 @@ def build_cards(df: pd.DataFrame, top_n: int = 20) -> list[dict]:
                 "load": round(float(row["load"]), 3),
                 "host_name": row.get("host_name", ""),
                 "host_kind": row.get("host_kind", ""),
+                "host_ward": row.get("host_ward", ""),
                 "host_distance_m": (
                     None
                     if pd.isna(row.get("host_distance_m"))

@@ -41,6 +41,7 @@ from .config import (
     PRIORITY_ALPHA,
     PRIORITY_BETA,
     PUBLISH_DECIMALS,
+    CRS_GEOGRAPHIC,
     SOURCES,
     STUDY_BBOX,
     TARGET_WARDS,
@@ -102,11 +103,21 @@ def load_layers(live: bool) -> tuple[dict, dict[str, str]]:
 def build_mesh_table(layers: dict, level: int) -> gpd.GeoDataFrame:
     """研究領域のメッシュを作り、全構成要素の生値を列として付ける。"""
     area = layers.get("area")
-    mesh_gdf = aggregate.build_mesh_frame(STUDY_BBOX, level, clip=area)
+
+    # メッシュを張る矩形は行政界から導出する。余白は取らない
+    # （入力データの絞り込みだけが余白付き。config.CLIP_BUFFER_M 参照）。
+    # 暫定矩形のままだと対象2区の外まで広がり、渋谷区の北端も切れていた。
+    if area is not None and len(area):
+        bbox = tuple(float(v) for v in area.to_crs(CRS_GEOGRAPHIC).total_bounds)
+    else:
+        bbox = STUDY_BBOX
+
+    mesh_gdf = aggregate.build_mesh_frame(bbox, level, clip=area)
     ny, nx = meshlib.cell_size_meters(level)
     print(
         f"[mesh] {meshlib.LEVEL_LABEL[level]} / {len(mesh_gdf):,} セル "
-        f"(1セル 約 {ny:.0f}m × {nx:.0f}m)"
+        f"(1セル 約 {ny:.0f}m × {nx:.0f}m)\n"
+        f"       範囲 ({bbox[0]:.4f}, {bbox[1]:.4f}, {bbox[2]:.4f}, {bbox[3]:.4f})"
     )
 
     # --- 需要側 ---
@@ -218,6 +229,8 @@ def _feature_properties(row: pd.Series) -> dict:
     if row.get("host_name"):
         props["host"] = row["host_name"]
         props["host_kind"] = row["host_kind"]
+        if row.get("host_ward"):
+            props["host_ward"] = row["host_ward"]
         if pd.notna(row.get("host_distance_m")):
             props["host_d"] = int(row["host_distance_m"])
 
@@ -307,7 +320,7 @@ def write_outputs(
         "synthetic": any(v == "synthetic" for v in provenance.values()),
         "synthetic_notice": _synthetic_notice(provenance),
         "target_wards": TARGET_WARDS,
-        "bbox": list(STUDY_BBOX),
+        "bbox": [round(float(v), 6) for v in mesh_gdf.to_crs(CRS_GEOGRAPHIC).total_bounds],
         "mesh_level": level,
         "mesh_label": meshlib.LEVEL_LABEL[level],
         "mesh_count": len(scored),

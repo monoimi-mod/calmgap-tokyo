@@ -34,12 +34,14 @@ import pandas as pd
 import requests
 
 from .config import (
+    CLIP_BUFFER_M,
     CRS_GEOGRAPHIC,
     DATA_PROCESSED,
     DATA_RAW,
     SOURCES,
     STUDY_BBOX,
     TARGET_WARDS,
+    TARGET_WARD_CODES,
     Source,
 )
 from .schema import (
@@ -243,10 +245,104 @@ def _to_points(df: pd.DataFrame, lon_col: str, lat_col: str) -> gpd.GeoDataFrame
     )
 
 
+def area_path() -> Path:
+    return DATA_PROCESSED / PROCESSED_FILES["area"]
+
+
+def study_bbox(buffer_m: float = CLIP_BUFFER_M) -> tuple[float, float, float, float]:
+    """研究領域の矩形を返す。
+
+    行政界（data/processed/area.geojson）があればそこから導出し、
+    無ければ config.STUDY_BBOX の暫定値を使う。
+
+    buffer_m は区界の外側に取る余白。境界のすぐ外にある事業所や駅を
+    落とすと縁のメッシュの需要が不自然に低く出るため
+    （config.CLIP_BUFFER_M のコメント参照）、入力データの絞り込みには
+    余白付きの矩形を使う。メッシュ自体は build 側で区界ポリゴンにより厳密に切る。
+    """
+    p = area_path()
+    if not p.exists():
+        return STUDY_BBOX
+
+    area = gpd.read_file(p).to_crs(CRS_GEOGRAPHIC)
+    minx, miny, maxx, maxy = area.total_bounds
+    if buffer_m <= 0:
+        return (float(minx), float(miny), float(maxx), float(maxy))
+
+    # 緯度経度への換算。東京付近の 1 度あたりの距離で割る。
+    import math
+
+    dlat = buffer_m / 111_320.0
+    dlon = buffer_m / (111_320.0 * math.cos(math.radians((miny + maxy) / 2)))
+    return (
+        float(minx - dlon),
+        float(miny - dlat),
+        float(maxx + dlon),
+        float(maxy + dlat),
+    )
+
+
 def clip_to_study_area(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     """研究領域の矩形でざっくり絞る。全国データを扱うため最初に効かせる。"""
-    minx, miny, maxx, maxy = STUDY_BBOX
+    minx, miny, maxx, maxy = study_bbox()
     return gdf.cx[minx:maxx, miny:maxy].copy()
+
+
+def normalize_area(path: Path) -> gpd.GeoDataFrame:
+    """国土数値情報 N03 から対象区の行政界を抽出する。
+
+    これが入るまで研究領域は暫定の矩形であり、対象2区の外
+    （港区・目黒区・品川区の一部）まで含んでしまっていた。
+    「渋谷区と世田谷区が対象」と言いながら港区の施設を提言するのは
+    提言物として成立しないため、優先して投入すべきレイヤー。
+
+    N03 の SHP は DBF が Shift-JIS で、環境によって名称が化ける。
+    そのため名称と行政区域コードの両方で判定する。
+    """
+    gdf = gpd.read_file(path)
+    # SHP を UTF-8 として読むと名称が化けるので、化けていたら読み直す。
+    if "N03_004" in gdf.columns and not gdf["N03_004"].astype(str).str.contains(
+        "区|市|町|村", na=False
+    ).any():
+        print("[n03] 名称が化けているため cp932 で読み直す")
+        gdf = gpd.read_file(path, encoding="cp932")
+
+    gdf = gdf.to_crs(CRS_GEOGRAPHIC)
+    name_col = "N03_004" if "N03_004" in gdf.columns else None
+    code_col = "N03_007" if "N03_007" in gdf.columns else None
+    if not (name_col or code_col):
+        raise ValueError(
+            f"{path.name} に市区町村名/行政区域コード列が無い:\n"
+            f"    python -m etl.fetch --inspect {path}"
+        )
+
+    mask = pd.Series(False, index=gdf.index)
+    if name_col:
+        mask |= gdf[name_col].astype(str).isin(TARGET_WARDS)
+    if code_col:
+        mask |= gdf[code_col].astype(str).isin(TARGET_WARD_CODES)
+
+    sel = gdf[mask].copy()
+    if len(sel) == 0:
+        raise ValueError(
+            f"対象区が見つからない。config.TARGET_WARDS={TARGET_WARDS} / "
+            f"TARGET_WARD_CODES={TARGET_WARD_CODES} を確認すること。"
+        )
+
+    # 1 区が複数ポリゴンに分かれている場合があるので区単位に融合する。
+    key = name_col or code_col
+    sel["ward"] = sel[key].astype(str)
+    dissolved = sel[["ward", "geometry"]].dissolve(by="ward", as_index=False)
+    dissolved["source"] = "国土数値情報 N03 行政区域"
+    dissolved["synthetic"] = False
+
+    for _, row in dissolved.iterrows():
+        b = row.geometry.bounds
+        print(f"[n03] {row['ward']}: bounds=({b[0]:.4f}, {b[1]:.4f}, {b[2]:.4f}, {b[3]:.4f})")
+    minx, miny, maxx, maxy = dissolved.total_bounds
+    print(f"[n03] 研究領域 = ({minx:.4f}, {miny:.4f}, {maxx:.4f}, {maxy:.4f})")
+
+    return dissolved.reset_index(drop=True)
 
 
 def geocode_missing(df: pd.DataFrame, address_col: str) -> pd.DataFrame:
@@ -674,6 +770,7 @@ def load_processed() -> dict:
 # 落としたファイルを正規化して data/processed へ置くための対応表。
 #   python -m etl.fetch --normalize p14 data/raw/P14-21_13.geojson
 NORMALIZERS: dict[str, tuple[str, str]] = {
+    "n03": ("area", "normalize_area"),
     "p14": ("welfare", "normalize_welfare"),
     "p14-hosts": ("hosts", "normalize_hosts_from_p14"),
     "wamnet": ("welfare", "normalize_wamnet"),
