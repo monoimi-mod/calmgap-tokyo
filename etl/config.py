@@ -131,7 +131,7 @@ DEMAND_COMPONENTS: tuple[Component, ...] = (
         side="demand",
         weight=1.0,
         sign=1,
-        source="WAM NET 障害福祉サービス等事業所一覧 / 国土数値情報 P14",
+        source="WAM NET 障害福祉サービス等事業所一覧（届出の種別・実定員）",
         rationale="就労移行・就労継続A/B・生活介護・放課後等デイ等の定員は、"
         "その徒歩圏を日常的に往復せざるを得ない当事者の実数に最も近い代理変数。",
     ),
@@ -151,7 +151,7 @@ DEMAND_COMPONENTS: tuple[Component, ...] = (
         side="demand",
         weight=0.9,
         sign=1,
-        source="ODPT 公共交通オープンデータ / 東京都統計年鑑",
+        source="国土数値情報 S12 駅別乗降客数（2024年値）",
         rationale="「通わざるを得ない過負荷な場所」の中核。乗降客数は"
         "その地点を通過せざるを得ない人の総量を表す。",
     ),
@@ -174,7 +174,7 @@ LOAD_COMPONENTS: tuple[Component, ...] = (
         side="load",
         weight=1.0,
         sign=1,
-        source="不動産情報ライブラリ API / 国土数値情報 A29 用途地域",
+        source="国土数値情報 A29 用途地域",
         rationale="本作独自の転用。用途地域は「その土地が法的にどこまで"
         "騒がしくなり得るか」の上限を定めた規制であり、"
         "実測点が疎な感覚負荷を面として推定する予測器として使える。",
@@ -186,18 +186,23 @@ LOAD_COMPONENTS: tuple[Component, ...] = (
         side="load",
         weight=0.9,
         sign=1,
-        source="東京都環境局 自動車騒音要請限度測定結果 / 鉄道騒音振動調査",
+        source="東京都環境局 自動車交通騒音調査結果（平成25年度・道路端の測定点）",
         rationale="聴覚過敏の直接要因。点測定を距離重み付き内挿で面に変換する。",
         zero_is_absence=False,  # 内挿後は全メッシュが騒音レベルを持つ連続量
     ),
     Component(
         key="crowding",
-        label="混雑（昼間人口）",
+        label="混雑（昼間の従業者数）",
         side="load",
         weight=0.8,
         sign=1,
-        source="e-Stat 地域メッシュ統計 昼間人口 / 国勢調査",
-        rationale="人的密度そのものが視覚・聴覚・触覚の同時多重刺激を生む。",
+        source="e-Stat 経済センサス 地域メッシュ統計（従業者数・500m）",
+        # 昼間人口そのもののメッシュ統計は配信されていない（国勢調査の
+        # 地域メッシュ統計は常住地ベースまで）。「その場所で働いている人の数」で
+        # 代替している。買い物客や通学者を含まない一方、自宅に居る人も含まない。
+        # 人的密度が生む多重刺激を測るという目的には、後者を含まない方が近い。
+        rationale="人的密度そのものが視覚・聴覚・触覚の同時多重刺激を生む。"
+        "昼間人口のメッシュ統計は存在しないため、経済センサスの従業者数で代替する。",
     ),
     Component(
         key="green",
@@ -205,7 +210,7 @@ LOAD_COMPONENTS: tuple[Component, ...] = (
         side="load",
         weight=0.6,
         sign=-1,
-        source="国土数値情報 P13 都市公園 / 東京都 緑被率調査",
+        source="国土数値情報 P13 都市公園（面積相当の円で近似）",
         rationale="既に安らげる空間が担保されている場所は、"
         "新規整備の優先度を下げてよい。負の負荷として減点する。",
     ),
@@ -378,6 +383,15 @@ SOURCES: dict[str, Source] = {
         kind="shp",
         license="国土数値情報 利用約款（出典表示）",
         note="診療科目欄から精神科・心療内科を抽出する。",
+    ),
+    "ksj_s12_station": Source(
+        key="ksj_s12_station",
+        label="国土数値情報 S12 駅別乗降客数",
+        url="https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-S12-2024.html",
+        kind="shp",
+        license="国土数値情報 利用約款（出典表示）",
+        note="ODPT の代替。アクセストークンが要らず、乗降客数が年次で入る。"
+        "1 行が「駅×事業者×路線」なのでグループコードで束ねて合算する。",
     ),
     "odpt_station": Source(
         key="odpt_station",

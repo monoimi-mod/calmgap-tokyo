@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import inspect
 import io
+import math
 import os
 import re
 import sys
@@ -32,6 +33,7 @@ import zipfile
 from pathlib import Path
 
 import geopandas as gpd
+import numpy as np
 import pandas as pd
 import requests
 
@@ -55,11 +57,15 @@ from .schema import (
     is_disability_name,
     assumed_capacity,
     classify_welfare_by_name,
+    PSYCH_CLINIC_ABBREV,
     PSYCH_CLINIC_KEYWORDS,
     SCHOOL_CLASS_SPECIAL_NEEDS,
+    SCHOOL_NAME_PATTERN,
+    SPECIAL_NEEDS_NAME_PATTERN,
     ZONING_LOAD,
     ZONING_LOAD_DEFAULT,
     host_type,
+    is_psych_clinic,
     normalize_welfare_type,
     welfare_weight,
 )
@@ -75,10 +81,23 @@ TIMEOUT = 60
 # 各データの仕様書上の列名。実ファイルとズレたらここだけ直せば通る。
 # 候補を複数並べ、最初に見つかったものを使う（年度で列名が変わるため）。
 COLUMN_MAP: dict[str, dict[str, tuple[str, ...]]] = {
+    # 実データ P29-23_13（東京都・2023年版＝製品仕様書第2.0版）で確認済み。
+    #   P29_001 行政区域コード / P29_002 学校コード   / P29_003 学校分類コード
+    #   P29_004 名称           / P29_005 所在地       / P29_006 管理者コード
+    #   P29_009 キャンパス名
+    # 第1.1版（P29-13）は列の意味がずれており、**同じ列名が別のものを指す**:
+    #   P29_003 施設種別詳細（盲16008/聾16009/養護16010）/ P29_004 学校分類コード
+    #   P29_005 名称
+    # そのため列名だけで選ぶと、第1.1版で P29_003 を掴んで特別支援学校 67 件が
+    # 9 件になる（取りこぼす方向なので出力を見ても気付けない）。
+    # normalize_schools は名称の列で裏を取ってから分類コード列を決める。
     "ksj_p29_school": {
-        "class_code": ("P29_004",),
-        "name": ("P29_005", "P29_006"),
-        "students": ("P29_009",),
+        "class_code": ("P29_003", "P29_004"),
+        "name": ("P29_004", "P29_005"),
+        # 児童生徒数は第1.1版・第2.0版のどちらにも無い。仕様書から推測した
+        # P29_009 は第2.0版ではキャンパス名で、数値化すると全件 NaN になる。
+        # 将来の版が持つなら列名をここへ足す。無い年度は --assume-missing。
+        "students": ("児童生徒数", "生徒数"),
     },
     # 実データ P14-21_13（東京都・2022-03-11 版）で確認済み。
     #   P14_001 都道府県名 / P14_002 市区町村名 / P14_003 行政区域コード
@@ -94,9 +113,13 @@ COLUMN_MAP: dict[str, dict[str, tuple[str, ...]]] = {
         "subclass": ("P14_007",),
         "name": ("P14_008",),
     },
+    # 実データ P04-20_13（東京都・2020年版）で確認済み。
+    #   P04_001 医療機関分類（1 病院 / 2 診療所 / 3 歯科診療所）
+    #   P04_002 名称 / P04_003 所在地 / P04_004 診療科目 / P04_005 その他の診療科目
+    # 推測していた P04_003 は所在地だった（診療科目ではない）。
     "ksj_p04_medical": {
         "name": ("P04_002",),
-        "departments": ("P04_003",),
+        "departments": ("P04_004", "P04_003"),
     },
     # 実データ A29-19_13（東京都・2019年版）で確認済み。
     # 用途地域コードは **A29_004**。当初 A29_005 と推測していたが外れており、
@@ -115,11 +138,31 @@ COLUMN_MAP: dict[str, dict[str, tuple[str, ...]]] = {
         "lat": ("緯度", "事業所緯度"),
         "lon": ("経度", "事業所経度"),
     },
+    # 実データ 平成25年度 自動車交通騒音調査結果（東京都環境局・673 地点）で確認済み。
+    # 昼夜の等価騒音レベルが並んで入る（列名の末尾に単位が付く）。
+    # 地点名の列は無く、住所で代用する。
+    # 実データ S12-25（全国・2025年版）で確認済み。1 行が「駅×事業者×路線」。
+    #   S12_001 駅名 / S12_001c 駅コード / S12_001g **グループコード**
+    #   S12_002 運営会社 / S12_003 路線名
+    #   以降 2011〜2024 年の 4 列組（重複コード・データ有無・備考・**乗降客数**）
+    #   最新年 2024 の乗降客数は S12_061。
+    "ksj_s12_station": {
+        "name": ("S12_001", "駅名"),
+        "passengers": ("S12_061", "乗降客数2024"),
+        "group": ("S12_001g", "グループコード"),
+    },
+    # 実データ P13-11_13（東京都・2011年版）で確認済み。
+    #   P13_003 名称 / P13_004 公園種別 / P13_006 所在地 / P13_007 供用開始年
+    #   P13_008 **面積(m²)** / 形状は入っておらず点で表現される
+    "ksj_p13_park": {
+        "area": ("P13_008", "面積"),
+        "name": ("P13_003", "名称", "公園名"),
+    },
     "tokyo_road_noise": {
-        "laeq_db": ("昼間等価騒音レベル", "LAeq昼間", "等価騒音レベル(昼間)"),
+        "laeq_db": ("昼間等価騒音レベル(dB)", "昼間等価騒音レベル", "LAeq昼間"),
         "lat": ("緯度",),
         "lon": ("経度",),
-        "name": ("測定地点", "地点名"),
+        "name": ("測定地点住所", "測定地点", "地点名"),
     },
     "tokyo_public_facility": {
         # 「事業所名」は渋谷区（SHIBUYA OPEN DATA の施設・事業所一覧）、
@@ -227,6 +270,70 @@ def detect_column(
     return col
 
 
+def column_matches(
+    s: pd.Series, predicate, *, min_ratio: float, whole: object = None
+) -> bool:
+    """その列の中身が求めているものかを検査する。detect_column と同じ条件。"""
+    try:
+        if float(predicate(s).mean()) < min_ratio:
+            return False
+    except Exception:  # noqa: BLE001 — 判定できない列は不一致とみなす
+        return False
+    return whole is None or bool(whole(s))
+
+
+def resolve_column(
+    df: pd.DataFrame,
+    kind: str,
+    field: str,
+    *,
+    tag: str,
+    label: str,
+    predicate=None,
+    min_ratio: float = 0.9,
+    whole: object = None,
+    name_hint: str | None = None,
+    require_hint: bool = False,
+) -> str | None:
+    """列名 → 中身の順で列を探す。見つからなければ None。
+
+    **列名が一致しても中身は確かめる。** 国土数値情報 P29 学校は
+    製品仕様書 第1.1版と第2.0版で列の意味が入れ替わっており、
+    どちらにも `P29_004` `P29_009` が存在する:
+
+        第1.1版  P29_004 = 学校分類コード / P29_005 = 名称
+        第2.0版  P29_003 = 学校分類コード / P29_004 = 名称 / P29_009 = キャンパス名
+
+    「仕様書で P29_009 が児童生徒数」という前提のまま第2.0版を読むと、
+    列名は確かに実在するのでそのまま通り、キャンパス名を数値に変換して
+    **全件 NaN → 既定値 150 人**になる。A29 で一度やった壊れ方と同じで、
+    列名の一致だけでは防げない。中身が合わなければ推定へ回す。
+    """
+    col = pick_column(df, COLUMN_MAP[kind][field])
+    if col is not None:
+        if predicate is None or column_matches(
+            df[col], predicate, min_ratio=min_ratio, whole=whole
+        ):
+            return col
+        print(
+            f"[{tag}] 列 {col} は在るが中身が{label}と合わない"
+            f"（例: {list(df[col].dropna().unique()[:4])}）。中身から探し直す",
+            file=sys.stderr,
+        )
+    if predicate is None:
+        return None
+    return detect_column(
+        df,
+        predicate,
+        tag=tag,
+        label=label,
+        min_ratio=min_ratio,
+        whole=whole,
+        name_hint=name_hint,
+        require_hint=require_hint,
+    )
+
+
 def require_column(
     df: pd.DataFrame,
     path: Path,
@@ -244,29 +351,27 @@ def require_column(
 ) -> str:
     """数値に影響する列を必ず特定する。できなければ実値を添えて止まる。"""
     candidates = COLUMN_MAP[kind][field]
-    col = pick_column(df, candidates)
+    col = resolve_column(
+        df,
+        kind,
+        field,
+        tag=tag,
+        label=label,
+        predicate=predicate,
+        min_ratio=min_ratio,
+        whole=whole,
+        name_hint=name_hint,
+        require_hint=require_hint,
+    )
     if col is not None:
         return col
-    if predicate is not None:
-        col = detect_column(
-            df,
-            predicate,
-            tag=tag,
-            label=label,
-            min_ratio=min_ratio,
-            whole=whole,
-            name_hint=name_hint,
-            require_hint=require_hint,
-        )
-        if col is not None:
-            return col
     raise ValueError(
         "\n".join(
             [
                 f"{path.name} から{label}の列を特定できない。",
                 why,
                 "",
-                f"探した列名: {', '.join(candidates)}",
+                f"探した列名: {', '.join(candidates) or '（候補なし）'}",
                 "中身からの推定も一致しなかった。",
                 "",
                 "各列の実際の値:",
@@ -519,6 +624,32 @@ def check_reachability() -> int:
 # ---------------------------------------------------------------------------
 
 
+def _assume_geographic(gdf: gpd.GeoDataFrame, path: Path) -> gpd.GeoDataFrame:
+    """座標系の定義が無いファイルを救う。
+
+    国土数値情報 P13 都市公園（2011年版）の SHP には **.prj が入っていない**。
+    そのままでは投影も距離計算もできない。国土数値情報は緯度経度（JGD2011）で
+    配布されるので補えるが、**黙って決めつけない** —— 座標が日本の緯度経度の
+    範囲に収まっていることを確かめ、何を仮定したかを表示する。
+    """
+    if gdf.crs is not None or not len(gdf):
+        return gdf
+
+    minx, miny, maxx, maxy = gdf.total_bounds
+    if not (122 <= minx <= 154 and 20 <= miny <= 46 and maxx <= 154 and maxy <= 46):
+        raise ValueError(
+            f"{path.name} に座標系の定義（.prj）が無く、座標も日本の緯度経度に見えない: "
+            f"bounds=({minx:.3f}, {miny:.3f}, {maxx:.3f}, {maxy:.3f})\n"
+            "元の配布形式（測地系）を確認すること。"
+        )
+    print(
+        f"[read] {path.name} に .prj が無い。座標が日本の緯度経度の範囲に収まるため "
+        f"{CRS_GEOGRAPHIC} と仮定する",
+        file=sys.stderr,
+    )
+    return gdf.set_crs(CRS_GEOGRAPHIC)
+
+
 def read_vector(path: Path) -> gpd.GeoDataFrame:
     """ファイル 1 本、またはディレクトリ配下の全ファイルを読んで結合する。
 
@@ -532,7 +663,7 @@ def read_vector(path: Path) -> gpd.GeoDataFrame:
     GeoJSON があればそちらを優先する（Shift-JIS の DBF を避けられる）。
     """
     if path.is_file():
-        return gpd.read_file(path)
+        return _assume_geographic(gpd.read_file(path), path)
 
     if not path.is_dir():
         raise FileNotFoundError(f"{path} が存在しない")
@@ -567,6 +698,28 @@ def read_vector(path: Path) -> gpd.GeoDataFrame:
         )
         files = aggregate[:1]
 
+    # 【罠】同じ内容が文字コード違いで 2 部入っていることがある。
+    #
+    # S12 駅別乗降客数は ZIP の中が UTF-8/ と Shift-JIS/ に分かれており、
+    # 中身は同一。両方読むと全駅の乗降客数が 2 倍になる。
+    # 上の市区町村別ファイルと違って**件数も列構成も完全に同じ**なので、
+    # 結合後の件数を見ても気付けない。ファイル名で寄せて 1 つだけ読む。
+    by_stem: dict[str, list[Path]] = {}
+    for p in files:
+        by_stem.setdefault(p.stem, []).append(p)
+    if any(len(v) > 1 for v in by_stem.values()):
+        # UTF-8 版があればそちらを採る（Shift-JIS は環境によって化ける）。
+        picked = [
+            next((q for q in v if "utf" in str(q.parent).lower()), v[0])
+            for v in by_stem.values()
+        ]
+        print(
+            f"[read] 同名のファイルが複数ある（文字コード違いの同一データ）。"
+            f"{len(files)} → {len(picked)} ファイルに絞る（二重計上防止）: "
+            f"{picked[0].relative_to(path)}"
+        )
+        files = sorted(picked)
+
     print(f"[read] {path} から {fmt} を {len(files)} ファイル読み込む")
 
     frames = []
@@ -576,7 +729,7 @@ def read_vector(path: Path) -> gpd.GeoDataFrame:
         except UnicodeDecodeError:
             g = gpd.read_file(p, encoding="cp932")
         if len(g):
-            frames.append(g)
+            frames.append(_assume_geographic(g, p))
 
     if not frames:
         raise ValueError(f"{path} 配下のファイルがすべて空だった")
@@ -587,6 +740,18 @@ def read_vector(path: Path) -> gpd.GeoDataFrame:
     if len(frames) > 1:
         print(f"[read] 結合後 {len(out):,} 件 / {len(out.columns)} 列")
     return out
+
+
+def representative_points(gdf: gpd.GeoDataFrame) -> gpd.GeoSeries:
+    """点として扱うための代表点。
+
+    P29 も P04 も実データは既に点なので、そのまま返す。
+    緯度経度のまま centroid を取ると GEOS が警告を出す（球面での重心は
+    正しくない）ため、面が来たときだけ投影してから重心を取る。
+    """
+    if (gdf.geom_type == "Point").all():
+        return gdf.geometry
+    return gdf.geometry.to_crs(CRS_PROJECTED).centroid.to_crs(CRS_GEOGRAPHIC)
 
 
 def _to_points(df: pd.DataFrame, lon_col: str, lat_col: str) -> gpd.GeoDataFrame:
@@ -727,68 +892,160 @@ def geocode_missing(df: pd.DataFrame, address_col: str) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 
+def _pick_school_class_column(
+    gdf: gpd.GeoDataFrame, path: Path, name_col: str
+) -> str:
+    """学校分類コードの列を、名称で裏を取りながら決める。
+
+    P29 は列名が `P29_00x` しかなく、しかも **版によって意味が入れ替わる**。
+    第1.1版は P29_003 が施設種別詳細（盲・聾・養護を別コードで持つ）、
+    P29_004 が学校分類コード。第2.0版は P29_003 が学校分類コードで、
+    P29_004 は名称。どちらの列も「16012 を含む 2〜30 種のコード列」に
+    見えるため、中身の形だけでは選べない
+    （第1.1版で P29_003 を選ぶと 67 件が 9 件に減る）。
+
+    そこで名称から特別支援学校だと断定できる行を先に数え、
+    **それを最も多く拾えるコード列**を選ぶ。取りこぼす方向の誤りは
+    地図を見ても気付けないので、ここで別の手掛かりを当てておく。
+    """
+    named = gdf[name_col].astype(str).str.contains(SPECIAL_NEEDS_NAME_PATTERN)
+    n_named = int(named.sum())
+    if n_named == 0:
+        raise ValueError(
+            f"{path.name} の {name_col} に「特別支援学校」等を名称に持つ学校が 1 件も無い。\n"
+            f"    {name_col} が学校名の列か確認すること: "
+            f"{list(gdf[name_col].head(5))}\n"
+            "対象範囲を絞った後のファイルなら、絞る前のファイルで実行すること。"
+        )
+
+    hits: list[tuple[str, int, int]] = []  # (列, 該当件数, 名称一致を拾えた件数)
+    for col in gdf.columns:
+        if col in ("geometry", name_col):
+            continue
+        codes = pd.to_numeric(gdf[col], errors="coerce")
+        if codes.isna().mean() > 0.1 or not 2 <= int(codes.nunique()) <= 30:
+            continue
+        sel = codes == SCHOOL_CLASS_SPECIAL_NEEDS
+        if not sel.any():
+            continue
+        hits.append((col, int(sel.sum()), int((sel & named).sum())))
+
+    if not hits:
+        raise ValueError(
+            "\n".join(
+                [
+                    f"{path.name} から学校分類コードの列を特定できない。",
+                    f"コード {SCHOOL_CLASS_SPECIAL_NEEDS}（特別支援学校）を含む列が"
+                    "1 つも無かった。",
+                    f"名称からは {n_named} 件が特別支援学校に見える。",
+                    "",
+                    "各列の実際の値:",
+                    *_column_samples(gdf),
+                    "",
+                    "年度によってコード体系が違う可能性がある。"
+                    "schema.SCHOOL_CLASS_SPECIAL_NEEDS を実データに合わせること。",
+                ]
+            )
+        )
+
+    col, n_sel, n_covered = max(hits, key=lambda h: (h[2], -h[1]))
+    print(
+        f"[p29] 学校分類コードの列 = {col}"
+        f"（{SCHOOL_CLASS_SPECIAL_NEEDS} が {n_sel} 件 / "
+        f"名称から特別支援学校と分かる {n_named} 件のうち {n_covered} 件を含む）"
+    )
+    for other, n_o, c_o in hits:
+        if other != col:
+            print(
+                f"[p29] 　同じ形の列が他にもある: {other}"
+                f"（{n_o} 件 / 名称一致 {c_o} 件）— 少ない方は採らない",
+                file=sys.stderr,
+            )
+
+    # 取りこぼし: 名称で断定できるのに分類コードから漏れる。
+    if n_covered < n_named:
+        raise ValueError(
+            f"{col} で絞ると、名称から特別支援学校と分かる {n_named} 件のうち "
+            f"{n_named - n_covered} 件が漏れる:\n"
+            f"    漏れた例: {list(gdf.loc[named & (pd.to_numeric(gdf[col], errors='coerce') != SCHOOL_CLASS_SPECIAL_NEEDS), name_col].head(5))}\n"
+            "分類コードの列か SCHOOL_CLASS_SPECIAL_NEEDS が実データと合っていない。"
+        )
+    # 混入: 分類コードで拾った大半が特別支援学校らしくない
+    #（学校名が「◯◯学園」の特別支援学校は実在するので全件一致は求めない）。
+    if n_covered < n_sel * 0.5:
+        raise ValueError(
+            f"{col} で絞った {n_sel} 件のうち、名称から特別支援学校と分かるのは "
+            f"{n_covered} 件しかない。分類コードの列を取り違えている疑いがある:\n"
+            f"    絞り込まれた名称の例: "
+            f"{list(gdf.loc[pd.to_numeric(gdf[col], errors='coerce') == SCHOOL_CLASS_SPECIAL_NEEDS, name_col].head(8))}"
+        )
+    return col
+
+
 def normalize_schools(path: Path, assume_missing: bool = False) -> gpd.GeoDataFrame:
     """国土数値情報 P29 から特別支援学校を抽出する。
 
     学校分類コードの列を取り違えると、**全学校が特別支援学校として**
-    需要に乗る（小中高を含めれば件数は数十倍になる）。
-    生徒数の列を取り違えると、全件が既定値 150 人になり
-    「規模で重み付けする」という前提そのものが消える。
-    どちらも黙って通さない。
-    """
-    gdf = clip_to_study_area(gpd.read_file(path).to_crs(CRS_GEOGRAPHIC))
-    total = len(gdf)
-    require_nonempty(
-        total,
-        tag="p29",
-        what="研究領域内の学校",
-        why="対象範囲か入力を確認すること。",
-        per_file=True,
-    )
+    需要に乗る（小中高を含めれば件数は数十倍になる）。逆に 1 つずらすと
+    静かに取りこぼす。生徒数の列を取り違えると、全件が既定値 150 人になり
+    「規模で重み付けする」という前提そのものが消える。どれも黙って通さない。
 
-    cls = require_column(
+    絞り込みは **研究領域で切る前**に行う。名称による裏取り（都全体で
+    48 件）は母数が大きいほど効くうえ、対象 2 区に絞ってからでは
+    数件しか残らず「列を取り違えた」のか「元々少ない」のか区別できない。
+    """
+    gdf = read_vector(path).to_crs(CRS_GEOGRAPHIC)
+    total = len(gdf)
+
+    # 名称の列を先に決める。分類コード列の裏取りに使うため、
+    # ここが外れると以降がすべて無意味になる（optional ではない）。
+    name_col = require_column(
         gdf,
         path,
-        "ksj_p29_school",
-        "class_code",
-        tag="p29",
-        label="学校分類コード",
-        why=(
-            "この列で特別支援学校に絞る。特定できないまま進めると"
-            "小中高を含む全学校が需要に乗る。"
-        ),
-        predicate=lambda s: pd.to_numeric(s, errors="coerce").notna(),
-        whole=lambda s: (
-            SCHOOL_CLASS_SPECIAL_NEEDS
-            in set(pd.to_numeric(s, errors="coerce").dropna().astype(int))
-            and 2 <= int(s.nunique()) <= 30
-        ),
-        name_hint=r"class|種別|分類",
-    )
-    codes = pd.to_numeric(gdf[cls], errors="coerce")
-    gdf = gdf[codes == SCHOOL_CLASS_SPECIAL_NEEDS]
-    if len(gdf) == 0:
-        breakdown = ", ".join(
-            f"{int(c)}: {n}件" for c, n in codes.value_counts().head(20).items()
-        )
-        raise ValueError(
-            f"{cls} に特別支援学校のコード {SCHOOL_CLASS_SPECIAL_NEEDS} が"
-            f"1 件も無い（研究領域内 {total:,}件）。\n"
-            f"    {cls} の実際の内訳: {breakdown}\n"
-            "年度によってコード体系が違う可能性がある（16001 等の桁数違いを含む）。"
-            "schema.SCHOOL_CLASS_SPECIAL_NEEDS を実データに合わせること。"
-        )
-    print(f"[p29] {total:,}件 → 特別支援学校 {len(gdf):,}件（{cls} で判定）")
-
-    name_col = optional_column(
-        gdf,
         "ksj_p29_school",
         "name",
         tag="p29",
         label="学校名",
-        fallback="根拠カードの表示名が『特別支援学校』になる",
+        why=(
+            "学校名から特別支援学校を数え、分類コードの列を裏取りする。"
+            "特定できないまま進めると、分類コード列の取り違えを検出できない。"
+        ),
+        # 学校コード（A113210200158）も所在地もほぼ一意なので、
+        # 「一意な文字列」だけでは選べない。学校名らしい語を条件にする。
+        predicate=lambda s: s.astype(str).str.contains(SCHOOL_NAME_PATTERN, na=False),
+        min_ratio=0.8,
+        whole=lambda s: int(s.nunique()) >= max(3, int(len(s) * 0.5)),
+        name_hint=r"名称|学校名",
     )
-    stu_col = pick_column(gdf, COLUMN_MAP["ksj_p29_school"]["students"])
+
+    cls = _pick_school_class_column(gdf, path, name_col)
+    codes = pd.to_numeric(gdf[cls], errors="coerce")
+    gdf = gdf[codes == SCHOOL_CLASS_SPECIAL_NEEDS].copy()
+    print(f"[p29] {total:,}件 → 特別支援学校 {len(gdf):,}件（{cls} で判定）")
+
+    gdf = clip_to_study_area(gdf)
+    require_nonempty(
+        len(gdf),
+        tag="p29",
+        what="研究領域内の特別支援学校",
+        why="対象範囲か入力を確認すること。",
+        per_file=True,
+    )
+    print(f"[p29] 研究領域内 {len(gdf):,}件")
+
+    stu_col = resolve_column(
+        gdf,
+        "ksj_p29_school",
+        "students",
+        tag="p29",
+        label="児童生徒数",
+        # 児童生徒数は「ただの正の整数」で、建築年や座標系コードと
+        # 値域が重なる。列名の手掛かりが無ければ推定しない。
+        predicate=lambda s: pd.to_numeric(s, errors="coerce").between(1, 5000),
+        whole=lambda s: int(pd.to_numeric(s, errors="coerce").nunique()) >= 5,
+        name_hint=r"児童|生徒|人数|在籍",
+        require_hint=True,
+    )
     if stu_col is None and not assume_missing:
         stu_col = require_column(
             gdf,
@@ -801,11 +1058,10 @@ def normalize_schools(path: Path, assume_missing: bool = False) -> gpd.GeoDataFr
                 "需要は学校の規模で重み付けする。特定できないまま進めると"
                 f"全件が既定値 {SCHOOL_STUDENTS_FALLBACK:.0f} 人になり、"
                 "大規模校と小規模校が同じ重さになる。\n"
-                "本当に収録されていない年度なら --assume-missing を付けて"
-                "既定値を使う（過小・過大の両方を含むと明示される）。"
+                "P29 は第1.1版・第2.0版のどちらにも児童生徒数を持たない。"
+                "この版なら --assume-missing を付けて既定値を使う"
+                "（規模の差が消えることは出力にも明記される）。"
             ),
-            # 児童生徒数は「ただの正の整数」で、建築年や座標系コードと
-            # 値域が重なる。列名の手掛かりが無ければ推定しない。
             predicate=lambda s: pd.to_numeric(s, errors="coerce").between(1, 5000),
             whole=lambda s: int(pd.to_numeric(s, errors="coerce").nunique()) >= 5,
             name_hint=r"児童|生徒|人数|在籍",
@@ -840,7 +1096,7 @@ def normalize_schools(path: Path, assume_missing: bool = False) -> gpd.GeoDataFr
             "source": SOURCES["ksj_p29_school"].label,
             "synthetic": False,
         },
-        geometry=gdf.geometry.centroid,
+        geometry=representative_points(gdf),
         crs=CRS_GEOGRAPHIC,
     )
     out["lon"] = out.geometry.x
@@ -1207,11 +1463,11 @@ def normalize_clinics(path: Path) -> gpd.GeoDataFrame:
         why="対象範囲か入力を確認すること。",
     )
 
-    pattern = "|".join(PSYCH_CLINIC_KEYWORDS)
-    # 診療科目欄は「内科・外科・整形外科」のように連結されている。
+    # 診療科目欄は「内科　小児科　皮膚科」のように連結されている。
     # 中身から探すときは、よくある診療科名を含む列を目印にする。
+    # 略称だけの行（「歯　小歯　矯歯」）も拾えるよう略称も混ぜる。
     dep_hint = "|".join(
-        ("内科", "外科", "小児科", "皮膚科", "眼科", "耳鼻", "産婦人科", "歯科")
+        ("内科", "外科", "小児科", "皮膚科", "眼科", "耳鼻", "産婦人科", "歯科", "歯")
         + PSYCH_CLINIC_KEYWORDS
     )
     dep_col = require_column(
@@ -1238,18 +1494,27 @@ def normalize_clinics(path: Path) -> gpd.GeoDataFrame:
         fallback="根拠カードに施設名が出ない",
     )
 
-    gdf = gdf[gdf[dep_col].astype(str).str.contains(pattern, na=False)]
+    deps = gdf[dep_col].astype(str)
+    hit = deps.map(is_psych_clinic)
+    gdf = gdf[hit]
     require_nonempty(
         len(gdf),
         tag="p04",
-        what=f"精神科・心療内科（{dep_col} に {'/'.join(PSYCH_CLINIC_KEYWORDS)} を含む行）",
+        what=f"精神科・心療内科（{dep_col} が {'/'.join(PSYCH_CLINIC_KEYWORDS)} "
+        f"または略称 {'/'.join(sorted(PSYCH_CLINIC_ABBREV))} を含む行）",
         why=(
             f"研究領域内 {total:,}件のいずれも該当しない。"
             f"{dep_col} が診療科目の列か確認すること: "
             f"python -m etl.fetch --inspect {path}"
         ),
     )
-    print(f"[p04] {total:,}件 → 精神科・心療内科 {len(gdf):,}件（{dep_col} で判定）")
+    # 略称でしか書かれていない医療機関がどれだけ居たかを出す。
+    # 正式名称だけで絞っていた頃は、この分を静かに取りこぼしていた。
+    by_full = int(deps[hit].str.contains("|".join(PSYCH_CLINIC_KEYWORDS)).sum())
+    print(
+        f"[p04] {total:,}件 → 精神科・心療内科 {len(gdf):,}件（{dep_col} で判定）\n"
+        f"       うち正式名称 {by_full:,}件 / 略称のみ {len(gdf) - by_full:,}件"
+    )
 
     out = gpd.GeoDataFrame(
         {
@@ -1261,7 +1526,7 @@ def normalize_clinics(path: Path) -> gpd.GeoDataFrame:
             "source": SOURCES["ksj_p04_medical"].label,
             "synthetic": False,
         },
-        geometry=gdf.geometry.centroid,
+        geometry=representative_points(gdf),
         crs=CRS_GEOGRAPHIC,
     )
     out["lon"] = out.geometry.x
@@ -1380,6 +1645,366 @@ def normalize_zoning(path: Path, clip: bool = True) -> gpd.GeoDataFrame:
         load = ZONING_LOAD.get(int(code), ZONING_LOAD_DEFAULT)
         print(f"        {name:<22} {n:5d}件 (負荷 {load:.2f})")
     return out
+
+
+def normalize_population(path: Path) -> pd.DataFrame:
+    """e-Stat 経済センサスの地域メッシュ統計から、昼間その場所に居る人の量を作る。
+
+    **昼間人口そのもののメッシュ統計は配信されていない。** 国勢調査の地域メッシュ
+    統計は人口等基本集計（常住地＝夜間人口）と就業状態等基本集計までで、
+    従業地・通学地集計はメッシュ単位で公表されていない。そこで
+    **経済センサスの従業者数**（500m メッシュ）を使う。
+
+    「その場所で働いている人の数」であって昼間人口ではない。自宅にいる人も
+    買い物客も含まない。ただし本作が測りたいのは人的密度が生む
+    視覚・聴覚の多重刺激であり、住宅で在宅している人は含まない方が近い。
+    過小・過大の両方向を含むことは methodology に明記する。
+
+    列名は **事業所数と従業者数で完全に同一**（どちらも「Ａ～Ｓ全産業」）。
+    列名で選ぶことが原理的にできないため、男女別の内訳と一致する方を採る。
+    """
+    from . import mesh as meshlib
+
+    raw = read_csv_japanese(path, dtype=str)
+    if len(raw) < 2:
+        raise ValueError(f"{path.name} に十分な行が無い（{len(raw)} 行）")
+
+    # 1 行目が列 ID、2 行目が日本語のラベル、3 行目からデータ。
+    labels = {c: str(raw.iloc[0][c]).strip().strip("　") for c in raw.columns}
+    df = raw.iloc[1:].reset_index(drop=True)
+
+    code_col = pick_column(df, ("KEY_CODE", "key_code", "メッシュコード"))
+    if code_col is None:
+        code_col = df.columns[0]
+        print(f"[estat] メッシュコードの列は先頭列 {code_col} とみなす", file=sys.stderr)
+
+    total_label = "Ａ～Ｓ全産業"
+    cands = [c for c, v in labels.items() if v == total_label]
+    if not cands:
+        raise ValueError(
+            "\n".join(
+                [
+                    f"{path.name} に「{total_label}」の列が無い。",
+                    "経済センサスの産業別集計（事業所数・従業者数）を想定している。",
+                    "",
+                    "各列のラベル:",
+                    *(f"    {c}: {v}" for c, v in labels.items()),
+                ]
+            )
+        )
+
+    num = df[cands].apply(pd.to_numeric, errors="coerce")
+    # 【罠】事業所数と従業者数はラベルが 1 文字も違わない。
+    # 事業所数（渋谷駅の 500m メッシュで 641）を人的密度として使うと、
+    # **小さな店が並ぶ通りと大企業の本社ビルが同じ重さ**になる。
+    # 男女別の内訳が別列にあるので、その和と一致する列を従業者数とみなす。
+    male = next((c for c, v in labels.items() if v == f"男-{total_label}"), None)
+    female = next((c for c, v in labels.items() if v == f"女-{total_label}"), None)
+    col = None
+    if male and female:
+        mf = pd.to_numeric(df[male], errors="coerce") + pd.to_numeric(
+            df[female], errors="coerce"
+        )
+        # 男女の和は総数と完全一致しない（性別不詳がある）。
+        # 事業所数とは桁が違うので、相対 5% で十分に見分けられる。
+        for c in cands:
+            agree = float(
+                ((num[c] - mf).abs() / num[c].clip(lower=1)).le(0.05).mean()
+            )
+            if agree > 0.95:
+                col = c
+                print(
+                    f"[estat] 従業者数の列 = {c}"
+                    f"（男女別の和と {agree * 100:.1f}% のメッシュで一致）"
+                )
+                break
+    if col is None:
+        col = max(cands, key=lambda c: float(num[c].sum()))
+        print(
+            f"[estat] 男女別の内訳で確かめられないため、合計が最大の列 {col} を"
+            f"従業者数とみなす（候補 {cands}）",
+            file=sys.stderr,
+        )
+    if len(cands) > 1:
+        others = {c: int(num[c].sum()) for c in cands if c != col}
+        print(f"[estat] 　同じラベルの列（事業所数と見なす）: {others}", file=sys.stderr)
+
+    out = pd.DataFrame(
+        {
+            "mesh_code": df[code_col].astype(str).str.strip(),
+            "daytime_population": num[col].to_numpy(),
+        }
+    ).dropna()
+    require_nonempty(
+        len(out),
+        tag="estat",
+        what="従業者数を読めたメッシュ",
+        why=f"{len(df):,}行を読んだが数値にならない。実際の値: {list(df[col].head(5))}",
+    )
+
+    # 研究領域の外は捨てる。他のレイヤーと同じく余白付きの矩形で切る。
+    minx, miny, maxx, maxy = study_bbox()
+    inside = []
+    for code in out["mesh_code"]:
+        try:
+            cell = meshlib.decode(code)
+        except Exception:  # noqa: BLE001 — 桁数違いの行は落とす
+            inside.append(False)
+            continue
+        lon, lat = cell.center
+        inside.append(minx <= lon <= maxx and miny <= lat <= maxy)
+    out = out[pd.Series(inside, index=out.index)].reset_index(drop=True)
+    require_nonempty(
+        len(out),
+        tag="estat",
+        what="研究領域内のメッシュ",
+        why="メッシュコードの桁数か対象範囲を確認すること。",
+        per_file=True,
+    )
+
+    level = len(out["mesh_code"].iloc[0])
+    print(
+        f"[estat] {len(df):,}メッシュ → 研究領域内 {len(out):,}メッシュ"
+        f"（{level}桁 = {meshlib.LEVEL_LABEL[next(lv for lv, n in meshlib.CODE_LENGTH.items() if n == level)]}）/ "
+        f"従業者 {out['daytime_population'].sum():,.0f}人"
+    )
+    return out
+
+
+def normalize_stations(path: Path) -> gpd.GeoDataFrame:
+    """国土数値情報 S12 駅別乗降客数を点データにする。
+
+    S12 は **1 行が「駅 × 事業者 × 路線」** で、渋谷駅は JR・東急・メトロ・京王の
+    4 行に分かれる。1 行だけ採ると（東急 177 万人）JR の 65 万人が消え、
+    最大 3 分の 1 を捨てることになる。グループコードで束ねて合算する。
+
+    合算しても二重計上にならないのは、同じ数字を複数行に持つ場合に
+    **重複コードが立ち、片方の乗降客数が 0 になっている**ため
+    （渋谷の東急は東横線に 177 万人、田園都市線・半蔵門線・副都心線は 0）。
+
+    乗降客数は 2011〜2024 年の 14 年分が横に並ぶ。列を 1 つ間違えると
+    10 年以上前の数字で計算しても何も起きない。最新年の列を選び、
+    **どの列を選び、その結果どの駅が最大になったか**を必ず表示する。
+    """
+    gdf = clip_to_study_area(read_vector(path).to_crs(CRS_GEOGRAPHIC))
+    total = len(gdf)
+    require_nonempty(
+        total,
+        tag="s12",
+        what="研究領域内の駅",
+        why="全国ファイルか、対象範囲を確認すること。",
+    )
+
+    name_col = require_column(
+        gdf,
+        path,
+        "ksj_s12_station",
+        "name",
+        tag="s12",
+        label="駅名",
+        why="根拠カードと提言文に出る。路線名や事業者名を掴むと駅名にならない。",
+        # 駅名・事業者名・路線名がすべて文字列で並ぶ。事業者名（181 種）と
+        # 路線名（561 種）は駅名（8,747 種）より桁違いに種類が少ない。
+        predicate=lambda s: s.astype(str).str.len().between(1, 20),
+        whole=lambda s: int(s.nunique()) >= max(3, int(len(s) * 0.5)),
+        name_hint=r"駅名|station",
+    )
+    # 乗降客数。年ごとに 14 列並ぶので、**最後に現れるもの＝最新年**を採る。
+    pax_col = require_column(
+        gdf,
+        path,
+        "ksj_s12_station",
+        "passengers",
+        tag="s12",
+        label="乗降客数",
+        why=(
+            "駅の過負荷を測る唯一の量。特定できないまま進めると"
+            "需要側の主軸が消える。"
+        ),
+        predicate=lambda s: pd.to_numeric(s, errors="coerce").between(0, 3_000_000),
+        whole=lambda s: int(pd.to_numeric(s, errors="coerce").nunique()) >= 5
+        and float(pd.to_numeric(s, errors="coerce").max()) > 10_000,
+        name_hint=r"乗降|passenger",
+    )
+    group_col = require_column(
+        gdf,
+        path,
+        "ksj_s12_station",
+        "group",
+        tag="s12",
+        label="グループコード",
+        why=(
+            "同じ駅の事業者別の行を束ねるのに使う。特定できないまま進めると"
+            "渋谷駅が 4 つの別々の駅として扱われ、それぞれの乗降客数も部分値になる。"
+        ),
+        # 同じコードの行が地理的に固まっていること（同じ駅なのだから）。
+        # 駅コードは 1 行 1 コードで束ねられず、路線名は離れた駅を束ねてしまう。
+        predicate=lambda s: s.astype(str).str.fullmatch(r"\d{4,8}").fillna(False),
+        whole=lambda s: _groups_are_compact(gdf, s),
+        name_hint=r"group|グループ",
+    )
+
+    pax = pd.to_numeric(gdf[pax_col], errors="coerce").fillna(0.0)
+    gdf = gdf.assign(_pax=pax, _group=gdf[group_col].astype(str))
+
+    # 駅の位置は路線ごとのホーム（線分）。束ねた駅の代表点は
+    # 乗降客数の大きいホームの中点を採る（改札の重心に最も近い）。
+    metric = gdf.to_crs(CRS_PROJECTED)
+    gdf = gdf.assign(_pt=metric.geometry.interpolate(0.5, normalized=True).to_numpy())
+
+    rows = []
+    for code, grp in gdf.groupby("_group"):
+        lead = grp.loc[grp["_pax"].idxmax()]
+        rows.append(
+            {
+                "name": str(lead[name_col]),
+                "kind": "駅",
+                "capacity": float(grp["_pax"].sum()),
+                "weight": 1.0,
+                "demand_value": float(grp["_pax"].sum()),
+                "source": SOURCES["ksj_s12_station"].label,
+                "synthetic": False,
+                "geometry": lead["_pt"],
+            }
+        )
+
+    out = gpd.GeoDataFrame(rows, geometry="geometry", crs=CRS_PROJECTED).to_crs(
+        CRS_GEOGRAPHIC
+    )
+    # 乗降客数が 0 の駅（貨物駅・未集計）は需要を生まないので落とす。
+    dropped = int((out["capacity"] <= 0).sum())
+    out = out[out["capacity"] > 0].copy()
+    require_nonempty(
+        len(out),
+        tag="s12",
+        what=f"乗降客数が入っている駅（{pax_col}）",
+        why=f"研究領域内 {total:,}行のいずれも 0 だった。年の列を確認すること。",
+    )
+    out["lon"] = out.geometry.x
+    out["lat"] = out.geometry.y
+
+    print(
+        f"[s12] {total:,}行（駅×事業者×路線）→ {len(out):,}駅"
+        f"{f'（乗降客数 0 の {dropped} 駅は除外）' if dropped else ''}"
+    )
+    print(f"[s12] 乗降客数の列 = {pax_col} / 上位 5 駅:")
+    for _, r in out.nlargest(5, "capacity").iterrows():
+        print(f"        {r['name']:<10} {r['capacity']:>10,.0f} 人/日")
+    return out.reset_index(drop=True)
+
+
+def _groups_are_compact(gdf: gpd.GeoDataFrame, codes: pd.Series) -> bool:
+    """同じコードを持つ行が同じ駅と言える距離に収まっているか。
+
+    「同じ駅の別事業者」を束ねる列を、中身から見分けるための条件。
+    路線名や事業者名で束ねると、離れた駅どうしが 1 つになる。
+    """
+    metric = gdf.to_crs(CRS_PROJECTED).geometry
+    n_multi = 0
+    for _, idx in codes.groupby(codes).groups.items():
+        if len(idx) < 2:
+            continue
+        n_multi += 1
+        pts = metric.loc[idx]
+        if pts.distance(pts.iloc[0]).max() > 1500.0:
+            return False
+    # 束ねる先が 1 つも無い列（全行が別コード）は、束ねる役に立たない。
+    return n_multi > 0
+
+
+def normalize_parks(path: Path, clip: bool = True) -> gpd.GeoDataFrame:
+    """国土数値情報 P13 都市公園を被覆ポリゴンにする。
+
+    **P13 は点データで、公園の形は入っていない。** 面積が属性として入るだけで、
+    「メッシュ面積に占める公園の割合」を出すには形が要る。
+    そこで各公園を **同じ面積の円** に置き換える。代々木公園（54ha）なら
+    半径 415m の円になる。細長い河川緑地などは形が実物と違うが、
+    メッシュ（250m 角）より小さい公園が大半で、面積の総量は保存される。
+
+    面積の列は「ただの正の整数」で、供用開始年（1873〜2011）と値域が重なる。
+    年として解釈できない大きな値を含むことを条件にして選ぶ。
+    """
+    gdf = read_vector(path).to_crs(CRS_GEOGRAPHIC)
+    total = len(gdf)
+
+    area_col = require_column(
+        gdf,
+        path,
+        "ksj_p13_park",
+        "area",
+        tag="p13",
+        label="公園面積",
+        why=(
+            "点データを同じ面積の円に置き換えて被覆率を出す。"
+            "特定できないまま進めると公園の大きさが区別できず、"
+            "街区公園も都立公園も同じ広さとして減点に効く。"
+        ),
+        predicate=lambda s: pd.to_numeric(s, errors="coerce").between(1, 5_000_000),
+        # 供用開始年と区別する条件。年として有り得ない大きさの値が
+        # 含まれること（都立公園は 10 万 m² 級）。
+        whole=lambda s: (
+            float(pd.to_numeric(s, errors="coerce").max()) > 3000
+            and int(pd.to_numeric(s, errors="coerce").nunique()) >= 20
+        ),
+        name_hint=r"面積|area",
+    )
+    name_col = optional_column(
+        gdf,
+        "ksj_p13_park",
+        "name",
+        tag="p13",
+        label="公園名",
+        fallback="根拠カードに公園名が出ない",
+    )
+
+    if clip:
+        gdf = clip_to_study_area(gdf)
+    require_nonempty(
+        len(gdf),
+        tag="p13",
+        what="研究領域内の都市公園",
+        why=f"{total:,}件を読んだが対象 2 区に入るものが無い。",
+        per_file=True,
+    )
+
+    area = pd.to_numeric(gdf[area_col], errors="coerce")
+    blank = int(area.isna().sum())
+    if blank:
+        print(
+            f"[p13] {area_col} が空の {blank:,}/{len(gdf):,}件は被覆率に数えない",
+            file=sys.stderr,
+        )
+    gdf = gdf[area.notna()].copy()
+    area = area[area.notna()]
+
+    metric = gdf.to_crs(CRS_PROJECTED)
+    if (metric.geom_type == "Point").all():
+        # 面積が等しい円へ。r = √(A/π)
+        radius = np.sqrt(area.to_numpy() / math.pi)
+        geometry = metric.geometry.buffer(radius)
+        print(f"[p13] 点データのため面積の等しい円に変換（半径 "
+              f"{radius.min():.0f}〜{radius.max():.0f}m）")
+    else:
+        geometry = metric.geometry
+
+    out = gpd.GeoDataFrame(
+        {
+            "name": (
+                gdf[name_col].astype(str).to_numpy() if name_col else ""
+            ),
+            "area_m2": area.to_numpy(),
+            "source": SOURCES["ksj_p13_park"].label,
+            "synthetic": False,
+        },
+        geometry=geometry.to_numpy(),
+        crs=CRS_PROJECTED,
+    ).to_crs(CRS_GEOGRAPHIC)
+
+    print(
+        f"[p13] {total:,}件 → 研究領域内 {len(out):,}件 / "
+        f"面積 {area.min():,.0f}〜{area.max():,.0f}m²（合計 {area.sum() / 1e6:.2f}km²）"
+    )
+    return out.reset_index(drop=True)
 
 
 def normalize_noise(path: Path) -> gpd.GeoDataFrame:
@@ -1592,6 +2217,9 @@ PROCESSED_FILES: dict[str, str] = {
     "area": "area.geojson",
 }
 
+# 昼間人口だけはメッシュコードで直接結合する表（点でも面でもない）。
+POPULATION_FILE = "population.csv"
+
 
 def save_processed(layers: dict) -> None:
     for key, filename in PROCESSED_FILES.items():
@@ -1616,7 +2244,7 @@ def load_processed() -> dict:
         if path.exists():
             layers[key] = gpd.read_file(path)
 
-    pop_path = DATA_PROCESSED / "population.csv"
+    pop_path = DATA_PROCESSED / POPULATION_FILE
     if pop_path.exists():
         layers["population"] = read_csv_japanese(pop_path)
     return layers
@@ -1632,6 +2260,9 @@ NORMALIZERS: dict[str, tuple[str, str]] = {
     "p29": ("schools", "normalize_schools"),
     "p04": ("clinics", "normalize_clinics"),
     "a29": ("zoning", "normalize_zoning"),
+    "s12": ("stations", "normalize_stations"),
+    "estat-pop": ("population", "normalize_population"),
+    "p13": ("parks", "normalize_parks"),
     "noise": ("noise", "normalize_noise"),
     "facilities": ("hosts", "normalize_hosts"),
 }
@@ -1707,6 +2338,16 @@ def run_normalizer(
             "入力ファイルと対象範囲（data/processed/area.geojson）を確認すること。"
         )
     gdf = frames[0] if len(frames) == 1 else _concat_layers(frames)
+
+    # 昼間人口はメッシュコードの表で、地物ではない（GeoJSON にならない）。
+    if layer_key == "population":
+        out = DATA_PROCESSED / POPULATION_FILE
+        if len(frames) > 1:
+            gdf = pd.concat(frames, ignore_index=True).drop_duplicates("mesh_code")
+        gdf.to_csv(out, index=False)
+        print(f"\n[normalize] {out.relative_to(out.parents[2])} に {len(gdf):,}件を書き出した")
+        print("次: python -m etl.build --live")
+        return out
 
     out = DATA_PROCESSED / PROCESSED_FILES[layer_key]
     gdf = _merge_with_existing(gdf, out, kind=kind, layer_key=layer_key, merge=merge)

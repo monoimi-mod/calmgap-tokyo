@@ -68,6 +68,11 @@ def load_layers(live: bool) -> tuple[dict, dict[str, str]]:
     """
     layers = fixtures.generate_all()
     provenance = {k: "synthetic" for k in layers if not k.startswith("_")}
+    # 昼間人口だけはメッシュが確定してからでないと模擬データを作れないため
+    # fixtures.generate_all に入っていない。**数え漏らすと、混雑レイヤーが
+    # 乱数のままなのに「実データ 9/9」と表示されて警告バナーが消える。**
+    # 生成の都合でレイヤーが 1 つ数から外れる、という壊れ方をさせない。
+    provenance["population"] = "synthetic"
 
     if not live:
         return layers, provenance
@@ -87,7 +92,8 @@ def load_layers(live: bool) -> tuple[dict, dict[str, str]]:
     for key in sorted(provenance):
         mark = "実データ" if provenance[key] == "real" else "模擬  "
         n = len(layers[key]) if hasattr(layers.get(key), "__len__") else 0
-        print(f"       {mark}  {key:<10} {n:>6,d}件")
+        note = "（メッシュ確定後に生成）" if key == "population" and not n else ""
+        print(f"       {mark}  {key:<10} {n:>6,d}件{note}")
     if n_real < len(provenance):
         print("       残りは data/processed に置けば自動で切り替わる:")
         print("       python -m etl.fetch --normalize <種別> <ファイル>\n")

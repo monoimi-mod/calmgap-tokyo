@@ -310,21 +310,153 @@ def _raises(fn, *, contains: str) -> str:
     raise AssertionError("止まらずに通ってしまった（既定値で埋めていないか確認）")
 
 
+def _p29_rows(n_special: int = 3, n_other: int = 4) -> list[dict]:
+    """実データ第2.0版の形をした P29 の行を作る。
+
+        P29_003 学校分類コード（16012 = 特別支援学校）/ P29_004 名称
+    """
+    lat, lon = _INSIDE
+    rows = [
+        {
+            "lat": lat,
+            "lon": lon + i * 0.002,
+            "P29_003": "16012",
+            "P29_004": f"東京都立第{i}特別支援学校",
+        }
+        for i in range(n_special)
+    ]
+    rows += [
+        {
+            "lat": lat + 0.002,
+            "lon": lon + i * 0.002,
+            "P29_003": "16001",
+            "P29_004": f"区立第{i}小学校",
+        }
+        for i in range(n_other)
+    ]
+    return rows
+
+
+@check("P29: 学校名の列を特定できなければ止まる（分類コードの裏取りができない）")
+def _p29_requires_name():
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        lat, lon = _INSIDE
+        # 学校名らしい列が無い。分類コードだけがあっても、それが本当に
+        # 分類コードなのかを確かめる手掛かりが無くなる。
+        rows = [
+            {"lat": lat, "lon": lon + i * 0.002, "P29_003": "16012", "P29_002": f"A{i}"}
+            for i in range(4)
+        ]
+        path = _tmp_geojson(tmp, "p29.geojson", rows)
+        _raises(lambda: fetch.normalize_schools(path), contains="学校名")
+
+
 @check("P29: 学校分類コードの列を特定できなければ止まる")
 def _p29_requires_class_code():
     with tempfile.TemporaryDirectory() as d:
         tmp = Path(d)
         lat, lon = _INSIDE
-        # 列名が仕様と違い、値も分類コードとして解釈できない。
+        # 名称は特別支援学校だと分かるのに、分類コードの列が無い。
         path = _tmp_geojson(
             tmp,
             "p29.geojson",
             [
-                {"lat": lat, "lon": lon, "学校名": "都立◯◯学校", "生徒数": 200},
-                {"lat": lat, "lon": lon + 0.002, "学校名": "都立△△学校", "生徒数": 300},
+                {
+                    "lat": lat,
+                    "lon": lon + i * 0.002,
+                    "P29_004": f"都立第{i}特別支援学校",
+                    "生徒数": 200 + i * 50,
+                }
+                for i in range(3)
             ],
         )
         _raises(lambda: fetch.normalize_schools(path), contains="学校分類コード")
+
+
+@check("P29: 版で列の意味が入れ替わっても、名称で裏を取って正しい列を選ぶ")
+def _p29_picks_class_column_by_name():
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        lat, lon = _INSIDE
+        # 第1.1版の形。P29_003 は施設種別詳細（盲16008/聾16009/養護16010）で、
+        # 学校分類コードは P29_004。列名の順だけで選ぶと P29_003 を掴み、
+        # **特別支援学校が数分の一に減る**（実データでは 67 件 → 9 件）。
+        rows = [
+            {
+                "lat": lat,
+                "lon": lon + i * 0.002,
+                "P29_003": code,
+                "P29_004": "16012",
+                "P29_005": f"都立第{i}特別支援学校",
+            }
+            for i, code in enumerate(["16008", "16009", "16010", "16010", "16012"])
+        ]
+        rows += [
+            {
+                "lat": lat + 0.002,
+                "lon": lon + i * 0.002,
+                "P29_003": "16001",
+                "P29_004": "16001",
+                "P29_005": f"区立第{i}小学校",
+            }
+            for i in range(4)
+        ]
+        path = _tmp_geojson(tmp, "p29.geojson", rows)
+        with _quiet():
+            out = fetch.normalize_schools(path, assume_missing=True)
+        assert len(out) == 5, f"特別支援学校 5 件のはずが {len(out)} 件（列の選択が違う）"
+
+
+@check("P29: 分類コードで絞ると名称から分かる学校を取りこぼす場合は止まる")
+def _p29_class_column_must_not_undercount():
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        lat, lon = _INSIDE
+        # 16012 を持つ列はあるが、名称が特別支援学校の 4 件のうち 1 件しか拾えない。
+        # 減る方向の誤りは地図を見ても気付けないので、ここで止める。
+        rows = [
+            {
+                "lat": lat,
+                "lon": lon + i * 0.002,
+                "P29_003": code,
+                "P29_004": f"都立第{i}特別支援学校",
+            }
+            for i, code in enumerate(["16012", "16008", "16009", "16010"])
+        ]
+        path = _tmp_geojson(tmp, "p29.geojson", rows)
+        _raises(lambda: fetch.normalize_schools(path), contains="漏れる")
+
+
+@check("P29: 分類コードで絞った結果が特別支援学校らしくなければ止まる")
+def _p29_class_column_must_not_overcount():
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        lat, lon = _INSIDE
+        # 16012 がほぼ全件に付いている列。絞り込みが効かず小中高まで需要に乗る。
+        rows = [
+            {
+                "lat": lat,
+                "lon": lon + i * 0.002,
+                "P29_003": "16012",
+                "P29_004": name,
+            }
+            for i, name in enumerate(
+                ["都立◯◯特別支援学校", "区立第1小学校", "区立第2小学校", "都立△△高等学校"]
+            )
+        ]
+        # 分類コードの列として選ばれるには 2 種類以上の値が要る。
+        rows += [
+            {
+                "lat": lat + 0.002,
+                "lon": lon + i * 0.002,
+                "P29_003": "16001",
+                "P29_004": f"区立第{i}中学校",
+            }
+            for i in range(2)
+        ]
+        path = _tmp_geojson(tmp, "p29.geojson", rows)
+        _raises(lambda: fetch.normalize_schools(path), contains="取り違えている")
 
 
 @check("P29: 特別支援学校のコードが 1 件も無ければ止まる")
@@ -332,14 +464,20 @@ def _p29_requires_special_needs_rows():
     with tempfile.TemporaryDirectory() as d:
         tmp = Path(d)
         lat, lon = _INSIDE
-        # P29_004 は在るが小中高だけ。== 16 で絞ると 0 件になる。
-        # 0 件のレイヤーは実データとして数えられたまま需要を消してしまう。
+        # 名称は特別支援学校なのに、分類コードの体系が違って 16012 がどこにも無い
+        #（年度でコードが変わった場合）。0 件のレイヤーは実データとして
+        # 数えられたまま需要を消してしまうので、既定値で通してはならない。
         rows = [
-            {"lat": lat, "lon": lon + i * 0.002, "P29_004": code, "P29_009": 300}
-            for i, code in enumerate([1, 2, 3, 1, 2])
+            {
+                "lat": lat,
+                "lon": lon + i * 0.002,
+                "P29_003": code,
+                "P29_004": f"都立第{i}特別支援学校",
+            }
+            for i, code in enumerate(["16001", "16002", "16003", "16001", "16002"])
         ]
         path = _tmp_geojson(tmp, "p29.geojson", rows)
-        _raises(lambda: fetch.normalize_schools(path), contains="1 件も無い")
+        _raises(lambda: fetch.normalize_schools(path), contains="1 つも無かった")
 
 
 @check("P29: 生徒数の列が無ければ止まり、--assume-missing でだけ通る")
@@ -347,10 +485,7 @@ def _p29_students():
     with tempfile.TemporaryDirectory() as d:
         tmp = Path(d)
         lat, lon = _INSIDE
-        rows = [
-            {"lat": lat, "lon": lon + i * 0.002, "P29_004": 16, "P29_005": f"支援校{i}"}
-            for i in range(3)
-        ]
+        rows = _p29_rows(n_special=3)
         path = _tmp_geojson(tmp, "p29.geojson", rows)
         _raises(lambda: fetch.normalize_schools(path), contains="児童生徒数")
 
@@ -401,11 +536,17 @@ def _p14_happy_path():
                 "P14_007": "050901",
                 "P14_008": "児童発達支援センターにじ",
             },
+            {
+                "lat": lat,
+                "lon": lon + 0.004,
+                "P14_007": "030300",
+                "P14_008": "就労継続支援Ｂ型ひだまり",
+            },
         ]
         path = _tmp_geojson(tmp, "p14.geojson", rows)
         with _quiet():
             out = fetch.normalize_welfare(path)
-        assert len(out) == 2, f"2 件のはずが {len(out)} 件"
+        assert len(out) == 3, f"3 件のはずが {len(out)} 件"
         # 定員は推定値であることが列として残っていること（提言時の但し書きの根拠）。
         assert out["capacity_estimated"].all(), "推定であることが失われている"
         assert (out["demand_value"] > 0).all(), out["demand_value"].tolist()
@@ -419,14 +560,7 @@ def _p29_students_needs_name_hint():
         # 「建築年」は児童生徒数と値域が重なる。中身だけで当てようとすると
         # これを生徒数として拾い、規模の重み付けが無意味な値で回る。
         rows = [
-            {
-                "lat": lat,
-                "lon": lon + i * 0.002,
-                "P29_004": 16,
-                "P29_005": f"支援校{i}",
-                "建築年": 1975 + i * 5,
-            }
-            for i in range(6)
+            {**r, "建築年": 1975 + i * 5} for i, r in enumerate(_p29_rows(n_special=6))
         ]
         path = _tmp_geojson(tmp, "p29.geojson", rows)
         _raises(lambda: fetch.normalize_schools(path), contains="児童生徒数")
@@ -438,14 +572,8 @@ def _p29_students_detected_with_hint():
         tmp = Path(d)
         lat, lon = _INSIDE
         rows = [
-            {
-                "lat": lat,
-                "lon": lon + i * 0.002,
-                "P29_004": 16,
-                "P29_005": f"支援校{i}",
-                "在籍者数": 100 + i * 30,
-            }
-            for i in range(6)
+            {**r, "在籍者数": 100 + i * 30}
+            for i, r in enumerate(_p29_rows(n_special=6, n_other=2))
         ]
         path = _tmp_geojson(tmp, "p29.geojson", rows)
         with _quiet():
