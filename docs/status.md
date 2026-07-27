@@ -220,6 +220,8 @@ npm run dev
 ```
 
 http://localhost:5173 を開く。止めるときは Ctrl+C、`cd ..` で戻る。
+Claude Code から起動するときは `.claude/launch.json` の `web` を使う
+（プレビュー用の設定を置いてある）。
 
 ### データを 1 レイヤー追加する
 
@@ -284,41 +286,51 @@ python -m etl.build --live
 
 いずれも精度を上げる作業で、無くても作品は成立する。
 
-1. **公共施設一覧（渋谷区・世田谷区）** — 投入済み。入手元と再現手順:
-
-   ```bash
-   # 渋谷区（SHIBUYA OPEN DATA「渋谷区の施設・事業所」527 件）
-   curl -sSL -o ~/Downloads/渋谷区_施設事業所.csv \
-     "https://city-shibuya-data.opendata.arcgis.com/api/download/v1/items/7b6a2843c05a44038c8970652270ac42/csv?layers=0"
-   # 世田谷区（自治体標準オープンデータセット「公共施設一覧」848 件）
-   curl -sSL -O --output-dir ~/Downloads \
-     "https://www.city.setagaya.lg.jp/documents/22308/01_131121_public_facility.csv"
-
-   python -m etl.fetch --normalize facilities \
-     ~/Downloads/渋谷区_施設事業所.csv ~/Downloads/01_131121_public_facility.csv --append
-   python -m etl.build --live
-   ```
-
-   `--append` は児童館 154 件（P14）を残すために必須。
-2. **WAM NET 障害福祉サービス等事業所** — 投入済み。入手元と再現手順:
-
-   ```bash
-   # サービス種別ごとに 29 分割。ファイル名の数字は都道府県コードではない
-   #（13 = 行動援護）。一覧は https://www.wam.go.jp/content/wamnet/pcpub/top/sfkopendata/
-   for n in 11 12 13 14 15 21 22 24 32 33 34 41 42 45 46 52 53 54 \
-            60 61 62 63 64 65 66 67 68 69 70; do
-     curl -sSL -o ~/Downloads/wam/$n.zip \
-       "https://www.wam.go.jp/content/files/pcpub/top/sfkopendata/202603/sfkopendata_202603_$n.zip"
-   done
-   # 各 zip を展開して CSV を 1 箇所に集めてから
-   python -m etl.fetch --normalize wamnet ~/Downloads/wam/csv/*.csv --replace
-   python -m etl.build --live
-   ```
-
-   `--replace` で P14 を入れ替える（併置すると同じ事業所を別名で二重に数える）。
-   都内に十数件しかない種別は 2 区に 1 件も無く、そのファイルは飛ばして進む。
-3. **P29 学校 / 都環境局 騒音 / e-Stat 昼間人口 / P13 公園** — 手順は同じ繰り返し。
+1. **P29 学校 / P04 精神科・心療内科 / 都環境局 騒音 / e-Stat 昼間人口 / P13 公園**
+   — 残る 5 レイヤー。手順は下の投入済み 2 件と同じ繰り返し。
+   これが片付くと警告バナーが消え、数値を提言として引用できる。
    騒音が入ると「点しかないものを面に変換する」という技術的主張が実データで示せる。
-4. **2 分プレゼン動画** — 素材は揃っている。
+2. **2 分プレゼン動画** — 素材は揃っている。
    「需要のみ→負荷のみ→設置優先度」の切り替えが掛け算モデルの実演になり、
-   渋谷駅前の根拠カードで実数（用途地域＝商業地域）が出る。
+   渋谷駅前の根拠カードで実数（用途地域＝商業地域、実定員）が出る。
+
+---
+
+## 投入済みレイヤーの入手元
+
+再取得・更新するときはこの手順をそのまま流す。
+
+### 公共施設一覧（渋谷区・世田谷区）→ `hosts`
+
+```bash
+# 渋谷区（SHIBUYA OPEN DATA「渋谷区の施設・事業所」527 件）
+curl -sSL -o ~/Downloads/渋谷区_施設事業所.csv \
+  "https://city-shibuya-data.opendata.arcgis.com/api/download/v1/items/7b6a2843c05a44038c8970652270ac42/csv?layers=0"
+# 世田谷区（自治体標準オープンデータセット「公共施設一覧」848 件）
+curl -sSL -O --output-dir ~/Downloads \
+  "https://www.city.setagaya.lg.jp/documents/22308/01_131121_public_facility.csv"
+
+python -m etl.fetch --normalize facilities \
+  ~/Downloads/渋谷区_施設事業所.csv ~/Downloads/01_131121_public_facility.csv --append
+python -m etl.build --live
+```
+
+`--append` は児童館 154 件（P14）を残すために必須。
+
+### WAM NET 障害福祉サービス等事業所 → `welfare`
+
+```bash
+# サービス種別ごとに 29 分割。ファイル名の数字は都道府県コードではない
+#（13 = 行動援護）。一覧は https://www.wam.go.jp/content/wamnet/pcpub/top/sfkopendata/
+for n in 11 12 13 14 15 21 22 24 32 33 34 41 42 45 46 52 53 54 \
+         60 61 62 63 64 65 66 67 68 69 70; do
+  curl -sSL -o ~/Downloads/wam/$n.zip \
+    "https://www.wam.go.jp/content/files/pcpub/top/sfkopendata/202603/sfkopendata_202603_$n.zip"
+done
+# 各 zip を展開して CSV を 1 箇所に集めてから
+python -m etl.fetch --normalize wamnet ~/Downloads/wam/csv/*.csv --replace
+python -m etl.build --live
+```
+
+`--replace` で P14 を入れ替える（併置すると同じ事業所を別名で二重に数える）。
+都内に十数件しかない種別は 2 区に 1 件も無く、そのファイルは飛ばして進む。
