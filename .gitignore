@@ -26,3 +26,7 @@ web/dist/
 Thumbs.db
 .vscode/
 .idea/
+
+# エージェント用のローカル設定。launch.json は共有してよいが
+# settings.local.json は環境ごとに違う。
+.claude/settings.local.json

@@ -555,6 +555,38 @@ def _facilities_detects_name_by_value():
         assert "図書館" in kinds, kinds
 
 
+@check("公共施設: 駐輪場・公衆便所・喫煙場所はホスト候補に入らない")
+def _facilities_rejects_non_hosts():
+    # 区の一覧には「◯◯駅前自転車等駐車場」「◯◯駅東口公衆便所」が施設と同じ
+    # 粒度で載っている。名称に「駅」が入るだけで拾っていたため、渋谷区 32 件・
+    # 世田谷区 10 件が供給側に混ざり、地図上は「到達できている」と見えていた。
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        lat, lon = _INSIDE
+        rows = [
+            {"緯度": lat, "経度": lon, "名称": "中央図書館"},
+            {"緯度": lat, "経度": lon + 0.002, "名称": "世田谷駅南自転車等駐車場"},
+            {"緯度": lat, "経度": lon + 0.004, "名称": "渋谷駅東口公衆便所"},
+            {"緯度": lat, "経度": lon + 0.006, "名称": "経堂駅指定喫煙場所"},
+            {"緯度": lat, "経度": lon + 0.008, "名称": "渋谷駅ハチ公口"},
+        ]
+        path = _tmp_csv(tmp, "facilities.csv", rows)
+        with _quiet():
+            out = fetch.normalize_hosts(path)
+        assert list(out["name"]) == ["中央図書館"], list(out["name"])
+
+
+@check("公共施設: 区名に都名が付いていても対象区として扱う")
+def _facilities_normalizes_ward():
+    # 「東京都渋谷区」のまま持つと TARGET_WARDS と一致せず、対象区の施設に
+    # 「対象区の所管外」という逆の注記が付いた提言が出る。
+    assert fetch.normalize_ward("東京都渋谷区") == "渋谷区"
+    assert fetch.normalize_ward("世田谷区") == "世田谷区"
+    # 「府中市」を都道府県付きと誤読して「中市」にしないこと。
+    assert fetch.normalize_ward("府中市") == "府中市"
+    assert fetch.normalize_ward(None) == ""
+
+
 # ---------------------------------------------------------------------------
 # 複数出典が同じレイヤーへ書くとき
 # ---------------------------------------------------------------------------
@@ -626,6 +658,35 @@ def _merge_same_source_replaces():
                 new, out, kind="p14-hosts", layer_key="hosts", merge=None
             )
         assert len(got) == 2, len(got)
+
+
+@check("--append で入れ直した出典は、古い行ではなく新しい行が残る")
+def _merge_append_prefers_new_rows():
+    # 既存を先に並べて統合していたため、同名・同位置の組では古い行が生き残り、
+    # 正規化を直して入れ直しても出力が 1 バイトも変わらなかった。
+    # 「直したのに効いていない」ことに気付けない壊れ方なので固定する。
+    with tempfile.TemporaryDirectory() as d:
+        out = Path(d) / "hosts.geojson"
+        old = _hosts_frame([("A図書館", 35.658, 139.701, "公共施設一覧")])
+        old["ward"] = "東京都渋谷区"
+        keep = _hosts_frame([("B児童館", 35.660, 139.703, "P14")])
+        keep["ward"] = "渋谷区"
+        _concat = gpd.GeoDataFrame(
+            pd.concat([old, keep], ignore_index=True), crs=old.crs
+        )
+        _concat.to_file(out, driver="GeoJSON")
+
+        new = _hosts_frame([("A図書館", 35.658, 139.701, "公共施設一覧")])
+        new["ward"] = "渋谷区"
+        with _quiet():
+            got = fetch._merge_with_existing(
+                new, out, kind="facilities", layer_key="hosts", merge="append"
+            )
+        assert len(got) == 2, len(got)
+        wards = dict(zip(got["name"], got["ward"]))
+        assert wards["A図書館"] == "渋谷区", wards
+        # 別出典（P14）は残っていること。
+        assert "B児童館" in wards, wards
 
 
 @check("同名で近い施設は 1 件に寄せ、同名でも離れていれば残す")

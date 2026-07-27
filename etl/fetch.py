@@ -121,10 +121,12 @@ COLUMN_MAP: dict[str, dict[str, tuple[str, ...]]] = {
         "name": ("測定地点", "地点名"),
     },
     "tokyo_public_facility": {
-        "name": ("施設名", "名称", "施設名称"),
+        # 「事業所名」は渋谷区（SHIBUYA OPEN DATA の施設・事業所一覧）、
+        # 「名称」は自治体標準オープンデータセット（世田谷区）の列名。
+        "name": ("施設名", "名称", "施設名称", "事業所名"),
         "lat": ("緯度",),
         "lon": ("経度",),
-        "ward": ("区市町村", "自治体名"),
+        "ward": ("区市町村", "自治体名", "所在地_市区町村", "地方公共団体名"),
     },
 }
 
@@ -309,6 +311,22 @@ def require_nonempty(n: int, *, tag: str, what: str, why: str) -> None:
     """
     if n == 0:
         raise ValueError(f"[{tag}] {what}が 0 件。{why}")
+
+
+def normalize_ward(value: object) -> str:
+    """区市町村名を「渋谷区」の形へ揃える。
+
+    出典によって「渋谷区」「東京都渋谷区」の両方が来る（渋谷区の一覧は
+    地方公共団体名の列に都名まで入っている）。揃えないと config.TARGET_WARDS と
+    一致せず、**対象区の施設に「対象区の所管外。区境をまたぐ連携が前提」という
+    逆の注記が付く**。提言の文面が変わるので表示だけの問題ではない。
+
+    正規表現で「◯◯区」を拾う書き方はしない。「府中市」の府を都道府県と
+    見なして「中市」になるような取り違えを作り込むだけなので、
+    都内のデータであることを使って先頭の「東京都」だけを落とす。
+    """
+    s = str(value or "").strip()
+    return s[len("東京都") :] if s.startswith("東京都") and s != "東京都" else s
 
 
 # 中身を見る価値のある拡張子。SHP は .shx/.dbf/.prj を伴うが、
@@ -1472,11 +1490,14 @@ def normalize_hosts(path: Path) -> gpd.GeoDataFrame:
             "「既存施設では到達不可」の件数が実態より多く出る。"
         ),
         # 中身から探す場合は「ホスト種別として判定できる名前が並んでいる列」を
-        # 目印にする。一覧には対象外の施設（学校・保育園）も含まれるため、
-        # 全件一致は期待できない。
+        # 目印にする。一覧には対象外の施設（学校・保育園・駐輪場）も含まれるため、
+        # 全件一致は期待できない。実データでは渋谷区 5.5% / 世田谷区 15% で、
+        # 一致率の下限では列を選べない。代わりに列名の手掛かりを必須にする
+        # （「地方公共団体名」のような別の名前列を掴まないための条件）。
         predicate=lambda s: s.astype(str).map(host_type).notna(),
-        min_ratio=0.15,
-        name_hint=r"施設|名称|名$",
+        min_ratio=0.05,
+        name_hint=r"施設|名称|名前|名$",
+        require_hint=True,
     )
     ward_col = optional_column(
         df,
@@ -1499,7 +1520,7 @@ def normalize_hosts(path: Path) -> gpd.GeoDataFrame:
     )
     gdf["name"] = gdf[name_col]
     gdf["host_kind"] = gdf["name"].map(host_type)
-    gdf["ward"] = gdf[ward_col] if ward_col else ""
+    gdf["ward"] = gdf[ward_col].map(normalize_ward) if ward_col else ""
     gdf["source"] = SOURCES["tokyo_public_facility"].label
     gdf["synthetic"] = False
     # ホスト種別を判定できない施設（学校・保育園等）は候補から外す。
@@ -1734,6 +1755,14 @@ def _merge_with_existing(
             f"    --append   既存と統合する（同一施設は名称と位置で 1 件に寄せる）\n"
             f"    --replace  既存を捨てて入れ替える\n"
         )
+
+    # 入れ直した出典の古い行は先に捨てる。残したまま統合すると、同名・同位置の
+    # 組では**先に並んでいる古い行が残り、正規化を直しても結果が変わらない**
+    # （区名の表記を揃える修正が効かず、件数も出力サイズも同じままだった）。
+    stale = existing["source"].isin(set(gdf["source"]))
+    if stale.any():
+        print(f"[merge] 入れ直した出典の既存 {int(stale.sum()):,}件は捨てる")
+    existing = existing[~stale]
 
     merged = _concat_layers([existing, gdf])
     print(f"[merge] 既存 {len(existing):,}件 + 新規 {len(gdf):,}件 → {len(merged):,}件")
