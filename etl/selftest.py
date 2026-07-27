@@ -555,6 +555,74 @@ def _facilities_detects_name_by_value():
         assert "図書館" in kinds, kinds
 
 
+@check("WAM NET: 29 サービス種別すべてに明示の需要重みがある")
+def _wamnet_all_types_weighted():
+    # 既定重み 0.50 へ落ちても警告しか出ない。全角の「就労継続支援Ａ型」を
+    # 半角前提のまま扱っていたため、東京都で最多の通所系 1,197 件が
+    # 0.90 ではなく 0.50 で計算される状態だった。
+    from .schema import (
+        WAMNET_SERVICE_TYPES,
+        WELFARE_DEMAND_WEIGHT,
+        normalize_welfare_type,
+    )
+
+    missing = [
+        t
+        for t in WAMNET_SERVICE_TYPES
+        if normalize_welfare_type(t) not in WELFARE_DEMAND_WEIGHT
+    ]
+    assert not missing, f"既定重みへ落ちる種別: {missing}"
+
+
+@check("WAM NET: 同じ事業所の別サービスを名寄せで消さない")
+def _wamnet_keeps_multi_service():
+    # 多機能型事業所は同一名称・同一住所で種別ごとに届け出る。名称だけで
+    # 寄せると 1 行しか残らず、**残りの定員が黙って消える**（需要が下がる
+    # 方向の誤りなので地図を見ても気付けない）。
+    from shapely.geometry import Point
+
+    rows = [
+        ("◯◯作業所", "就労継続支援B型", 20.0),
+        ("◯◯作業所", "生活介護", 20.0),
+        # 同名・同種別・同位置なら 1 件に寄せる（出典をまたいだ重複）。
+        ("◯◯作業所", "生活介護", 20.0),
+    ]
+    gdf = gpd.GeoDataFrame(
+        {
+            "name": [r[0] for r in rows],
+            "kind": [r[1] for r in rows],
+            "capacity": [r[2] for r in rows],
+        },
+        geometry=[Point(139.7016, 35.6580)] * len(rows),
+        crs="EPSG:4326",
+    )
+    with _quiet():
+        out = fetch.dedupe_points(gdf, tag="test")
+    assert len(out) == 2, f"種別の違う 2 件が残るはずが {len(out)} 件"
+    assert out["capacity"].sum() == 40.0, out["capacity"].tolist()
+
+
+@check("WAM NET: 定員が空の行は種別ごとの仮定員で補う")
+def _wamnet_capacity_fallback_by_kind():
+    # 訪問系・相談系には制度上定員が無く、WAM NET でも空欄になる。
+    # 一律の既定値で埋めると、人が集まらない拠点に通所系と同じ規模を与える。
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        lat, lon = _INSIDE
+        rows = [
+            {"事業所緯度": lat, "事業所経度": lon, "事業所の名称": "A",
+             "サービス種別": "居宅介護", "定員": ""},
+            {"事業所緯度": lat, "事業所経度": lon + 0.002, "事業所の名称": "B",
+             "サービス種別": "生活介護", "定員": 40},
+        ]
+        path = _tmp_csv(tmp, "wamnet.csv", rows)
+        with _quiet():
+            out = fetch.normalize_wamnet(path)
+        cap = dict(zip(out["name"], out["capacity"]))
+        assert cap["B"] == 40.0, cap
+        assert cap["A"] == 5.0, f"居宅介護の仮定員は 5 人のはず: {cap}"
+
+
 @check("公共施設: 駐輪場・公衆便所・喫煙場所はホスト候補に入らない")
 def _facilities_rejects_non_hosts():
     # 区の一覧には「◯◯駅前自転車等駐車場」「◯◯駅東口公衆便所」が施設と同じ

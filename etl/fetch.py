@@ -106,13 +106,14 @@ COLUMN_MAP: dict[str, dict[str, tuple[str, ...]]] = {
     "ksj_a29_youto": {
         "zoning_code": ("A29_004", "A29_005"),
     },
+    # 実列名は WAM NET オープンデータ（2026年3月末・サービス種別ごとに 29 分割）で確認した。
     "wamnet_jigyosho": {
-        "name": ("事業所名称", "事業所名"),
+        "name": ("事業所名称", "事業所名", "事業所の名称"),
         "kind": ("サービス種別", "サービスの種類"),
         "capacity": ("定員", "利用定員"),
-        "address": ("事業所住所", "所在地", "事業所所在地"),
-        "lat": ("緯度",),
-        "lon": ("経度",),
+        "address": ("事業所住所", "所在地", "事業所所在地", "事業所住所（市区町村）"),
+        "lat": ("緯度", "事業所緯度"),
+        "lon": ("経度", "事業所経度"),
     },
     "tokyo_road_noise": {
         "laeq_db": ("昼間等価騒音レベル", "LAeq昼間", "等価騒音レベル(昼間)"),
@@ -303,14 +304,35 @@ SCHOOL_STUDENTS_FALLBACK = 150.0
 WAMNET_CAPACITY_FALLBACK = 20.0
 
 
-def require_nonempty(n: int, *, tag: str, what: str, why: str) -> None:
+# 複数ファイルを並べて正規化するときだけ run_normalizer が立てる。
+# 分割された 1 ファイルが 0 件なのは、取り違えではなく「その種別の事業所が
+# この 2 区に無い」だけのことがある（WAM NET の療養介護は都内 13 件で、
+# 渋谷区・世田谷区には 1 件も無い）。総数が 0 なら run_normalizer が止める。
+ALLOW_EMPTY_PER_FILE = False
+
+
+class EmptyInThisFile(Exception):
+    """このファイルには対象範囲の行が無い（複数ファイル指定時のみ使う）。"""
+
+
+def require_nonempty(
+    n: int, *, tag: str, what: str, why: str, per_file: bool = False
+) -> None:
     """絞り込みの結果が 0 件なら止める。
 
     列を取り違えると「条件に合う行が 1 件も無い」形で現れることがある。
     0 件のレイヤーは、実データとして数えられたまま構成要素を消してしまう。
+
+    per_file=True は「対象範囲に入る件数」の検査に付ける。複数ファイルを
+    並べたときに限り警告へ落とす（上の ALLOW_EMPTY_PER_FILE）。
+    列の取り違えを検査するものには付けない。
     """
-    if n == 0:
-        raise ValueError(f"[{tag}] {what}が 0 件。{why}")
+    if n:
+        return
+    if per_file and ALLOW_EMPTY_PER_FILE:
+        print(f"[{tag}] {what}が 0 件。このファイルは飛ばす", file=sys.stderr)
+        raise EmptyInThisFile(f"[{tag}] {what}が 0 件")
+    raise ValueError(f"[{tag}] {what}が 0 件。{why}")
 
 
 def normalize_ward(value: object) -> str:
@@ -717,7 +739,11 @@ def normalize_schools(path: Path, assume_missing: bool = False) -> gpd.GeoDataFr
     gdf = clip_to_study_area(gpd.read_file(path).to_crs(CRS_GEOGRAPHIC))
     total = len(gdf)
     require_nonempty(
-        total, tag="p29", what="研究領域内の学校", why="対象範囲か入力を確認すること。"
+        total,
+        tag="p29",
+        what="研究領域内の学校",
+        why="対象範囲か入力を確認すること。",
+        per_file=True,
     )
 
     cls = require_column(
@@ -1107,6 +1133,7 @@ def normalize_wamnet(
         tag="wamnet",
         what="研究領域内の事業所",
         why=f"{len(df):,}件を読んだが対象 2 区に入るものが無い。",
+        per_file=True,
     )
 
     kinds = gdf[kind_col].astype(str).map(normalize_welfare_type)
@@ -1131,12 +1158,15 @@ def normalize_wamnet(
         capacity = pd.to_numeric(gdf[cap_col], errors="coerce")
         blank = int(capacity.isna().sum())
         if blank:
+            # 訪問系・相談系・居住系には制度上そもそも定員が無く、WAM NET でも
+            # 空欄になる。一律の既定値で埋めると「人が集まらない拠点」に
+            # 通所系と同じ規模を与えるので、種別ごとの仮定員へ寄せる。
             print(
                 f"[wamnet] {cap_col} が空の {blank:,}/{len(gdf):,}件は"
-                f"既定値 {WAMNET_CAPACITY_FALLBACK:.0f}人で補う（訪問系は定員なし）",
+                "種別ごとの仮定員で補う（訪問系・相談系は制度上定員なし）",
                 file=sys.stderr,
             )
-        capacity = capacity.fillna(WAMNET_CAPACITY_FALLBACK)
+        capacity = capacity.fillna(kinds.map(assumed_capacity))
         print(
             f"[wamnet] 研究領域内 {len(gdf):,}件 / "
             f"定員 {capacity.min():.0f}〜{capacity.max():.0f}人（{cap_col}）"
@@ -1651,11 +1681,31 @@ def run_normalizer(
             inspect_columns(p)
         raise SystemExit("入力ファイルが見つからない。上の一覧から正しいパスを選ぶこと。")
 
+    # 分割ファイルを並べて渡すときは、1 ファイルに対象範囲の行が無いことを
+    # 許す（WAM NET はサービス種別ごとに 29 分割で、都内に十数件しかない
+    # 種別は 2 区に 1 件も無い）。総数が 0 なら下で止める。
+    global ALLOW_EMPTY_PER_FILE
+    ALLOW_EMPTY_PER_FILE = len(paths) > 1
+
     frames = []
+    skipped: list[str] = []
     for p in paths:
         if len(paths) > 1:
             print(f"\n=== {p.name} ===")
-        frames.append(func(p, **kwargs))
+        try:
+            frames.append(func(p, **kwargs))
+        except EmptyInThisFile:
+            skipped.append(p.name)
+    ALLOW_EMPTY_PER_FILE = False
+
+    if skipped:
+        print(f"\n[normalize] 対象範囲に行が無く飛ばした {len(skipped)} ファイル: "
+              f"{', '.join(skipped)}")
+    if not frames:
+        raise SystemExit(
+            f"[{kind}] 渡した {len(paths)} ファイルのどれにも対象範囲の行が無い。"
+            "入力ファイルと対象範囲（data/processed/area.geojson）を確認すること。"
+        )
     gdf = frames[0] if len(frames) == 1 else _concat_layers(frames)
 
     out = DATA_PROCESSED / PROCESSED_FILES[layer_key]
@@ -1688,6 +1738,12 @@ def dedupe_points(gdf: gpd.GeoDataFrame, tag: str) -> gpd.GeoDataFrame:
     座標を丸めて格子で寄せる方法は使わない。格子の境目に落ちた 2 点は
     数十 m しか離れていなくても別扱いになる（実際に 44m ずれの例で外した）。
     名称でまとめてから実距離で見る。同名の組は小さいので総当たりで足りる。
+
+    **サービス種別（`kind`）は名称と併せて鍵にする。** 多機能型事業所は
+    同じ住所・同じ名称で就労継続支援Ｂ型と生活介護を別々に届け出ており、
+    WAM NET のオープンデータでも種別ごとに別ファイル・別行で入る。
+    名称だけで寄せると、そのうち 1 行だけを残して**残りの定員を黙って捨てる**
+    （需要スコアが下がる方向の誤りなので、地図を見ても気付けない）。
     """
     if "name" not in gdf.columns or len(gdf) == 0:
         return gdf
@@ -1695,6 +1751,8 @@ def dedupe_points(gdf: gpd.GeoDataFrame, tag: str) -> gpd.GeoDataFrame:
     # 全角空白・記号のゆれだけを吸収する。「区立」の有無のような
     # 実質的な差は残す——別施設を潰す方が、重複を残すより悪い。
     norm = gdf["name"].astype(str).str.replace(r"[\s　・]", "", regex=True)
+    if "kind" in gdf.columns:
+        norm = norm + "\x00" + gdf["kind"].astype(str)
     metric = gdf.to_crs(CRS_PROJECTED).geometry
 
     drop: set = set()
