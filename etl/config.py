@@ -352,7 +352,8 @@ SOURCES: dict[str, Source] = {
         url="https://www.wam.go.jp/content/wamnet/pcpub/top/sfkopendata/",
         kind="csv",
         license="WAM NET 二次利用可（出典表示）",
-        note="都道府県別 CSV。東京都分を抽出し住所からジオコーディングする。",
+        note="サービス種別ごとに 29 分割された全国 CSV（都道府県別ではない）。"
+        "事業所緯度・経度を持つのでジオコーディングは不要。",
     ),
     "ksj_p29_school": Source(
         key="ksj_p29_school",
@@ -368,7 +369,7 @@ SOURCES: dict[str, Source] = {
         url="https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-P14-v2_1.html",
         kind="shp",
         license="国土数値情報 利用約款（出典表示）",
-        note="WAM NET のジオコーディング失敗分を補完する座標つきデータ。",
+        note="需要側は WAM NET へ置き換えた。現在はホスト施設（児童館）の出典。",
     ),
     "ksj_p04_medical": Source(
         key="ksj_p04_medical",

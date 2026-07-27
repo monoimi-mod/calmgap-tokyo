@@ -298,39 +298,55 @@ python -m etl.build --live
 
 ## 投入済みレイヤーの入手元
 
-再取得・更新するときはこの手順をそのまま流す。
+落とした生データは **`data/raw/`** に置く（`.gitignore` 済み。大きく、
+再取得できるので追跡しない）。再取得・更新するときはこの手順をそのまま流す。
 
 ### 公共施設一覧（渋谷区・世田谷区）→ `hosts`
 
 ```bash
+mkdir -p data/raw/facilities
 # 渋谷区（SHIBUYA OPEN DATA「渋谷区の施設・事業所」527 件）
-curl -sSL -o ~/Downloads/渋谷区_施設事業所.csv \
+curl -sSL -o data/raw/facilities/渋谷区_施設事業所.csv \
   "https://city-shibuya-data.opendata.arcgis.com/api/download/v1/items/7b6a2843c05a44038c8970652270ac42/csv?layers=0"
 # 世田谷区（自治体標準オープンデータセット「公共施設一覧」848 件）
-curl -sSL -O --output-dir ~/Downloads \
+curl -sSL -O --output-dir data/raw/facilities \
   "https://www.city.setagaya.lg.jp/documents/22308/01_131121_public_facility.csv"
 
 python -m etl.fetch --normalize facilities \
-  ~/Downloads/渋谷区_施設事業所.csv ~/Downloads/01_131121_public_facility.csv --append
+  data/raw/facilities/渋谷区_施設事業所.csv \
+  data/raw/facilities/01_131121_public_facility.csv --append
 python -m etl.build --live
 ```
 
 `--append` は児童館 154 件（P14）を残すために必須。
 
+渋谷区には別途「公立図書館情報」の CSV もあるが、`名称` が「中央」「西原」の
+ように館名の一部しか入らないため種別を判定できず、この用途では使えない
+（図書館 9 件は上の施設・事業所一覧から取れている）。
+
 ### WAM NET 障害福祉サービス等事業所 → `welfare`
 
 ```bash
+mkdir -p data/raw/wamnet/zip data/raw/wamnet/csv
 # サービス種別ごとに 29 分割。ファイル名の数字は都道府県コードではない
 #（13 = 行動援護）。一覧は https://www.wam.go.jp/content/wamnet/pcpub/top/sfkopendata/
 for n in 11 12 13 14 15 21 22 24 32 33 34 41 42 45 46 52 53 54 \
          60 61 62 63 64 65 66 67 68 69 70; do
-  curl -sSL -o ~/Downloads/wam/$n.zip \
+  curl -sSL -o data/raw/wamnet/zip/$n.zip \
     "https://www.wam.go.jp/content/files/pcpub/top/sfkopendata/202603/sfkopendata_202603_$n.zip"
 done
-# 各 zip を展開して CSV を 1 箇所に集めてから
-python -m etl.fetch --normalize wamnet ~/Downloads/wam/csv/*.csv --replace
+# zip の中は全国分の CSV 1 本（種別ごと）。名前が全部同じなので種別番号で置く
+for z in data/raw/wamnet/zip/*.zip; do
+  n=$(basename "$z" .zip)
+  unzip -p "$z" '*.csv' > data/raw/wamnet/csv/wamnet_$n.csv
+done
+
+python -m etl.fetch --normalize wamnet data/raw/wamnet/csv/*.csv --replace
 python -m etl.build --live
 ```
+
+展開後の CSV は全国分で 116MB ある。ディスクを空けたいときは
+`rm -rf data/raw/wamnet/csv`（32MB の zip から上の 1 行で戻せる）。
 
 `--replace` で P14 を入れ替える（併置すると同じ事業所を別名で二重に数える）。
 都内に十数件しかない種別は 2 区に 1 件も無く、そのファイルは飛ばして進む。
