@@ -409,6 +409,12 @@ def _p29_rows(n_special: int = 3, n_other: int = 4) -> list[dict]:
     """実データ第2.0版の形をした P29 の行を作る。
 
         P29_003 学校分類コード（16012 = 特別支援学校）/ P29_004 名称
+        P29_006 設置者コード（1 国立 / 2 都道府県立 / 3 市区町村立 / 4 私立）
+
+    設置者は「国立・私立が都教委の調査に載らないこと」と
+    「名寄せの失敗」を切り分けるために要る。名称の 3 グループが
+    3 つの別々のコードに割れることが列を特定する条件なので、
+    都立だけの行では成立しない——実データと同じ 4 種を混ぜておく。
     """
     lat, lon = _INSIDE
     rows = [
@@ -417,6 +423,7 @@ def _p29_rows(n_special: int = 3, n_other: int = 4) -> list[dict]:
             "lon": lon + i * 0.002,
             "P29_003": "16012",
             "P29_004": f"東京都立第{i}特別支援学校",
+            "P29_006": "2",
         }
         for i in range(n_special)
     ]
@@ -426,10 +433,66 @@ def _p29_rows(n_special: int = 3, n_other: int = 4) -> list[dict]:
             "lon": lon + i * 0.002,
             "P29_003": "16001",
             "P29_004": f"区立第{i}小学校",
+            "P29_006": "3",
         }
         for i in range(n_other)
     ]
     return rows
+
+
+def _p29_mixed_founders() -> list[dict]:
+    """設置者が 4 種そろった特別支援学校の行（23 区の実際の内訳と同じ形）。
+
+    都立 2・区立 1・国立 1・私立 1。国立と私立は東京都教育委員会の
+    在籍者数調査に載らないので、突き合わせの結果が 3 通りに分かれる。
+    """
+    lat, lon = _INSIDE
+    spec = [
+        ("東京都立城南特別支援学校", "2"),
+        ("都立城東特別支援学校", "2"),  # 「東京都立」と「都立」は実データでも混在
+        ("新宿区立新宿養護学校", "3"),
+        ("筑波大学附属大塚特別支援学校", "1"),
+        ("旭出学園", "4"),
+    ]
+    rows = [
+        {
+            "lat": lat,
+            "lon": lon + i * 0.002,
+            "P29_003": "16012",
+            "P29_004": name,
+            "P29_006": founder,
+        }
+        for i, (name, founder) in enumerate(spec)
+    ]
+    # 分類コードの列は「2〜30 種のコードを持つ列」であることも条件なので、
+    # 特別支援学校以外の学校を混ぜておく（実データも小中高が同居している）。
+    rows += [
+        {
+            "lat": lat + 0.002,
+            "lon": lon + i * 0.002,
+            "P29_003": "16001",
+            "P29_004": f"区立第{i}小学校",
+            "P29_006": "3",
+        }
+        for i in range(2)
+    ]
+    return rows
+
+
+def _sped_enrollment_csv(tmp: Path, rows: list[tuple[str, str, int]], total: int | None = None) -> Path:
+    """都教委の在籍者数 CSV と同じ形（学校番号・設置者・学校名・在籍者数/総数）。
+
+    1 行 = 学校 × 障害種別なので、同じ学校番号を 2 行に分けられる。
+    """
+    path = tmp / "zaiseki.csv"
+    lines = ["学校番号,設置者,障害種別,学校名,在籍者数/総数"]
+    for sid, name, n in rows:
+        lines.append(f"{sid},東京都,知的,{name},{n}")
+    if total is None:
+        total = sum(n for _, _, n in rows)
+    lines.append(f"合計,,,,{total}")
+    path.write_text("\n".join(lines) + "\n", encoding="cp932")
+    return path
 
 
 @check("P29: 学校名の列を特定できなければ止まる（分類コードの裏取りができない）")
@@ -575,14 +638,16 @@ def _p29_requires_special_needs_rows():
         _raises(lambda: fetch.normalize_schools(path), contains="1 つも無かった")
 
 
-@check("P29: 生徒数の列が無ければ止まり、--assume-missing でだけ通る")
+@check("P29: 在籍者数の出典が無ければ止まり、--assume-missing でだけ通る")
 def _p29_students():
     with tempfile.TemporaryDirectory() as d:
         tmp = Path(d)
         lat, lon = _INSIDE
         rows = _p29_rows(n_special=3)
         path = _tmp_geojson(tmp, "p29.geojson", rows)
-        _raises(lambda: fetch.normalize_schools(path), contains="児童生徒数")
+        # P29 は在籍者数を持たない。黙って既定値で埋めると、
+        # このレイヤーが規模を失って「近くに学校があるか」のフラグになる。
+        _raises(lambda: fetch.normalize_schools(path), contains="在籍者数の出典")
 
         with _quiet():
             out = fetch.normalize_schools(path, assume_missing=True)
@@ -590,6 +655,83 @@ def _p29_students():
         assert (out["capacity"] == fetch.SCHOOL_STUDENTS_FALLBACK).all(), (
             "既定値が入っていない"
         )
+        # 既定値で埋めたことが列に残ること（規模不明の件数を数える根拠）。
+        assert out["students_assumed"].all(), "既定値であることが失われている"
+
+
+@check("P29: 在籍者数 CSV から実数を当て、併置校は 1 校に合算する")
+def _p29_students_from_csv():
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        path = _tmp_geojson(tmp, "p29.geojson", _p29_mixed_founders())
+        # 城南は肢体と病弱で 2 行に分かれる（実データの光明学園と同じ形）。
+        csv = _sped_enrollment_csv(
+            tmp,
+            [
+                ("811050", "城南特別支援学校", 131),
+                ("811050", "城南特別支援学校", 47),
+                ("812490", "城東特別支援学校", 275),
+                ("821010", "新宿養護学校", 46),
+            ],
+        )
+        with _quiet():
+            out = fetch.normalize_schools(path, students_path=csv)
+        got = dict(zip(out["name"], out["capacity"]))
+        assert got["東京都立城南特別支援学校"] == 178, f"合算していない: {got}"
+        assert got["都立城東特別支援学校"] == 275, got
+        assert got["新宿区立新宿養護学校"] == 46, got
+        # 私立は自己公表値の対照表から、国立は公表が無いので既定値。
+        assert got["旭出学園"] == 90, got
+        assert got["筑波大学附属大塚特別支援学校"] == fetch.SCHOOL_STUDENTS_FALLBACK, got
+        assumed = dict(zip(out["name"], out["students_assumed"]))
+        assert assumed["筑波大学附属大塚特別支援学校"], "規模不明が区別されていない"
+        assert not assumed["旭出学園"], "公表値なのに規模不明になっている"
+
+
+@check("P29: 公立が在籍者数 CSV と一致しなければ止まる（名寄せの綻びを既定値で埋めない）")
+def _p29_students_unmatched_public():
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        path = _tmp_geojson(tmp, "p29.geojson", _p29_mixed_founders())
+        # 城東が CSV に無い。国立・私立と同じ扱いで既定値に流すと、
+        # 「規模が消えた」ことが出力を眺めても分からない。
+        csv = _sped_enrollment_csv(
+            tmp,
+            [("811050", "城南特別支援学校", 131), ("821010", "新宿養護学校", 46)]
+            # 都内の他区の学校（研究領域の外にもあるので CSV には載る）。
+            # 在籍者数の異なり値を実データ並みに保つための埋め草でもある。
+            + [(f"8125{i:02d}", f"第{i}特別支援学校", 200 + i * 30) for i in range(4)],
+        )
+        _raises(
+            lambda: fetch.normalize_schools(path, students_path=csv),
+            contains="城東特別支援学校",
+        )
+
+
+@check("P29: 在籍者数 CSV の合計行と合わなければ止まる（行の取りこぼし・二重計上）")
+def _p29_students_total_mismatch():
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        csv = _sped_enrollment_csv(
+            tmp,
+            [(f"8120{i:02d}", f"第{i}特別支援学校", 100 + i * 20) for i in range(6)],
+            total=500,  # ファイルが主張する合計と合わない
+        )
+        _raises(lambda: fetch.read_school_enrollment(csv), contains="合計が合わない")
+
+
+@check("P29: 設置者の接頭辞を外して突き合わせる（「東京都立」と「都立」の混在）")
+def _school_name_normalization():
+    from etl.schema import normalize_school_name as norm
+
+    assert norm("東京都立城南特別支援学校") == "城南特別支援学校"
+    assert norm("都立城東特別支援学校") == "城東特別支援学校"
+    assert norm("新宿区立新宿養護学校") == "新宿養護学校"
+    assert norm("旭出学園") == "旭出学園"
+    # 「◯◯立」を含まない学校名を削らないこと。
+    assert norm("筑波大学附属大塚特別支援学校") == "筑波大学附属大塚特別支援学校"
+    # 欠測が名前として持ち回られないこと（normalize_ward で一度やらかしている）。
+    assert norm(float("nan")) == ""
 
 
 @check("P14: 施設名称の列を特定できなければ止まる（都道府県名の列を掴まない）")
@@ -658,7 +800,8 @@ def _p29_students_needs_name_hint():
             {**r, "建築年": 1975 + i * 5} for i, r in enumerate(_p29_rows(n_special=6))
         ]
         path = _tmp_geojson(tmp, "p29.geojson", rows)
-        _raises(lambda: fetch.normalize_schools(path), contains="児童生徒数")
+        # 建築年を拾っていれば「出典が無い」ではなく通ってしまう。
+        _raises(lambda: fetch.normalize_schools(path), contains="在籍者数の出典")
 
 
 @check("P29: 列名が違っても、名前に手掛かりがあれば生徒数を特定する")

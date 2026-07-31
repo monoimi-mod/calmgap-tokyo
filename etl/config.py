@@ -199,7 +199,8 @@ DEMAND_COMPONENTS: tuple[Component, ...] = (
         side="demand",
         weight=0.8,
         sign=1,
-        source="国土数値情報 P29 学校",
+        source="国土数値情報 P29 学校（位置）＋ 東京都教育委員会 公立学校統計調査"
+        "報告書 学校別在籍者数（規模。45 校中 42 校が実数、国立 3 校は規模不明）",
         rationale="通学は選択の余地がない移動であり、児童生徒本人と送迎者の双方が"
         "同一時間帯に同一地点へ集中する。",
     ),
@@ -464,7 +465,18 @@ SOURCES: dict[str, Source] = {
         url="https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-P29.html",
         kind="shp",
         license="国土数値情報 利用約款（出典表示）",
-        note="P29_004 学校分類コード 16 = 特別支援学校。P29_009 に児童生徒数。",
+        note="P29_003 学校分類コード 16012 = 特別支援学校。"
+        "**在籍者数は持たない**ので規模は tokyo_sped_enrollment から当てる。",
+    ),
+    "tokyo_sped_enrollment": Source(
+        key="tokyo_sped_enrollment",
+        label="東京都教育委員会 公立学校統計調査報告書（学校別在籍者数）",
+        url="https://www.kyoiku.metro.tokyo.lg.jp/about/statistics_and_research"
+        "/list_of_public_school/school_lists2025/report2025_csv",
+        kind="csv",
+        license="東京都 オープンデータ（出典表示）",
+        note="令和7年度・5月1日現在。**公立のみ**が対象で国立・私立は載らない。"
+        "1 行 = 学校 × 障害種別で、併置校は同じ学校番号が複数行に分かれる。",
     ),
     "ksj_p14_welfare": Source(
         key="ksj_p14_welfare",

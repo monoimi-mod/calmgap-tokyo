@@ -188,6 +188,9 @@ def special_schools(rng: np.random.Generator, n: int = 9) -> gpd.GeoDataFrame:
             "lon": lon,
             "lat": lat,
             "source": SYNTHETIC_SOURCE,
+            # 実データ側と列をそろえる。模擬の在籍者数は乱数なので、
+            # 「実数ではない」という意味では規模不明と同じ扱いにする。
+            "students_assumed": True,
             "synthetic": True,
         }
     )

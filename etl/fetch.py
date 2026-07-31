@@ -61,8 +61,12 @@ from .schema import (
     PSYCH_CLINIC_ABBREV,
     PSYCH_CLINIC_KEYWORDS,
     SCHOOL_CLASS_SPECIAL_NEEDS,
+    SCHOOL_FOUNDER_NAME_PATTERNS,
     SCHOOL_NAME_PATTERN,
+    SCHOOL_STUDENTS_SELF_REPORTED,
+    SCHOOL_STUDENTS_UNKNOWN_LABEL,
     SPECIAL_NEEDS_NAME_PATTERN,
+    normalize_school_name,
     ZONING_LOAD,
     ZONING_LOAD_DEFAULT,
     host_type,
@@ -99,6 +103,18 @@ COLUMN_MAP: dict[str, dict[str, tuple[str, ...]]] = {
         # P29_009 は第2.0版ではキャンパス名で、数値化すると全件 NaN になる。
         # 将来の版が持つなら列名をここへ足す。無い年度は --assume-missing。
         "students": ("児童生徒数", "生徒数"),
+        # 設置者コード。国立・私立は都教委の在籍者数調査の対象外なので、
+        # 「一致しなかった」のか「元々載らない」のかをこれで切り分ける。
+        "founder": ("P29_006",),
+    },
+    # 東京都教育委員会 公立学校統計調査報告書【東京都公立学校一覧】の
+    # 「特別支援学校（学校別在籍者数）」CSV。列名は 1 行目に平坦に並ぶ
+    # （Excel 版は 6 段のセル結合ヘッダなので CSV 版を使う）。
+    #   学校番号 / 設置者 / 障害種別 / 併置校 / 学校名 / 在籍者数/総数 / …
+    "tokyo_sped_enrollment": {
+        "school_id": ("学校番号",),
+        "name": ("学校名",),
+        "students": ("在籍者数/総数", "在籍者数／総数", "在籍者数"),
     },
     # 実データ P14-21_13（東京都・2022-03-11 版）で確認済み。
     #   P14_001 都道府県名 / P14_002 市区町村名 / P14_003 行政区域コード
@@ -1096,7 +1112,235 @@ def _pick_school_class_column(
     return col
 
 
-def normalize_schools(path: Path, assume_missing: bool = False) -> gpd.GeoDataFrame:
+def _pick_school_founder_column(gdf: gpd.GeoDataFrame, name_col: str) -> str:
+    """設置者コードの列を、名称で裏を取りながら決める。
+
+    使い道は 1 つだけ——**在籍者数が一致しなかった学校を、
+    「突き合わせに失敗した」と「元々その調査の対象外」に切り分ける。**
+    都教委の調査は公立だけなので、国立・私立が漏れるのは正常だが、
+    都立が 1 校でも漏れたら名寄せが壊れている。両者を区別できないと、
+    名寄せの綻びが黙って既定値 150 人になる。
+
+    列名 `P29_006` は他の 5 桁コード列と形が同じで、「小さな整数の列」では
+    選べない。そこで**名称から作った 3 グループ**（区市町村立・大学附属・
+    東京都立）が、その列で**3 つの別々の値にちょうど割れる**ことを条件にする。
+    版がずれて別の意味の列を掴めば、この対応は成立せず止まる。
+    """
+    names = gdf[name_col].astype(str)
+    groups = {
+        label: names.str.contains(pattern, na=False)
+        for label, pattern in SCHOOL_FOUNDER_NAME_PATTERNS.items()
+    }
+    empty = [label for label, mask in groups.items() if not mask.any()]
+    if empty:
+        raise ValueError(
+            f"名称から設置者を推し量れるグループが空: {', '.join(empty)}。\n"
+            f"    {name_col} が学校名の列か確認すること: {list(names.head(5))}\n"
+            "schema.SCHOOL_FOUNDER_NAME_PATTERNS を実データに合わせること。"
+        )
+
+    for col in COLUMN_MAP["ksj_p29_school"]["founder"] + tuple(gdf.columns):
+        if col not in gdf.columns or col in ("geometry", name_col):
+            continue
+        values = gdf[col].astype(str)
+        if not 2 <= int(values.nunique()) <= 8:
+            continue
+        # 各グループが 1 つの値だけを取り、かつグループ同士で値が重ならないこと。
+        codes = {}
+        for label, mask in groups.items():
+            taken = set(values[mask].unique())
+            if len(taken) != 1:
+                break
+            codes[label] = taken.pop()
+        else:
+            if len(set(codes.values())) == len(codes):
+                print(
+                    f"[p29] 設置者コードの列 = {col}"
+                    f"（{' / '.join(f'{v}={k}' for k, v in codes.items())}）"
+                )
+                return col
+
+    raise ValueError(
+        "\n".join(
+            [
+                "設置者コードの列を特定できない。",
+                "名称から分かる 3 グループ"
+                f"（{' / '.join(f'{k} {int(m.sum())}件' for k, m in groups.items())}）"
+                "が、3 つの別々の値にきれいに割れる列が無かった。",
+                "",
+                "各列の実際の値:",
+                *_column_samples(gdf),
+                "",
+                "設置者コードが無い版なら、在籍者数の突き合わせは使えない。"
+                "公立の未一致を検出できなくなるため --assume-missing で通すこと。",
+            ]
+        )
+    )
+
+
+def read_school_enrollment(path: Path) -> dict[str, int]:
+    """東京都教育委員会の在籍者数 CSV を「学校名 → 在籍者数」に畳む。
+
+    **1 行が 1 校ではない。** 併置校は障害種別ごとに行が分かれ、
+    同じ学校番号が 2 行に載る（光明学園 = 肢体 209 + 病弱 47）。
+    1 行だけ採ると規模を 2〜3 割取りこぼす。S12 の駅（駅×事業者×路線）と
+    同じ型なので、学校番号で束ねて合算する。
+
+    最終行の「合計」は集計結果の検算に使ってから捨てる。**合算を
+    忘れた／二重に数えた場合はここで合わないので黙って通らない。**
+    """
+    df = read_csv_japanese(path)
+    id_col = require_column(
+        df, path, "tokyo_sped_enrollment", "school_id",
+        tag="sped-students", label="学校番号",
+        why="併置校を 1 校に束ねる鍵。無いと障害種別ごとに別の学校として数える。",
+    )
+    name_col = require_column(
+        df, path, "tokyo_sped_enrollment", "name",
+        tag="sped-students", label="学校名",
+        why="P29 の学校と突き合わせる鍵。",
+        predicate=lambda s: s.astype(str).str.contains(
+            SPECIAL_NEEDS_NAME_PATTERN + r"|学園", na=False
+        ),
+        # 合計行など学校名が空の行が混ざるため 100% にはならない。
+        # 条件を緩めても誤って別の列を掴む余地は無い——設置者（"東京都"）も
+        # 障害種別（"知的"）も、この語をひとつも含まない。
+        min_ratio=0.6,
+    )
+    stu_col = require_column(
+        df, path, "tokyo_sped_enrollment", "students",
+        tag="sped-students", label="在籍者数（総数）",
+        why=(
+            "このレイヤーの規模そのもの。学部別の列を掴むと総数を大きく取りこぼす。\n"
+            "Excel 版はヘッダが 6 段のセル結合なので、CSV 版を使うこと。"
+        ),
+        predicate=lambda s: pd.to_numeric(s, errors="coerce").between(1, 5000),
+        # 設置者・障害種別・併置校のような区分の列を掴まないための下限。
+        # 実データは 63 校で 60 以上の異なり値を持つ。
+        whole=lambda s: int(pd.to_numeric(s, errors="coerce").nunique()) >= 5,
+    )
+
+    ids = df[id_col].astype(str).str.strip()
+    is_school = ids.str.fullmatch(r"\d+")
+    students = pd.to_numeric(df[stu_col], errors="coerce")
+
+    # 合計行（学校番号が数値でない行）を検算に使う。
+    total_rows = students[~is_school].dropna()
+    rows = df[is_school].assign(_n=students[is_school])
+    require_nonempty(
+        len(rows), tag="sped-students",
+        what="学校番号を持つ行", why=f"{path.name} が在籍者数 CSV か確認すること。",
+    )
+    grouped = rows.groupby(ids[is_school]).agg(name=(name_col, "first"), n=("_n", "sum"))
+    if len(total_rows):
+        stated = float(total_rows.max())
+        if abs(grouped["n"].sum() - stated) > 0.5:
+            raise ValueError(
+                f"{path.name} の合計が合わない: "
+                f"学校番号で束ねた合計 {grouped['n'].sum():,.0f} 人 ≠ "
+                f"ファイルの合計行 {stated:,.0f} 人。\n"
+                "行の取りこぼしか二重計上がある。"
+            )
+        print(f"[sped-students] 合計 {stated:,.0f} 人（ファイルの合計行と一致）")
+
+    table: dict[str, int] = {}
+    for _, row in grouped.iterrows():
+        key = normalize_school_name(row["name"])
+        if key in table:
+            raise ValueError(
+                f"{path.name} で学校名が重複する: {row['name']!r}。"
+                "接頭辞を外した名前が別の学校とぶつかっている。"
+            )
+        table[key] = int(row["n"])
+    n_multi = int((rows.groupby(ids[is_school]).size() > 1).sum())
+    print(
+        f"[sped-students] {len(rows):,}行 → {len(table):,}校"
+        f"（うち {n_multi} 校は障害種別で行が分かれており合算した）"
+    )
+    return table
+
+
+def _match_school_students(
+    gdf: gpd.GeoDataFrame, name_col: str, students_path: Path
+) -> tuple[pd.Series, pd.Series, pd.Series]:
+    """各校に在籍者数を当て、規模不明の行を区別できる形で返す。
+
+    出典が 3 つに分かれる。**公立以外が漏れるのは正常だが、公立が漏れたら
+    名寄せが壊れている**——両者を設置者コードで切り分け、後者では止まる。
+    名寄せの綻びを既定値 150 人として飲み込むと、規模が消えたことに
+    出力を眺めても気付けない（そのために A4 が長く残っていた）。
+
+      都立・区立   東京都教育委員会の在籍者数 CSV。1 校でも漏れたら止まる
+      私立         各校の自己公表値（SCHOOL_STUDENTS_SELF_REPORTED）
+      国立         公表が無い。既定値のまま students_assumed を立てる
+
+    返すのは (在籍者数, 既定値で埋めたか, 規模の出典) の 3 本。
+    """
+    table = read_school_enrollment(students_path)
+    founder_col = _pick_school_founder_column(gdf, name_col)
+    founder = gdf[founder_col].astype(str)
+    public_codes = {
+        founder[gdf[name_col].astype(str).str.contains(pattern, na=False)].iloc[0]
+        for label, pattern in SCHOOL_FOUNDER_NAME_PATTERNS.items()
+        if label in ("市区町村立", "都道府県立")
+    }
+
+    students = pd.Series(float("nan"), index=gdf.index)
+    origin = pd.Series("", index=gdf.index)
+    unmatched_public: list[str] = []
+    unknown: list[str] = []
+    for idx, raw in gdf[name_col].astype(str).items():
+        key = normalize_school_name(raw)
+        if key in table:
+            students[idx] = table[key]
+            origin[idx] = SOURCES["tokyo_sped_enrollment"].label
+        elif key in SCHOOL_STUDENTS_SELF_REPORTED:
+            n, as_of, _url = SCHOOL_STUDENTS_SELF_REPORTED[key]
+            students[idx] = n
+            origin[idx] = f"{raw} 公表値（{as_of}）"
+        elif founder[idx] in public_codes:
+            unmatched_public.append(raw)
+        else:
+            unknown.append(raw)
+            students[idx] = SCHOOL_STUDENTS_FALLBACK
+            origin[idx] = SCHOOL_STUDENTS_UNKNOWN_LABEL
+
+    if unmatched_public:
+        raise ValueError(
+            "\n".join(
+                [
+                    f"公立の {len(unmatched_public)} 校が在籍者数 CSV と一致しない:",
+                    *(f"    {n}" for n in unmatched_public[:10]),
+                    "",
+                    "公立は全件が調査対象なので、一致しないのは名寄せが壊れている"
+                    "か、年度がずれて統廃合された学校がある。",
+                    f"CSV 側の学校名の例: {list(table)[:8]}",
+                    "",
+                    "schema.normalize_school_name を実データに合わせること。"
+                    "既定値で埋めて通すと、規模が消えたことに気付けない。",
+                ]
+            )
+        )
+
+    assumed = students.isna() | origin.eq(SCHOOL_STUDENTS_UNKNOWN_LABEL)
+    n_real = int((~assumed).sum())
+    print(
+        f"[p29] 在籍者数: 実数 {n_real}/{len(gdf)} 校"
+        f"（計 {students[~assumed].sum():,.0f} 人）"
+    )
+    if unknown:
+        print(
+            f"[p29] 在籍者数が公表されていない {len(unknown)} 校は"
+            f"既定値 {SCHOOL_STUDENTS_FALLBACK:.0f} 人（規模不明として区別する）: "
+            f"{', '.join(unknown)}",
+            file=sys.stderr,
+        )
+    return students.fillna(SCHOOL_STUDENTS_FALLBACK), assumed, origin
+
+
+def normalize_schools(
+    path: Path, students_path: Path | None = None, assume_missing: bool = False
+) -> gpd.GeoDataFrame:
     """国土数値情報 P29 から特別支援学校を抽出する。
 
     学校分類コードの列を取り違えると、**全学校が特別支援学校として**
@@ -1107,6 +1351,12 @@ def normalize_schools(path: Path, assume_missing: bool = False) -> gpd.GeoDataFr
     絞り込みは **研究領域で切る前**に行う。名称による裏取り（都全体で
     48 件）は母数が大きいほど効くうえ、対象 2 区に絞ってからでは
     数件しか残らず「列を取り違えた」のか「元々少ない」のか区別できない。
+
+    **P29 は在籍者数を持たない**（第1.1版・第2.0版のいずれにも無い）。
+    規模は別の出典から当てる——公立は東京都教育委員会の在籍者数 CSV
+    （`students_path`）、私立は各校の自己公表値
+    （`schema.SCHOOL_STUDENTS_SELF_REPORTED`）。国立 3 校はどこも
+    在籍者数を公表していないため既定値のままで、`students_assumed` が立つ。
     """
     gdf = read_vector(path).to_crs(CRS_GEOGRAPHIC)
     total = len(gdf)
@@ -1160,45 +1410,55 @@ def normalize_schools(path: Path, assume_missing: bool = False) -> gpd.GeoDataFr
         name_hint=r"児童|生徒|人数|在籍",
         require_hint=True,
     )
-    if stu_col is None and not assume_missing:
-        stu_col = require_column(
-            gdf,
-            path,
-            "ksj_p29_school",
-            "students",
-            tag="p29",
-            label="児童生徒数",
-            why=(
-                "需要は学校の規模で重み付けする。特定できないまま進めると"
-                f"全件が既定値 {SCHOOL_STUDENTS_FALLBACK:.0f} 人になり、"
-                "大規模校と小規模校が同じ重さになる。\n"
-                "P29 は第1.1版・第2.0版のどちらにも児童生徒数を持たない。"
-                "この版なら --assume-missing を付けて既定値を使う"
-                "（規模の差が消えることは出力にも明記される）。"
-            ),
-            predicate=lambda s: pd.to_numeric(s, errors="coerce").between(1, 5000),
-            whole=lambda s: int(pd.to_numeric(s, errors="coerce").nunique()) >= 5,
-            name_hint=r"児童|生徒|人数|在籍",
-            require_hint=True,
-        )
-
-    if stu_col is None:
-        print(
-            f"[p29] 児童生徒数の列が無い。全件を既定値 {SCHOOL_STUDENTS_FALLBACK:.0f} 人"
-            "として扱う（--assume-missing）。規模による重み付けは効かない",
-            file=sys.stderr,
-        )
-        students = pd.Series(SCHOOL_STUDENTS_FALLBACK, index=gdf.index)
-    else:
+    if stu_col is not None:
+        # 将来の版が在籍者数を持つようになった場合。ファイル内にあるなら
+        # それが最も揃った出典なので、外部の突き合わせより優先する。
         students = pd.to_numeric(gdf[stu_col], errors="coerce")
-        missing = int(students.isna().sum())
-        if missing:
+        assumed = students.isna()
+        if assumed.any():
             print(
-                f"[p29] {stu_col} が空の {missing:,}/{len(gdf):,}件は"
+                f"[p29] {stu_col} が空の {int(assumed.sum()):,}/{len(gdf):,}件は"
                 f"既定値 {SCHOOL_STUDENTS_FALLBACK:.0f} 人で補う",
                 file=sys.stderr,
             )
         students = students.fillna(SCHOOL_STUDENTS_FALLBACK)
+        origin = pd.Series(SOURCES["ksj_p29_school"].label, index=gdf.index)
+        origin[assumed] = SCHOOL_STUDENTS_UNKNOWN_LABEL
+    elif students_path is not None:
+        students, assumed, origin = _match_school_students(gdf, name_col, students_path)
+    elif assume_missing:
+        print(
+            f"[p29] 在籍者数の出典が無い。全件を既定値 {SCHOOL_STUDENTS_FALLBACK:.0f} 人"
+            "として扱う（--assume-missing）。規模による重み付けは効かない",
+            file=sys.stderr,
+        )
+        students = pd.Series(SCHOOL_STUDENTS_FALLBACK, index=gdf.index)
+        assumed = pd.Series(True, index=gdf.index)
+        origin = pd.Series(SCHOOL_STUDENTS_UNKNOWN_LABEL, index=gdf.index)
+    else:
+        # 他の「列を特定できない」ガードと同じ ValueError にそろえる。
+        # SystemExit は Exception を継承しないため、検査側が捕まえられない。
+        raise ValueError(
+            "\n".join(
+                [
+                    "[p29] 在籍者数の出典が指定されていない。",
+                    "P29 は第1.1版・第2.0版のどちらにも在籍者数を持たない。"
+                    "規模で重み付けするには外から当てる必要がある。",
+                    "",
+                    "東京都教育委員会 公立学校統計調査報告書【東京都公立学校一覧】の",
+                    "「特別支援学校（学校別在籍者数）」CSV を --students に渡すこと:",
+                    "  https://www.kyoiku.metro.tokyo.lg.jp/about/statistics_and_research"
+                    "/list_of_public_school/school_lists2025/report2025_csv",
+                    "",
+                    "  python -m etl.fetch --normalize p29 <P29> "
+                    "--students <在籍者数CSV>",
+                    "",
+                    f"規模を捨てて全件 {SCHOOL_STUDENTS_FALLBACK:.0f} 人で通すなら "
+                    "--assume-missing。ただしこのレイヤーは"
+                    "「近くに特別支援学校があるか」というフラグになる。",
+                ]
+            )
+        )
 
     out = gpd.GeoDataFrame(
         {
@@ -1207,7 +1467,8 @@ def normalize_schools(path: Path, assume_missing: bool = False) -> gpd.GeoDataFr
             "capacity": students,
             "weight": 1.0,
             "demand_value": students,
-            "source": SOURCES["ksj_p29_school"].label,
+            "source": origin,
+            "students_assumed": assumed,
             "synthetic": False,
         },
         geometry=representative_points(gdf),
@@ -2476,6 +2737,7 @@ def run_normalizer(
     paths: list[Path],
     assume_missing: bool = False,
     merge: str | None = None,
+    students_path: Path | None = None,
 ) -> Path:
     """指定した正規化を実行し、data/processed へ書き出す。
 
@@ -2490,6 +2752,10 @@ def run_normalizer(
     merge は既に別の出典が入っているレイヤーへ書くときの指定
     （"append" 統合 / "replace" 入れ替え）。既定は None で、
     出典が消える場合は書かずに止まる。
+
+    students_path は在籍者数の別出典（p29 のみ）。paths と違って
+    **地物ではなく属性を当てるための表**なので、並べて渡す paths とは
+    別の引数にしてある（同じ列に混ぜると「どちらが位置の出典か」が消える）。
     """
     if kind not in NORMALIZERS:
         raise SystemExit(
@@ -2497,14 +2763,25 @@ def run_normalizer(
         )
     layer_key, func_name = NORMALIZERS[kind]
     func = globals()[func_name]
+    params = inspect.signature(func).parameters
     kwargs = {}
     if assume_missing:
-        if "assume_missing" not in inspect.signature(func).parameters:
+        if "assume_missing" not in params:
             raise SystemExit(
                 f"--assume-missing は種別 {kind!r} には無い。"
                 "既定値で代用できる列を持つのは p29（生徒数）と wamnet（定員）だけ。"
             )
         kwargs["assume_missing"] = True
+    if students_path is not None:
+        if "students_path" not in params:
+            raise SystemExit(
+                f"--students は種別 {kind!r} には無い。在籍者数を外から当てるのは "
+                "p29（特別支援学校）だけ。"
+            )
+        if not students_path.exists():
+            inspect_columns(students_path)
+            raise SystemExit("--students のファイルが見つからない。")
+        kwargs["students_path"] = students_path
 
     # 存在しないパスをそのまま渡すと pandas / GDAL の traceback になり、
     # 「名前が違う」のか「壊れている」のか分からない。--inspect と同じ扱いで
@@ -2720,6 +2997,13 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="既に入っている別出典を捨てて入れ替える",
     )
+    ap.add_argument(
+        "--students",
+        type=Path,
+        metavar="CSV",
+        help="特別支援学校の在籍者数 CSV（p29 のみ）。"
+        "東京都教育委員会「特別支援学校（学校別在籍者数）」",
+    )
     args = ap.parse_args(argv)
 
     if args.inspect:
@@ -2737,6 +3021,7 @@ def main(argv: list[str] | None = None) -> int:
             [Path(f) for f in files],
             assume_missing=args.assume_missing,
             merge=("append" if args.append else "replace" if args.replace else None),
+            students_path=args.students,
         )
         return 0
 
