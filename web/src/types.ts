@@ -14,6 +14,22 @@ export interface ComponentDef {
   zeroIsAbsence: boolean;
   source: string;
   rationale: string;
+  /**
+   * 非 null なら、この層は対象地域内の順位ではなく外部の基準で 0〜1 に
+   * 正規化されている（騒音は環境基準、用途地域は用途制限の強さ）。
+   * 「順位は対象地域内の相対値」という但し書きがこの層には掛からない。
+   */
+  absolute: AbsoluteScale | null;
+}
+
+/** 外部の基準に固定した正規化尺度。etl/config.py の AbsoluteScale と対応。 */
+export interface AbsoluteScale {
+  /** UI 表示用の短い説明。例「環境基準 55dB → 0 / 要請限度 75dB → 1」 */
+  label: string;
+  lo: number;
+  hi: number;
+  /** lo / hi をどの法令・告示から取ったか。 */
+  basis: string;
 }
 
 export interface Meta {
@@ -46,6 +62,11 @@ export interface MeshProps {
   demand: number;
   load: number;
   priority: number;
+  /** その区画の区名。meta.target_wards への添字で届く（配信量を抑えるため）。 */
+  w?: number;
+  /** 徒歩圏（meta.host_max_distance_m）にある区の公共施設の件数。 */
+  f_host_n?: number;
+  /** 徒歩圏の公共施設のうち代表 1 件。設置先の選定ではなく例示。 */
   host?: string;
   host_kind?: string;
   host_ward?: string;
@@ -70,10 +91,13 @@ export interface Card {
   mesh_code: string;
   lon: number;
   lat: number;
+  /** その区画の区名（施設の区名ではない）。 */
   ward: string;
+  station: string;
   priority: number;
   demand: number;
   load: number;
+  host_count: number;
   host_name: string;
   host_kind: string;
   host_ward: string;
@@ -83,16 +107,25 @@ export interface Card {
   narrative: string;
 }
 
+/**
+ * 提言の単位は「隣接する上位区画のまとまり（地区）」。
+ * 施設単位ではない — 理由は etl/hosts.py の build_proposals を参照。
+ */
 export interface Proposal {
-  host_name: string;
-  host_kind: string;
+  /** 例「豊島区 池袋・北池袋周辺」。区名 + 最寄り駅名で組む。 */
+  area_label: string;
+  ward_label: string;
+  ward_counts: Record<string, number>;
   best_rank: number;
   priority: number;
   lon: number;
   lat: number;
-  ward: string;
-  covered_meshes: number;
+  mesh_count: number;
   mesh_codes: string[];
+  /** そのうち徒歩圏に区の公共施設が 1 件も無い区画の数。 */
+  unreachable_meshes: number;
+  /** 各区画の最寄り施設（重複を除く）。設置候補ではなく既存ストックの例示。 */
+  facilities: { name: string; kind: string; ward: string }[];
   narrative: string;
 }
 

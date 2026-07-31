@@ -6,7 +6,11 @@
  * 淡色地図は情報量が抑えられていて主題図（コロプレス）を載せるのに適している。
  */
 
-import maplibregl, { type Map as MLMap, type StyleSpecification } from "maplibre-gl";
+import maplibregl, {
+  type Map as MLMap,
+  type SourceSpecification,
+  type StyleSpecification,
+} from "maplibre-gl";
 import type { Meta } from "./types";
 
 /** シーケンシャル（青）ランプ。style.css の --seq-* と同じ値。 */
@@ -26,6 +30,29 @@ const CAT_HOST = "#1baf7a";
 const GSI_ATTRIBUTION =
   '<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">国土地理院</a>';
 
+/** 空の GeoJSON ソース。実データは setMeshData / setPointData が後から差し込む。 */
+function emptySource(): SourceSpecification {
+  return {
+    type: "geojson",
+    data: { type: "FeatureCollection", features: [] },
+  };
+}
+
+/**
+ * ベースマップと主題レイヤーを 1 つのスタイル定義にまとめて返す。
+ *
+ * **主題レイヤーを `addSource` / `addLayer` で後から足してはいけない。**
+ * それらはスタイルの読み込み完了前に呼ぶと `Style is not done loading.` を投げ、
+ * 例外が boot() まで抜けて「起動できませんでした」の画面になる。
+ * 以前ここは `styledata` を待ちつつ 4 秒でタイムアウトする作りだったが、
+ * タイムアウト側が**スタイルの状態を確認せず無条件に先へ進んでいた**ため、
+ * タイル配信が遅い環境で確実に起動不能になっていた
+ * （「タイルが無くても主題図は出す」という意図の真逆）。
+ *
+ * スタイル定義に最初から含めておけば MapLibre がまとめて適用するので、
+ * 競合そのものが発生しない。ベースマップのタイルが 1 枚も落ちてこなくても
+ * 優先度コロプレスは描かれる。
+ */
 function baseStyle(): StyleSpecification {
   return {
     version: 8,
@@ -40,12 +67,121 @@ function baseStyle(): StyleSpecification {
         maxzoom: 18,
         attribution: GSI_ATTRIBUTION,
       },
+      mesh: emptySource(),
+      "demand-points": emptySource(),
+      "host-points": emptySource(),
     },
     layers: [
       { id: "bg", type: "background", paint: { "background-color": "#eceae4" } },
       { id: "gsi", type: "raster", source: "gsi", paint: { "raster-opacity": 1 } },
+
+      // --- 主題図: 優先度コロプレス ---
+      {
+        id: "mesh-fill",
+        type: "fill",
+        source: "mesh",
+        paint: {
+          // 単一色相 light→dark。順位（パーセンタイル）を直接色に写す。
+          // 参照する属性は `v`。表示モード（優先度/需要/負荷）の切替は
+          // main.ts が各 feature の v を差し替えることで行い、
+          // 塗り分けの定義自体は 1 つに保つ。
+          "fill-color": [
+            "interpolate",
+            ["linear"],
+            ["get", "v"],
+            0.0, SEQ[100],
+            0.35, SEQ[200],
+            0.6, SEQ[300],
+            0.78, SEQ[400],
+            0.9, SEQ[500],
+            0.97, SEQ[600],
+            1.0, SEQ[700],
+          ],
+          // 低優先度はベースマップへ後退させ、地理的文脈を読めるようにする。
+          "fill-opacity": [
+            "interpolate",
+            ["linear"],
+            ["get", "v"],
+            0.0, 0.12,
+            0.5, 0.45,
+            0.85, 0.72,
+            1.0, 0.86,
+          ],
+        },
+      },
+
+      // --- 選択中メッシュの強調（色ではなく輪郭で示す） ---
+      {
+        id: "mesh-selected",
+        type: "line",
+        source: "mesh",
+        filter: ["==", ["get", "c"], "__none__"],
+        paint: {
+          "line-color": "#0b0b0b",
+          "line-width": 2.2,
+        },
+      },
+
+      // --- 重畳する点レイヤー（既定は非表示） ---
+      {
+        id: "demand-points",
+        type: "circle",
+        source: "demand-points",
+        layout: { visibility: "none" },
+        paint: {
+          // 種別は色ではなく大きさとツールチップで区別する。
+          // カテゴリカル色を 3 スロット以上同時に出さないための設計判断。
+          "circle-radius": [
+            "interpolate",
+            ["linear"],
+            ["zoom"],
+            10, ["case", ["==", ["get", "layer"], "station"], 4.5, 2],
+            16, ["case", ["==", ["get", "layer"], "station"], 13, 5.5],
+          ],
+          "circle-color": CAT_DEMAND,
+          "circle-opacity": 0.82,
+          "circle-stroke-width": 1,
+          "circle-stroke-color": "#ffffff",
+        },
+      },
+      {
+        id: "host-points",
+        type: "circle",
+        source: "host-points",
+        layout: { visibility: "none" },
+        paint: {
+          "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 2.5, 16, 7],
+          "circle-color": CAT_HOST,
+          "circle-opacity": 0.9,
+          // アクアは淡色ベースマップに対して 3:1 を切るため、
+          // 白リングで確実に地から分離する（relief rule）。
+          "circle-stroke-width": 1.4,
+          "circle-stroke-color": "#ffffff",
+        },
+      },
     ],
   };
+}
+
+type SourceId = "mesh" | "demand-points" | "host-points";
+
+/**
+ * スタイル確定前に届いたデータの保留箱（地図インスタンスごと）。
+ *
+ * データの投入はスタイルの登録完了より先に来ることがある。
+ * 「待ってから入れる」方式は待ち方を間違えると起動不能に直結するので
+ * （この画面が実際にそうだった）、**待たずに保留し、確定時に流し込む**。
+ */
+const pendingData = new WeakMap<MLMap, Map<SourceId, GeoJSON.FeatureCollection>>();
+
+/** 保留していたデータをソースへ流し込む。 */
+function flushPending(map: MLMap): void {
+  const queued = pendingData.get(map);
+  if (!queued) return;
+  for (const [id, data] of queued) {
+    (map.getSource(id) as maplibregl.GeoJSONSource | undefined)?.setData(data);
+  }
+  queued.clear();
 }
 
 export interface MapHandles {
@@ -87,23 +223,6 @@ export async function initMap(
     "top-left",
   );
 
-  // ベースマップのタイルが落ちてきているかに関係なく、スタイルが解釈でき次第
-  // 主題レイヤーを追加する。
-  // `load` イベントを待つと、閉域網やタイル配信障害のときに永久に発火せず、
-  // 肝心の優先度マップまで表示されなくなる。ベースマップは文脈情報であって
-  // 本体ではないので、無くても主題図は必ず出す。
-  await new Promise<void>((resolve) => {
-    if (map.isStyleLoaded()) {
-      resolve();
-      return;
-    }
-    map.on("styledata", () => {
-      if (map.isStyleLoaded()) resolve();
-    });
-    // それでも駄目な場合の保険。resolve は複数回呼んでも無害。
-    setTimeout(resolve, 4000);
-  });
-
   // タイル取得の失敗でコンソールを埋めない。ベースマップ欠落は致命傷ではない。
   map.on("error", (e) => {
     const msg = String((e as { error?: Error }).error?.message ?? "");
@@ -111,104 +230,48 @@ export async function initMap(
     console.warn("[map]", msg || e);
   });
 
-  // --- 主題図: 優先度コロプレス ---
-  map.addSource("mesh", {
-    type: "geojson",
-    data: { type: "FeatureCollection", features: [] },
-  });
-
-  map.addLayer({
-    id: "mesh-fill",
-    type: "fill",
-    source: "mesh",
-    paint: {
-      // 単一色相 light→dark。順位（パーセンタイル）を直接色に写す。
-      // 参照する属性は `v`。表示モード（優先度/需要/負荷）の切替は
-      // main.ts が各 feature の v を差し替えることで行い、
-      // 塗り分けの定義自体は 1 つに保つ。
-      "fill-color": [
-        "interpolate",
-        ["linear"],
-        ["get", "v"],
-        0.0, SEQ[100],
-        0.35, SEQ[200],
-        0.6, SEQ[300],
-        0.78, SEQ[400],
-        0.9, SEQ[500],
-        0.97, SEQ[600],
-        1.0, SEQ[700],
+  /**
+   * キャンバスをコンテナへ合わせ、対象地域へ画面を合わせ直す。
+   *
+   * `#map` は position:absolute で、生成時点では寸法が 0 のことがある。
+   * その状態だと MapLibre は既定の 400×300 のキャンバスを作り、
+   * **コンストラクタの `bounds` もその 0 サイズの画面に対して計算される**。
+   * 結果、コンテナだけが広がって地図が左上にしか描かれなかったり、
+   * 対象地域が画面外に出て真っ白に見えたりする（どちらも実際に踏んだ）。
+   *
+   * 寸法が確定してから `fitBounds` をやり直せば、どちらも起きない。
+   */
+  const fitToArea = (): void => {
+    map.resize();
+    map.fitBounds(
+      [
+        [minx, miny],
+        [maxx, maxy],
       ],
-      // 低優先度はベースマップへ後退させ、地理的文脈を読めるようにする。
-      "fill-opacity": [
-        "interpolate",
-        ["linear"],
-        ["get", "v"],
-        0.0, 0.12,
-        0.5, 0.45,
-        0.85, 0.72,
-        1.0, 0.86,
-      ],
-    },
+      { padding: 24, animate: false },
+    );
+  };
+
+  // 主題レイヤーは baseStyle() に含めてあるので、ここで追加する必要はない。
+  // スタイルが確定したら、それまでに届いていたデータを流し込む。
+  map.on("style.load", () => {
+    flushPending(map);
+    fitToArea();
   });
 
-  // --- 選択中メッシュの強調（色ではなく輪郭で示す） ---
-  map.addLayer({
-    id: "mesh-selected",
-    type: "line",
-    source: "mesh",
-    filter: ["==", ["get", "c"], "__none__"],
-    paint: {
-      "line-color": "#0b0b0b",
-      "line-width": 2.2,
-    },
-  });
-
-  // --- 重畳する点レイヤー（既定は非表示） ---
-  map.addSource("demand-points", {
-    type: "geojson",
-    data: { type: "FeatureCollection", features: [] },
-  });
-  map.addLayer({
-    id: "demand-points",
-    type: "circle",
-    source: "demand-points",
-    layout: { visibility: "none" },
-    paint: {
-      // 種別は色ではなく大きさとツールチップで区別する。
-      // カテゴリカル色を 3 スロット以上同時に出さないための設計判断。
-      "circle-radius": [
-        "interpolate",
-        ["linear"],
-        ["zoom"],
-        10, ["case", ["==", ["get", "layer"], "station"], 4.5, 2],
-        16, ["case", ["==", ["get", "layer"], "station"], 13, 5.5],
-      ],
-      "circle-color": CAT_DEMAND,
-      "circle-opacity": 0.82,
-      "circle-stroke-width": 1,
-      "circle-stroke-color": "#ffffff",
-    },
-  });
-
-  map.addSource("host-points", {
-    type: "geojson",
-    data: { type: "FeatureCollection", features: [] },
-  });
-  map.addLayer({
-    id: "host-points",
-    type: "circle",
-    source: "host-points",
-    layout: { visibility: "none" },
-    paint: {
-      "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 2.5, 16, 7],
-      "circle-color": CAT_HOST,
-      "circle-opacity": 0.9,
-      // アクアは淡色ベースマップに対して 3:1 を切るため、
-      // 白リングで確実に地から分離する（relief rule）。
-      "circle-stroke-width": 1.4,
-      "circle-stroke-color": "#ffffff",
-    },
-  });
+  // 生成後にコンテナの寸法が決まる場合に追従する。
+  // MapLibre 自身も追従するはずだが、実測では 400×300 のままだったので明示的に見る。
+  if (typeof ResizeObserver !== "undefined") {
+    let last = "";
+    new ResizeObserver(() => {
+      const el = map.getContainer();
+      const size = `${el.clientWidth}x${el.clientHeight}`;
+      // 0 サイズと、同じ寸法での再通知は無視する（fitBounds の暴発を防ぐ）。
+      if (size === last || el.clientWidth === 0 || el.clientHeight === 0) return;
+      last = size;
+      fitToArea();
+    }).observe(map.getContainer());
+  }
 
   // --- 操作 ---
   map.on("click", "mesh-fill", (e) => {
@@ -253,7 +316,7 @@ export async function initMap(
   return {
     map,
     setMeshData: (data) => {
-      (map.getSource("mesh") as maplibregl.GeoJSONSource).setData(data);
+      setSourceData(map, "mesh", data);
     },
     setSelected: (meshCode) => {
       map.setFilter("mesh-selected", ["==", ["get", "c"], meshCode ?? "__none__"]);
@@ -267,11 +330,36 @@ export async function initMap(
   };
 }
 
+/**
+ * ソースへデータを差し込む。スタイル未確定なら保留し、`style.load` で流す。
+ *
+ * ここで例外を投げてはいけない。以前は投げていて、スタイルの読み込み遅延が
+ * そのまま「起動できませんでした」へ変換されていた。
+ * 地図が一瞬空で残るほうが、画面ごと消えるより確実に良い。
+ */
+function setSourceData(
+  map: MLMap,
+  id: SourceId,
+  data: GeoJSON.FeatureCollection,
+): void {
+  const src = map.getSource(id) as maplibregl.GeoJSONSource | undefined;
+  if (src) {
+    src.setData(data);
+    return;
+  }
+  let queued = pendingData.get(map);
+  if (!queued) {
+    queued = new Map();
+    pendingData.set(map, queued);
+  }
+  queued.set(id, data);
+}
+
 /** 点レイヤーのデータを差し込む。 */
 export function setPointData(
   map: MLMap,
   id: "demand-points" | "host-points",
   data: GeoJSON.FeatureCollection,
 ): void {
-  (map.getSource(id) as maplibregl.GeoJSONSource).setData(data);
+  setSourceData(map, id, data);
 }

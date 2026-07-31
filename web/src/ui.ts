@@ -7,6 +7,7 @@
  * （proposals.json は既定重みでの静的な書き出しであり、資料添付用に残してある）
  */
 
+import { areaLabel, clusterAdjacent } from "./area";
 import { compose, topFactors, type ScoreResult } from "./score";
 import type { ComponentDef, Meta, MeshProps, Sensitivity, Weights } from "./types";
 
@@ -28,24 +29,29 @@ const pctRank = (p: number) => Math.max(1, Math.round((1 - p) * 100));
 /* ------------------------------------------------------------------ 提言 */
 
 export interface UiProposal {
-  hostName: string;
-  hostKind: string;
-  hostWard: string;
-  outOfArea: boolean;
+  areaLabel: string;
+  wardCounts: Map<string, number>;
   bestRank: number;
   priority: number;
   meshCodes: string[];
+  meshCount: number;
+  unreachableMeshes: number;
+  facilities: { name: string; kind: string; ward: string }[];
   rowIndex: number;
   narrative: string;
+  /** 地区の全区画が徒歩圏に公共施設を持たない。 */
   unreachable: boolean;
 }
 
 /**
- * 上位メッシュを設置先の施設単位に束ねる。
+ * 上位メッシュを「隣接する区画のまとまり（地区）」に束ねる。
  *
- * ひとつの図書館が隣接する複数の高優先度メッシュをまとめて受け持つことは多く、
- * メッシュを羅列すると同じ施設が何度も出てきて提言として読めない。
- * 束ねた件数がそのまま「1 箇所の整備で何メッシュ分に効くか」の説明になる。
+ * **以前は割当先の施設ごとに束ね、施設名を見出しにしていた。** やめた理由は
+ * etl/hosts.py の build_proposals に書いてある（要点: このモデルは施設の
+ * 適性を一切測っておらず、見出しの施設はその区画の中に無いことも多い）。
+ *
+ * 束ねる根拠も「同じ施設が最寄り（最大 700m）」から「格子の上で接している」へ
+ * 変えた。後者は整数座標だけで決まり、施設の配置に依存しない。
  */
 export function buildProposals(
   state: AppState,
@@ -53,56 +59,115 @@ export function buildProposals(
   limit = 12,
 ): UiProposal[] {
   const { rows, score, meta, weights } = state;
-  const byHost = new Map<string, UiProposal>();
-  const unreachable: UiProposal[] = [];
-
   const top = score.order.slice(0, topN);
+  const wardOf = (row: MeshProps) =>
+    typeof row.w === "number" ? (meta.target_wards[row.w] ?? "") : "";
 
-  top.forEach((idx, i) => {
-    const row = rows[idx];
-    const rank = i + 1;
-    const host = (row.host as string) ?? "";
+  const groups = clusterAdjacent(top.map((idx) => rows[idx].c));
 
-    if (!host) {
-      if (unreachable.length < 3) {
-        unreachable.push({
-          hostName: "",
-          hostKind: "",
-          hostWard: "",
-          outOfArea: false,
-          bestRank: rank,
-          priority: score.priority[idx],
-          meshCodes: [row.c],
-          rowIndex: idx,
-          narrative: narrate(state, idx, rank, weights, meta),
-          unreachable: true,
+  const list = groups.map((members): UiProposal => {
+    const idxs = members.map((m) => top[m]);
+    const headIdx = idxs[0];
+
+    const wardCounts = new Map<string, number>();
+    for (const i of idxs) {
+      const w = wardOf(rows[i]);
+      if (w) wardCounts.set(w, (wardCounts.get(w) ?? 0) + 1);
+    }
+
+    const { label } = areaLabel(
+      idxs.map((i) => wardOf(rows[i])),
+      idxs.map((i) => (rows[i].f_station_name as string) ?? ""),
+    );
+
+    // 各区画の最寄り施設。設置候補ではなく「徒歩圏に何が在るか」の例示。
+    const facilities: UiProposal["facilities"] = [];
+    const seen = new Set<string>();
+    for (const i of idxs) {
+      const name = (rows[i].host as string) ?? "";
+      if (name && !seen.has(name)) {
+        seen.add(name);
+        facilities.push({
+          name,
+          kind: (rows[i].host_kind as string) ?? "",
+          ward: (rows[i].host_ward as string) ?? "",
         });
       }
-      return;
     }
 
-    const existing = byHost.get(host);
-    if (existing) {
-      existing.meshCodes.push(row.c);
-    } else {
-      const hw = (row.host_ward as string) ?? "";
-      byHost.set(host, {
-        hostName: host,
-        hostKind: (row.host_kind as string) ?? "",
-        hostWard: hw,
-        outOfArea: Boolean(hw) && !meta.target_wards.includes(hw),
-        bestRank: rank,
-        priority: score.priority[idx],
-        meshCodes: [row.c],
-        rowIndex: idx,
-        narrative: narrate(state, idx, rank, weights, meta),
-        unreachable: false,
-      });
-    }
+    const unreachableMeshes = idxs.filter((i) => !rows[i].host).length;
+
+    return {
+      areaLabel: label,
+      wardCounts,
+      bestRank: members[0] + 1,
+      priority: score.priority[headIdx],
+      meshCodes: idxs.map((i) => rows[i].c),
+      meshCount: idxs.length,
+      unreachableMeshes,
+      facilities,
+      rowIndex: headIdx,
+      narrative:
+        narrate(state, headIdx, members[0] + 1, weights, meta) +
+        clusterNarrative(idxs.length, wardCounts, unreachableMeshes, facilities),
+      unreachable: unreachableMeshes === idxs.length,
+    };
   });
 
-  const list = [...byHost.values()].sort((a, b) => a.bestRank - b.bestRank).slice(0, limit);
-  return [...list, ...unreachable];
+  return list.sort((a, b) => a.bestRank - b.bestRank).slice(0, limit);
+}
+
+/**
+ * 地区としてまとまって初めて言えることだけを足す。
+ * 1 区画ずつ眺めても出てこない情報 — 何区画続いているか、区をまたぐか、
+ * そのうち何区画が徒歩圏に施設を持たないか。etl/hosts.py の
+ * _cluster_narrative と対応。
+ */
+function clusterNarrative(
+  n: number,
+  wardCounts: Map<string, number>,
+  unreachableMeshes: number,
+  facilities: UiProposal["facilities"],
+): string {
+  const parts: string[] = [];
+
+  if (n > 1) parts.push(`隣接する${n}区画がまとまって上位に入っている。`);
+
+  if (wardCounts.size > 1) {
+    const breakdown = [...wardCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([w, c]) => `${w}${c}区画`)
+      .join("・");
+    parts.push(`この地区は${breakdown}にまたがり、提言先の自治体が分かれる。`);
+  }
+
+  if (unreachableMeshes === n && n > 1) {
+    parts.push("全区画が徒歩圏に区の公共施設を持たない。");
+  } else if (unreachableMeshes) {
+    parts.push(`うち${unreachableMeshes}区画は徒歩圏に区の公共施設が無い。`);
+  }
+
+  // 施設名は「1 区画だけの地区」なら区画側の文が既に挙げているので繰り返さない。
+  if (facilities.length > 1) {
+    const names = facilities
+      .slice(0, 3)
+      .map((f) => `${f.name}（${f.kind}）`)
+      .join("、");
+    const more = facilities.length > 3 ? " ほか" : "";
+    parts.push(
+      `各区画から最も近い施設は重複を除いて${facilities.length}件（${names}${more}）。`,
+    );
+  }
+  if (facilities.length) {
+    const other = [
+      ...new Set(facilities.map((f) => f.ward).filter((w) => w && !wardCounts.has(w))),
+    ].sort();
+    if (other.length) {
+      parts.push(`うち${other.join("・")}の施設が含まれ、区境をまたぐ連携が前提になる。`);
+    }
+  }
+
+  return parts.join("");
 }
 
 const num = (n: number) => n.toLocaleString("ja-JP");
@@ -152,6 +217,12 @@ export function factsOf(row: MeshProps): { label: string; value: string }[] {
   f.push({
     label: "緑・公園被覆",
     value: g("f_green_pct") ? `${g("f_green_pct")}%` : "0%（屋外に退避先なし）",
+  });
+  // 供給側について言える唯一の実数。数えているのは施設一覧の行数であって
+  // 建物の数ではない（同じ建物の別種別が別行で載っている。docs/issues.md）。
+  f.push({
+    label: "徒歩圏の公共施設",
+    value: g("f_host_n") ? `${num(g("f_host_n")!)}件（一覧の行数）` : "0件",
   });
   return f;
 }
@@ -214,26 +285,22 @@ function narrate(
     parts.push(`現在の重みでは${shortLabel(top[0].component)}が需要側の最大要因。`);
   }
 
+  // 供給側は「在るか / 幾つ在るか」までしか述べない。
+  // かつてここに「設置候補: ◯◯図書館」と書いていたが、それはこのモデルが
+  // 計算していない結論だった（施設の適性を測る構成要素が一つも無い）。
   const host = (row.host as string) ?? "";
   if (host) {
     const dist = row.host_d as number | undefined;
+    const near = dist != null ? `、最寄りは${host}で約${num(dist)}m` : `（例: ${host}）`;
     parts.push(
-      dist != null
-        ? `設置候補: ${host}（メッシュ重心から約${num(dist)}m）。`
-        : `設置候補: ${host}。`,
+      `徒歩圏（${meta.host_max_distance_m}m）に区の公共施設が` +
+        `${num((row.f_host_n as number) ?? 0)}件${near}` +
+        "（施設側の余剰空間も運営体制も測っておらず、適否の判断は含まない）。",
     );
-    // 区境をまたぐ割当は残す（当事者に区境は関係ない）が、
-    // 提言先の自治体が変わるので明示する。
-    const ward = (row.host_ward as string) ?? "";
-    if (ward && !meta.target_wards.includes(ward)) {
-      parts.push(
-        `ただし${ward}の施設であり、対象区の所管外。区境をまたぐ連携が前提になる。`,
-      );
-    }
   } else {
     parts.push(
-      `半径${meta.host_max_distance_m}m 以内に転用可能な公共施設が無い。` +
-        "既存ストックでは到達できず、新規整備または民間施設との連携が要る。",
+      `半径${meta.host_max_distance_m}m 以内に区の公共施設が 1 件も無い。` +
+        "既存ストックの徒歩圏から外れており、新規整備か民間施設との連携が要る。",
     );
   }
   return parts.join("");
@@ -260,7 +327,8 @@ export function renderStat(state: AppState): void {
   valueEl.innerHTML = `${uncovered}<small> / ${N} メッシュ</small>`;
   labelEl.textContent =
     `優先度上位${N}メッシュのうち、半径${meta.host_max_distance_m}m 以内に` +
-    "転用可能な公共施設が存在しない区画。既存ストックでは到達できず、新規整備が要る。";
+    "区の公共施設が 1 件も無い区画。既存ストックの徒歩圏から外れており、" +
+    "新規整備か民間施設との連携が要る。";
 }
 
 /* ------------------------------------------------------------------ スライダー */
@@ -423,7 +491,10 @@ function renderProposals(
   intro.className = "card-narrative";
   intro.style.marginBottom = "12px";
   intro.textContent =
-    "現在の重みでの設置優先順位。1 施設が複数の高優先度メッシュを受け持つ場合はまとめている。";
+    "現在の重みでの優先順位を、隣接する区画のまとまり（地区）ごとに示す。" +
+    "示すのは区画であって設置先の施設ではない — この分析は施設の余剰空間も" +
+    "運営体制も測っておらず、特定の建物を評価する根拠を持たない。" +
+    "挙げている施設名は「徒歩圏に屋内の公共空間が在るか」の例示。";
   body.appendChild(intro);
 
   if (!proposals.length) {
@@ -436,19 +507,28 @@ function renderProposals(
     el.className = "card";
     if (state.selected && p.meshCodes.includes(state.selected)) el.classList.add("is-active");
 
-    const covered =
-      p.meshCodes.length > 1
-        ? `<div class="card-meta"><span>この 1 施設で <b>${p.meshCodes.length}</b> メッシュ分をカバー</span></div>`
-        : "";
+    const meta: string[] = [];
+    if (p.meshCount > 1) meta.push(`隣接 <b>${p.meshCount}</b> 区画`);
+    if (p.unreachableMeshes) {
+      meta.push(`徒歩圏に公共施設が無い区画 <b>${p.unreachableMeshes}</b>`);
+    }
+    const metaRow = meta.length
+      ? `<div class="card-meta">${meta.map((m) => `<span>${m}</span>`).join("")}</div>`
+      : "";
+
+    // 見出しの右肩は施設の種別ではなく、またがる区の数。提言先が幾つに
+    // 分かれるかが、地区単位で見たときに最初に効いてくる情報。
+    const wards =
+      p.wardCounts.size > 1 ? `${p.wardCounts.size} 区にまたがる` : "";
 
     el.innerHTML = `
       <div class="card-head">
         <span class="rank${p.unreachable ? " is-unreachable" : ""}">${p.bestRank}</span>
-        <span class="card-title">${escapeHtml(p.hostName || "候補施設なし（新設が必要）")}</span>
-        <span class="card-kind">${escapeHtml(p.outOfArea ? `${p.hostWard}・区外` : p.hostKind)}</span>
+        <span class="card-title">${escapeHtml(p.areaLabel || "地区名なし")}</span>
+        <span class="card-kind">${escapeHtml(wards)}</span>
       </div>
       <div class="card-narrative">${escapeHtml(p.narrative)}</div>
-      ${covered}`;
+      ${metaRow}`;
 
     el.addEventListener("click", () => onPick(p.meshCodes[0]));
     body.appendChild(el);
@@ -554,7 +634,7 @@ function renderTable(
   table.innerHTML = `
     <thead>
       <tr>
-        <th>順位</th><th>メッシュ</th><th>設置候補</th>
+        <th>順位</th><th>メッシュ</th><th>区</th><th>徒歩圏の公共施設</th>
         <th class="num">優先度</th><th class="num">需要</th><th class="num">負荷</th>
       </tr>
     </thead>`;
@@ -568,7 +648,8 @@ function renderTable(
     tr.innerHTML = `
       <td>${i + 1}</td>
       <td style="font-family:var(--mono)">${escapeHtml(row.c)}</td>
-      <td>${escapeHtml((row.host as string) || "—")}</td>
+      <td>${escapeHtml(typeof row.w === "number" ? (meta.target_wards[row.w] ?? "—") : "—")}</td>
+      <td class="num">${row.host ? `${num((row.f_host_n as number) ?? 0)} 件` : "0 件"}</td>
       <td class="num">${fmt(score.priority[idx])}</td>
       <td class="num">${fmt(score.demand[idx])}</td>
       <td class="num">${fmt(score.load[idx])}</td>`;

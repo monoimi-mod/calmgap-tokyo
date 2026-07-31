@@ -1,0 +1,23 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "calmgap-tokyo",
+  "compatibility_date": "2026-07-01",
+
+  // サーバ側のコードは持たない静的サイト。`main` は置かない。
+  // ETL の生成物（web/public/data/*.json）ごと dist に入って配信される。
+  "assets": {
+    "directory": "./dist",
+
+    // 存在しないパスは 404 を返す（既定）。
+    //
+    // SPA フォールバックにすると、`data/mesh.geojson` が欠けたときに
+    // index.html が 200 で返り、`res.ok` が真のまま JSON.parse が落ちる。
+    // main.ts はわざわざ「先に python -m etl.build を実行してください」という
+    // 案内を出すようにしてあるので、その経路を潰さない。
+    "not_found_handling": "none"
+  },
+
+  "observability": {
+    "enabled": true
+  }
+}

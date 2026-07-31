@@ -20,7 +20,12 @@ import type { ComponentDef, MeshProps, Weights } from "./types";
  *   0 は「存在しない」。厳密に 0 を返し、正の値だけを (0, 1] に配分する。
  *   事業所が 1 件も無いメッシュを、掛け算モデルで確実に 0 にするため。
  * zeroIsAbsence=false:
- *   全体を [0, 1] に配分する。用途地域スコアや騒音のような連続量向け。
+ *   全体を [0, 1] に配分する。負値を取り得る連続量（減点レイヤー入りの
+ *   負荷の重み付き和）向け。
+ *
+ * ⚠️ 構成要素そのものの正規化は ETL 側で済んでおり、ここでは行わない。
+ *    騒音と用途地域は順位ではなく絶対尺度で正規化されている
+ *    （etl/config.py の AbsoluteScale）。n_* をそのまま重み付き加算すること。
  */
 export function percentileNormalize(
   values: Float64Array,
