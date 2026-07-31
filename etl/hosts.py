@@ -419,3 +419,78 @@ def _cluster_narrative(
             )
 
     return "".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# 到達不可区画の点検
+# ---------------------------------------------------------------------------
+
+
+def reach_report(scored: pd.DataFrame) -> pd.DataFrame:
+    """区ごとの到達不可区画と、そのうち「区内で優先度が中位以上」の件数。
+
+    **到達不可の生の件数を区の間で並べてはいけない。** ホスト施設が
+    700m 以内に無いメッシュは、23 区すべてで公共施設一覧を投入した現在、
+    **データの有無ではなく非市街地の面積比でほぼ決まる**。皇居・羽田空港・
+    埋立地・河川敷を含む区が上に来るだけで、「この区は転用できる施設が
+    少ない」という提言にはならない（江東区の到達不可 38.8% はほぼ有明・
+    青海・夢の島・若洲である）。
+
+    そこで **区内で優先度が中位以上の到達不可区画**を数える。人の居ない
+    土地は需要も負荷も低く区内で下位に沈むので、これで落ちる。
+    区をまたいで並べるならこちら側を使うこと（`docs/issues.md` A9）。
+
+    **なぜ「区内」の中位なのか。** 全体の中央値で切ると、優先度の水準が
+    高い区（豊島・千代田）の到達不可だけが残り、低い区の中で相対的に
+    切実な区画が消える。ここで知りたいのは「その区の中で人が居る側に
+    ある到達不可」なので、閾値も区ごとに取る。
+
+    しきい値は**区内の優先度の中央値**（境界を含む）。区内の全メッシュを
+    母数にする——到達不可のメッシュだけで中央値を取ると、非市街地の多い区で
+    閾値が下がり、皇居や埋立地が「中位以上」に入ってしまう。
+
+    到達不可の判定は `f_host_n == 0`。`assign_hosts` が代表施設を
+    割り当てられなかったメッシュ（`host_name` が空）と一致する。
+    """
+    need = {"ward", "priority", "f_host_n"}
+    missing = need - set(scored.columns)
+    if missing:
+        raise ValueError(
+            f"reach_report に必要な列が無い: {', '.join(sorted(missing))}。"
+            "assign_hosts と merge した後の表を渡すこと。"
+        )
+
+    df = scored.copy()
+    df["ward"] = df["ward"].fillna("").astype(str)
+    df["_unreachable"] = df["f_host_n"].fillna(0).astype(float) == 0
+    # 区内の中央値。母数は区内の全メッシュ（上の docstring 参照）。
+    df["_median"] = df.groupby("ward")["priority"].transform("median")
+    df["_mid_or_above"] = df["_unreachable"] & (df["priority"] >= df["_median"])
+
+    rows = []
+    for ward, g in df.groupby("ward"):
+        # 区の判定が付かなかったメッシュ（水面など）は数えない。
+        # **`TARGET_WARDS` に在るかでは絞らない。** 模擬モードの区名は
+        # 「対象地域（模擬・矩形）」の 1 種類しか無く、絞ると表が空になって
+        # 列ごと消え、`--report` が KeyError で落ちる（実際に落とした）。
+        if not ward:
+            continue
+        n = len(g)
+        unreachable = int(g["_unreachable"].sum())
+        mid = int(g["_mid_or_above"].sum())
+        rows.append(
+            {
+                "区": ward,
+                "メッシュ": n,
+                "到達不可": unreachable,
+                "到達不可率": round(unreachable / n * 100, 1) if n else 0.0,
+                "中位以上": mid,
+                "うち中位以上": round(mid / unreachable * 100, 1) if unreachable else 0.0,
+            }
+        )
+
+    # 列は明示する。0 行のときに列ごと消えると、呼び出し側が
+    # 列名で触った瞬間に KeyError になる。
+    cols = ["区", "メッシュ", "到達不可", "到達不可率", "中位以上", "うち中位以上"]
+    out = pd.DataFrame(rows, columns=cols)
+    return out.sort_values(["中位以上", "到達不可"], ascending=False, ignore_index=True)

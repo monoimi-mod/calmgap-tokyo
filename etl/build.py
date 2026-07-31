@@ -536,6 +536,22 @@ def main(argv: list[str] | None = None) -> int:
         print("\n[点検] 構成要素間の相関（0.9超は二重計上を疑う）")
         print(score.correlation_report(scored).to_string())
 
+        # 到達不可は生の件数を区の間で並べても意味を持たない
+        #（非市街地の面積比でほぼ決まる）。hosts.reach_report のコメント参照。
+        reach = hostlib.reach_report(scored)
+        total_unreachable = int(reach["到達不可"].sum())
+        total_mid = int(reach["中位以上"].sum())
+        if total_unreachable:
+            print(
+                f"\n[点検] 到達不可区画 {total_unreachable:,}件 / "
+                f"うち区内で優先度が中位以上 {total_mid:,}件 "
+                f"({total_mid / total_unreachable * 100:.0f}%)"
+            )
+            print("       区をまたいで並べるなら「中位以上」の側を使う")
+        else:
+            print("\n[点検] 到達不可区画は 0 件")
+        print(reach.to_string(index=False))
+
     return 0
 
 

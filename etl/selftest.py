@@ -1214,6 +1214,66 @@ def _area_label_dedupes_stations():
     assert ward == "千代田区ほか", ward
 
 
+@check("到達不可の点検は、区内で優先度が下位の区画（非市街地）を数えない")
+def _reach_report_excludes_low_priority():
+    # 江東区の到達不可は大半が有明・青海・夢の島の埋立地で、区内で下位に沈む。
+    # そこを数えると「転用できる施設が少ない区」に見えてしまう。
+    rows = []
+    for i in range(10):
+        rows.append(
+            {
+                "ward": "江東区",
+                # 上位 5 件が市街地、下位 5 件が埋立地のつもり。
+                "priority": 0.9 - i * 0.1,
+                # 到達不可なのは市街地 1 件と埋立地 4 件。
+                "f_host_n": 0 if i in (1, 6, 7, 8, 9) else 3,
+            }
+        )
+    out = hostlib.reach_report(pd.DataFrame(rows))
+    row = out[out["区"] == "江東区"].iloc[0]
+    assert row["到達不可"] == 5, row.to_dict()
+    assert row["中位以上"] == 1, f"埋立地側を数えている: {row.to_dict()}"
+
+
+@check("到達不可の中位判定は区ごとに切る（全体の中央値で切らない）")
+def _reach_report_threshold_is_per_ward():
+    # 優先度の水準が区で違う。全体の中央値で切ると、水準の低い区
+    #（ここでは足立区）の中で相対的に切実な区画がまとめて消える。
+    rows = [{"ward": "豊島区", "priority": 0.9 + i * 0.01, "f_host_n": 1} for i in range(4)]
+    rows += [{"ward": "足立区", "priority": 0.1 + i * 0.01, "f_host_n": 1} for i in range(4)]
+    # 足立区の中では上位だが、全体で見れば下位半分に入る到達不可区画。
+    rows.append({"ward": "足立区", "priority": 0.20, "f_host_n": 0})
+    out = hostlib.reach_report(pd.DataFrame(rows))
+    row = out[out["区"] == "足立区"].iloc[0]
+    assert row["中位以上"] == 1, f"全体の中央値で切っている: {out.to_string(index=False)}"
+
+
+@check("到達不可の中位判定の母数は区内の全区画（到達不可だけで中央値を取らない）")
+def _reach_report_median_over_all_meshes():
+    # 到達不可のメッシュだけで中央値を取ると、非市街地の多い区で閾値が下がり、
+    # 埋立地どうしの比較で「上半分」が中位以上に化ける。
+    rows = [{"ward": "江東区", "priority": 0.8, "f_host_n": 2} for _ in range(6)]
+    rows += [{"ward": "江東区", "priority": p, "f_host_n": 0} for p in (0.1, 0.2, 0.3, 0.4)]
+    out = hostlib.reach_report(pd.DataFrame(rows))
+    row = out[out["区"] == "江東区"].iloc[0]
+    assert row["到達不可"] == 4, row.to_dict()
+    assert row["中位以上"] == 0, (
+        f"到達不可だけで中央値を取っている: {row.to_dict()}"
+    )
+
+
+@check("到達不可の点検は、数える区が 1 つも無くても列を保ったまま返る")
+def _reach_report_keeps_columns_when_empty():
+    # 区名が付かないメッシュしか無い場合。表が空になったときに列ごと消えると、
+    # 呼び出し側が列名で触った瞬間に KeyError で落ちる（--report が実際に落ちた）。
+    out = hostlib.reach_report(
+        pd.DataFrame([{"ward": "", "priority": 0.5, "f_host_n": 0}])
+    )
+    assert len(out) == 0, out.to_string(index=False)
+    assert int(out["到達不可"].sum()) == 0, out.columns.tolist()
+    assert int(out["中位以上"].sum()) == 0, out.columns.tolist()
+
+
 @check("提言に施設への設置を指示する語を出さない")
 def _proposal_never_recommends_a_facility():
     # 施設名は「徒歩圏に在るもの」としてなら出てよいが、
