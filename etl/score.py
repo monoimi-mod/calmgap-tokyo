@@ -28,6 +28,7 @@ from .config import (
     PRIORITY_ALPHA,
     PRIORITY_BETA,
     PUBLISH_DECIMALS,
+    AbsoluteScale,
     Component,
 )
 
@@ -78,6 +79,11 @@ def percentile_normalize(
         正の値だけを順位付けし (0, 1] に配分する。
     zero_is_absence=False:
         全体を順位付けし [0, 1] に配分する。
+
+    ⚠️ **順位化は分布の広さを捨てる。** 対象地域内で実質的に一様な層でも
+    必ず 0〜1 いっぱいに引き伸ばされるため、識別力の無い層ほど差が誇張され、
+    測定の偏りがあればそれごと増幅される。外部の基準で 0 と 1 を決められる層は
+    absolute_normalize を使うこと（config.AbsoluteScale）。
     """
     v = pd.to_numeric(values, errors="coerce").fillna(0.0)
     out = pd.Series(np.zeros(len(v)), index=v.index, dtype=float)
@@ -100,14 +106,40 @@ def percentile_normalize(
     return (v.rank(method="average") - 1.0) / (n - 1.0)
 
 
+def absolute_normalize(values: pd.Series, scale: AbsoluteScale) -> pd.Series:
+    """外部の基準に固定した尺度で 0〜1 に正規化する。
+
+    lo 以下を 0、hi 以上を 1 とする線形写像。パーセンタイル正規化と違い、
+    **他のメッシュの値に依存しない**。あるメッシュが 70dB なら、
+    周りが静かでもうるさくても 0.75 になる。
+
+    これが効くのは、その層が対象地域内で実際には狭い範囲に収まっている場合。
+    順位化だとその狭さが見えなくなるが、絶対尺度なら「差が小さい」ことが
+    そのままスコアの差の小ささとして現れる（docs/issues.md A1）。
+    """
+    v = pd.to_numeric(values, errors="coerce").fillna(float(scale.lo))
+    span = float(scale.hi) - float(scale.lo)
+    if span <= 0:
+        raise ValueError(f"AbsoluteScale の lo < hi が成り立たない: {scale}")
+    return ((v - float(scale.lo)) / span).clip(0.0, 1.0)
+
+
 def normalize_components(
     mesh_df: pd.DataFrame, components: tuple[Component, ...] = ALL_COMPONENTS
 ) -> pd.DataFrame:
-    """各構成要素の生値列を正規化し `n_<key>` 列として追加する。"""
+    """各構成要素の生値列を正規化し `n_<key>` 列として追加する。
+
+    絶対尺度を持つ層（騒音・用途地域）だけ順位化を通さない。
+    どちらを使ったかは meta.json 経由でブラウザへも配信する
+    （画面に「この層は地域内順位ではない」と出せるようにするため）。
+    """
     out = mesh_df.copy()
     for c in components:
         raw = out[c.key] if c.key in out.columns else pd.Series(0.0, index=out.index)
-        out[f"n_{c.key}"] = percentile_normalize(raw, c.zero_is_absence)
+        if c.absolute is not None:
+            out[f"n_{c.key}"] = absolute_normalize(raw, c.absolute)
+        else:
+            out[f"n_{c.key}"] = percentile_normalize(raw, c.zero_is_absence)
     return out
 
 

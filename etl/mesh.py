@@ -157,6 +157,49 @@ def decode(code: str) -> MeshCell:
     )
 
 
+def grid_index(code: str) -> tuple[int, int]:
+    """メッシュコードを格子の整数座標 (南北, 東西) に直す。
+
+    隣接するメッシュを束ねるためだけの関数。重心の緯度経度を出して距離で
+    近さを測ると、浮動小数の誤差と「東西の幅が緯度で変わる」ことのせいで
+    隣なのに隣と判定されないセルが出る。同じ次数のセルは整数格子に厳密に
+    載るので、整数のまま比べる。
+
+    次数ごとの分割数（2次で8、3次で10、4次と5次で2）を順に掛けて足すだけ。
+    緯度側と経度側で同じ分割数なので、同じ式で両方を出せる。
+
+    >>> grid_index("53394611") == grid_index("53394611")
+    True
+    >>> a, b = grid_index("5339458711"), grid_index("5339458712")
+    >>> abs(a[0] - b[0]) <= 1 and abs(a[1] - b[1]) <= 1   # 東西に隣接
+    True
+
+    TypeScript 側に同じ実装がある（web/src/area.ts）。片方を触ったら両方。
+    """
+    code = code.strip()
+    level = next((lv for lv, n in CODE_LENGTH.items() if n == len(code)), None)
+    if level is None:
+        raise ValueError(f"メッシュコードの桁数が不正: {code!r}")
+
+    i, j = int(code[0:2]), int(code[2:4])
+    if level >= 2:
+        i, j = i * 8 + int(code[4]), j * 8 + int(code[5])
+    if level >= 3:
+        i, j = i * 10 + int(code[6]), j * 10 + int(code[7])
+    for pos in (8, 9):
+        if level >= pos - 4:
+            quad = int(code[pos]) - 1
+            i, j = i * 2 + quad // 2, j * 2 + quad % 2
+    return i, j
+
+
+def is_adjacent(code_a: str, code_b: str) -> bool:
+    """2 つのメッシュが接しているか（斜めも隣とみなす 8 近傍）。"""
+    ia, ja = grid_index(code_a)
+    ib, jb = grid_index(code_b)
+    return abs(ia - ib) <= 1 and abs(ja - jb) <= 1
+
+
 def parent(code: str, level: int) -> str:
     """上位次数のメッシュコードを切り出す（e-Stat の粗いデータとの結合用）。"""
     n = CODE_LENGTH[level]

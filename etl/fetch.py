@@ -37,6 +37,7 @@ import numpy as np
 import pandas as pd
 import requests
 
+from . import geocode
 from .config import (
     CLIP_BUFFER_M,
     CRS_GEOGRAPHIC,
@@ -160,17 +161,70 @@ COLUMN_MAP: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "tokyo_road_noise": {
         "laeq_db": ("昼間等価騒音レベル(dB)", "昼間等価騒音レベル", "LAeq昼間"),
-        "lat": ("緯度",),
-        "lon": ("経度",),
+        # 台東区は「X座標」「Y座標」。**どちらが緯度かは出典で変わる**——
+        # 平面直角座標系なら X が北（緯度相当）だが、台東区は X が経度である。
+        # そのため対応づけは推測で置き、`resolve_column` の値域検査に判定を委ねる
+        # （範囲外なら採らず、中身から探し直す）。候補に入れておく理由は、
+        # 無いと `_fill_coords_from_address` が先に走り、区名の無い住所
+        # （「三ノ輪1丁目27番11号」）で 0〜42% しか当たらないジオコーディングを
+        # 無駄に回した上、ログが「住所から座標化」と誤解を招く形で出るため。
+        "lat": ("緯度", "Y座標"),
+        "lon": ("経度", "X座標"),
         "name": ("測定地点住所", "測定地点", "地点名"),
     },
     "tokyo_public_facility": {
         # 「事業所名」は渋谷区（SHIBUYA OPEN DATA の施設・事業所一覧）、
-        # 「名称」は自治体標準オープンデータセット（世田谷区）の列名。
-        "name": ("施設名", "名称", "施設名称", "事業所名"),
-        "lat": ("緯度",),
-        "lon": ("経度",),
-        "ward": ("区市町村", "自治体名", "所在地_市区町村", "地方公共団体名"),
+        # 「名称」は自治体標準オープンデータセット（世田谷区・新宿区）の列名。
+        # 「ページタイトル」は港区。施設ページの見出しがそのまま施設名になっている。
+        # 「列1」は江東区。**自治体標準オープンデータセットの様式のまま、
+        # 名称の列だけ見出しが表計算の既定値に化けている**（617 行）。
+        # 位置（4 列目）で当てるのは P29 の轍なので、中身で裏を取ってから足した:
+        #   - 一意率 1.00。「小区分」0.06・「担当課」0.04 とは桁が違う（whole= で弾く）
+        #   - `host_type` の一致率 9.2% で全 59 列中の最大
+        #   - **文字数が「名称_カナ」の文字数と r=+0.882 で相関する。**
+        #     同じ様式の「名称_カナ」「名称_英字」「名称_通称」は正しい見出しで
+        #     残っており、カナ読み（コウトウクヤクショ）が名称の裏付けになる。
+        #     他の高一意率列（ID・所在地）は相関しない
+        # 候補の最後に置く。「名称」がある出典ではそちらが先に当たる。
+        "name": ("施設名", "名称", "施設名称", "事業所名", "ページタイトル", "列1"),
+        # 台東区は「X座標」「Y座標」。**どちらが緯度かは出典で変わる**——
+        # 平面直角座標系なら X が北（緯度相当）だが、台東区は X が経度である。
+        # そのため対応づけは推測で置き、`resolve_column` の値域検査に判定を委ねる
+        # （範囲外なら採らず、中身から探し直す）。候補に入れておく理由は、
+        # 無いと `_fill_coords_from_address` が先に走り、区名の無い住所
+        # （「三ノ輪1丁目27番11号」）で 0〜42% しか当たらないジオコーディングを
+        # 無駄に回した上、ログが「住所から座標化」と誤解を招く形で出るため。
+        "lat": ("緯度", "Y座標"),
+        "lon": ("経度", "X座標"),
+        # 「住所」は最後。区名そのものの列がある出典ではそちらを使う。
+        # 文京区は区名の列を持たず住所しか無いので、normalize_ward が
+        # 23 区名との前方一致で区を取り出す。
+        "ward": (
+            "区市町村",
+            "自治体名",
+            "所在地_市区町村",
+            "地方公共団体名",
+            "所在地_連結表記",
+            "住所",
+        ),
+        # 施設種別の列。**名称推定より確かなので、あればこちらを優先する。**
+        # 文京区の集会施設一覧は「アカデミー文京」「本郷会館」のように
+        # 名称からは種別を当てられないが、カテゴリ列に「生涯学習施設」
+        # 「区民会館」と書いてある。名称だけで判定すると 13 件を取りこぼす。
+        # **「第2分類」を「分類」より先に置く。** 港区は両方を持つが、
+        # 「分類」は 009003001000 のような数値コードで種別名ではない。
+        # 「第1分類」は使わない——「図書館・文化・スポーツ施設」のように
+        # 複数種別をまとめた見出しで、屋内プールまで図書館に一致してしまう。
+        "category": (
+            "カテゴリ",
+            "第2分類",
+            "種別",
+            "施設種別",
+            "施設分類",
+            "分類",
+        ),
+        # 緯度経度が無い／空の区のための住所列（etl/geocode.py で座標化する）。
+        "address": ("所在地_連結表記", "住所", "所在地", "所在地_住所"),
     },
 }
 
@@ -440,6 +494,16 @@ def require_nonempty(
     raise ValueError(f"[{tag}] {what}が 0 件。{why}")
 
 
+# 東京 23 区。住所から区を取り出すときの照合表。
+# 部分一致ではなく前方一致で使う（normalize_ward 参照）。
+TOKYO_23_WARDS: tuple[str, ...] = (
+    "千代田区", "中央区", "港区", "新宿区", "文京区", "台東区", "墨田区",
+    "江東区", "品川区", "目黒区", "大田区", "世田谷区", "渋谷区", "中野区",
+    "杉並区", "豊島区", "北区", "荒川区", "板橋区", "練馬区", "足立区",
+    "葛飾区", "江戸川区",
+)
+
+
 def normalize_ward(value: object) -> str:
     """区市町村名を「渋谷区」の形へ揃える。
 
@@ -451,9 +515,29 @@ def normalize_ward(value: object) -> str:
     正規表現で「◯◯区」を拾う書き方はしない。「府中市」の府を都道府県と
     見なして「中市」になるような取り違えを作り込むだけなので、
     都内のデータであることを使って先頭の「東京都」だけを落とす。
+
+    区名の列を持たない出典（文京区の施設一覧は住所しか無い）のために、
+    住所も受ける。ここでも正規表現は使わず、**23 区の名前との前方一致**
+    だけで判定する。一致しなければ元の値をそのまま返すので、
+    市部の値（「府中市」）は壊れない。
     """
-    s = str(value or "").strip()
-    return s[len("東京都") :] if s.startswith("東京都") and s != "東京都" else s
+    # **`str(value or "")` にしてはいけない。** 欠測が float('nan') で来ると
+    # nan は真なので `str(nan)` == "nan" が返り、区名として持ち回られる。
+    # 実際に千代田区の一覧（区名の列が一部空）でこれが起き、
+    # **公開中の提言 10 件のうち 3 件に「ただしnanの施設であり、対象区の所管外。
+    # 区境をまたぐ連携が前提になる」と出ていた**——千代田区の施設なのに逆の注記。
+    # この docstring が警告していた事故そのものを、欠測の側から踏んでいた。
+    if value is None or (isinstance(value, float) and value != value):
+        return ""
+    s = str(value).strip()
+    if s.lower() == "nan":
+        return ""
+    if s.startswith("東京都") and s != "東京都":
+        s = s[len("東京都") :]
+    for ward in TOKYO_23_WARDS:
+        if s.startswith(ward):
+            return ward
+    return s
 
 
 # 中身を見る価値のある拡張子。SHP は .shx/.dbf/.prj を伴うが、
@@ -579,15 +663,45 @@ def unzip(path: Path, dest_dir: Path) -> Path:
 
 
 def read_csv_japanese(path: Path, **kwargs) -> pd.DataFrame:
-    """日本の官公庁 CSV を読む。文字コードは CP932 が多く UTF-8 も混在する。"""
+    """日本の官公庁 CSV を読む。文字コードは CP932 が多く UTF-8 も混在する。
+
+    UTF-16 は **BOM がある場合だけ** 使う。候補の末尾に置いて総当たりすると、
+    Python の utf-16 コーデックは BOM 無しでもリトルエンディアンとみなして
+    偶数長のバイト列をほぼ何でも解読してしまい、CP932 のファイルを
+    例外を出さずに文字化けした表として返す。判定不能なら止まるほうがよい。
+    （新宿区の公共施設一覧が UTF-16。他区は CP932 か UTF-8。）
+    """
+    if path.open("rb").read(2) in (b"\xff\xfe", b"\xfe\xff"):
+        return _drop_blank_rows(pd.read_csv(path, encoding="utf-16", **kwargs), path)
     for enc in ("utf-8-sig", "cp932", "utf-8", "euc_jp"):
         try:
-            return pd.read_csv(path, encoding=enc, **kwargs)
+            return _drop_blank_rows(pd.read_csv(path, encoding=enc, **kwargs), path)
         except UnicodeDecodeError:
             continue
     raise UnicodeDecodeError(
         "unknown", b"", 0, 1, f"{path.name} の文字コードを判定できない"
     )
+
+
+def _drop_blank_rows(df: pd.DataFrame, path: Path) -> pd.DataFrame:
+    """全列が空の行を落とす。
+
+    表計算から書き出した CSV は末尾に空行が付くことがある。値が無いので
+    集計は変わらないが、**列の中身から列を特定する経路が壊れる**。
+    `require_column` は「その列らしい値が何割あるか」で判定するため、
+    空行が混じると一致率が下がって在るはずの列が見つからなくなる。
+
+    実例: 文京区の区立図書館一覧は 18 行のうち 8 行が空で、経度が範囲内の
+    行は 55.6% しかなかった。列名も中身も正しいのに「列 経度 は在るが
+    中身が経度と合わない」で止まっていた。
+    """
+    if df.empty:
+        return df
+    blank = df.isna().all(axis=1)
+    if not blank.any():
+        return df
+    print(f"[read] {path.name}: 全列が空の行を {int(blank.sum())} 行落とした")
+    return df[~blank].reset_index(drop=True)
 
 
 def check_reachability() -> int:
@@ -1388,7 +1502,7 @@ def normalize_wamnet(
         len(gdf),
         tag="wamnet",
         what="研究領域内の事業所",
-        why=f"{len(df):,}件を読んだが対象 2 区に入るものが無い。",
+        why=f"{len(df):,}件を読んだが対象区に入るものが無い。",
         per_file=True,
     )
 
@@ -1963,7 +2077,7 @@ def normalize_parks(path: Path, clip: bool = True) -> gpd.GeoDataFrame:
         len(gdf),
         tag="p13",
         what="研究領域内の都市公園",
-        why=f"{total:,}件を読んだが対象 2 区に入るものが無い。",
+        why=f"{total:,}件を読んだが対象区に入るものが無い。",
         per_file=True,
     )
 
@@ -2070,7 +2184,7 @@ def normalize_noise(path: Path) -> gpd.GeoDataFrame:
         tag="noise",
         what="研究領域内の測定点",
         why=(
-            f"{len(df):,}件を読んだが対象 2 区に入るものが無い。"
+            f"{len(df):,}件を読んだが対象区に入るものが無い。"
             f"{lat_col}/{lon_col} が緯度経度か、"
             "都全体のファイルか（区が違う）を確認すること。"
         ),
@@ -2100,6 +2214,55 @@ def normalize_noise(path: Path) -> gpd.GeoDataFrame:
     ].reset_index(drop=True)
 
 
+# 公表された座標がこの割合を下回ったら、住所からの座標化へ切り替える。
+# 「列は在るが全行空」（千代田区 230 行）と「一部だけ欠測」（荒川区 52%）の
+# 両方を同じ経路で拾う。公表値がある行はそのまま残し、欠けている行だけ埋める。
+COORD_MIN_RATIO = 0.95
+
+
+def _fill_coords_from_address(df: pd.DataFrame, path: Path) -> bool:
+    """緯度経度が欠けている行を、住所から埋める。埋めたら True。
+
+    **公表された座標より優先しない。** 位置参照情報は街区の代表点なので、
+    施設が公表している座標のほうが常に確からしい。欠けている行だけを埋める。
+
+    座標が無いだけで区ごと落とすと、供給側の網羅性が区によって変わり、
+    「到達不可」が実態ではなくデータの有無で決まる（docs/issues.md A9）。
+    """
+    lat_col = pick_column(df, COLUMN_MAP["tokyo_public_facility"]["lat"])
+    lon_col = pick_column(df, COLUMN_MAP["tokyo_public_facility"]["lon"])
+    addr_col = pick_column(df, COLUMN_MAP["tokyo_public_facility"]["address"])
+
+    have = pd.Series(False, index=df.index)
+    if lat_col and lon_col:
+        have = pd.to_numeric(df[lat_col], errors="coerce").between(
+            *TOKYO_LAT_RANGE
+        ) & pd.to_numeric(df[lon_col], errors="coerce").between(*TOKYO_LON_RANGE)
+        if have.mean() >= COORD_MIN_RATIO:
+            return False
+
+    if addr_col is None:
+        # 座標も住所も無い。require_column が実際の列を添えて止める。
+        return False
+
+    missing = ~have
+    print(
+        f"[facilities] {path.name}: 公表座標が {int(have.sum()):,}/{len(df):,} 行。"
+        f"残り {int(missing.sum()):,} 行を住所（{addr_col}）から補う"
+    )
+    geocoder = geocode.load(TOKYO_23_WARDS)
+    lat, lon = geocode.geocode_column(
+        df.loc[missing, addr_col], geocoder, tag="facilities"
+    )
+    if lat_col is None or lon_col is None:
+        lat_col, lon_col = "緯度", "経度"
+        df[lat_col] = pd.NA
+        df[lon_col] = pd.NA
+    df.loc[missing, lat_col] = lat
+    df.loc[missing, lon_col] = lon
+    return True
+
+
 def normalize_hosts(path: Path) -> gpd.GeoDataFrame:
     """公共施設一覧をホスト施設候補にする。
 
@@ -2110,6 +2273,7 @@ def normalize_hosts(path: Path) -> gpd.GeoDataFrame:
     区ごとに様式が違うデータなので、列名の決め打ちが最も外れやすい。
     """
     df = read_csv_japanese(path)
+    geocoded = _fill_coords_from_address(df, path)
     lon_col = require_column(
         df,
         path,
@@ -2132,6 +2296,19 @@ def normalize_hosts(path: Path) -> gpd.GeoDataFrame:
         predicate=lambda s: pd.to_numeric(s, errors="coerce").between(*TOKYO_LAT_RANGE),
         name_hint=r"緯度|lat",
     )
+    # 種別列。あれば名称推定より確かなので併用する（無い区のほうが多い）。
+    category_col = optional_column(
+        df,
+        "tokyo_public_facility",
+        "category",
+        tag="facilities",
+        label="施設種別",
+        fallback="施設名からの判定だけになる",
+    )
+    categories = (
+        df[category_col].astype(str) if category_col else pd.Series("", index=df.index)
+    )
+
     name_col = require_column(
         df,
         path,
@@ -2146,11 +2323,34 @@ def normalize_hosts(path: Path) -> gpd.GeoDataFrame:
         ),
         # 中身から探す場合は「ホスト種別として判定できる名前が並んでいる列」を
         # 目印にする。一覧には対象外の施設（学校・保育園・駐輪場）も含まれるため、
-        # 全件一致は期待できない。実データでは渋谷区 5.5% / 世田谷区 15% で、
-        # 一致率の下限では列を選べない。代わりに列名の手掛かりを必須にする
-        # （「地方公共団体名」のような別の名前列を掴まないための条件）。
-        predicate=lambda s: s.astype(str).map(host_type).notna(),
-        min_ratio=0.05,
+        # 全件一致は期待できない。**一致率の下限では列を選べない。**
+        # 23 区分を通した実測で 世田谷区 19.5% / 新宿区 24.7% / 葛飾区 21.8% に対し
+        # 豊島区は 4.1%（538 行中 22 件）まで開く。区によって一覧に載せる施設の
+        # 範囲が違うだけで、名称列そのものは正しい。
+        # 下限は「その列が名前の列でないこと」を弾く役割に留め、
+        # 実質の保証は列名の手掛かり（require_hint）に置く。
+        # 「地方公共団体名」も手掛かりには一致するが、値が区名の繰り返しで
+        # ホスト判定が 0% になるためここで落ちる。
+        # **種別列も一緒に見る。** 名称だけで判定すると、港区のように
+        # 「芝地区総合支所」「芝の家」といった名称で、種別列（第2分類）に
+        # 「総合支所・分室」「区民協働施設」と書いてある区を落とす。
+        # 実際、名称だけの判定では 12 行中 0 件となり列ごと弾かれていた。
+        predicate=lambda s: pd.Series(
+            [host_type(v, c) is not None for v, c in zip(s, categories)],
+            index=s.index,
+        ),
+        min_ratio=0.02,
+        # **施設名は施設ごとに違う。** 一致率の下限（2%）は分類列を弾けない——
+        # 江東区で「列1」を諦めた理由がこれで、「小区分」5.3%・「担当課」2.4% も
+        # 下限を超えるため、一致率だけでは 3 列のどれとも決められなかった。
+        # 列全体の一意率を見ると「列1」1.00 に対し 0.06 / 0.04 で桁が違う。
+        # 実在する名称列の一意率は 23 区分の実測で最小 0.986（板橋区）なので、
+        # 0.5 は「分類列を弾く」役にだけ効き、名称列は落とさない。
+        whole=lambda s: (
+            s.astype(str).replace("nan", "").pipe(lambda t: t[t != ""]).nunique()
+            / max((s.astype(str).replace("nan", "") != "").sum(), 1)
+            >= 0.5
+        ),
         name_hint=r"施設|名称|名前|名$",
         require_hint=True,
     )
@@ -2169,12 +2369,15 @@ def normalize_hosts(path: Path) -> gpd.GeoDataFrame:
         tag="facilities",
         what="研究領域内の公共施設",
         why=(
-            f"{len(df):,}件を読んだが対象 2 区に入るものが無い。"
+            f"{len(df):,}件を読んだが対象区に入るものが無い。"
             f"{lat_col}/{lon_col} が緯度経度か確認すること。"
         ),
     )
     gdf["name"] = gdf[name_col]
-    gdf["host_kind"] = gdf["name"].map(host_type)
+    gdf_categories = (
+        gdf[category_col].astype(str) if category_col else pd.Series("", index=gdf.index)
+    )
+    gdf["host_kind"] = [host_type(n, c) for n, c in zip(gdf["name"], gdf_categories)]
     gdf["ward"] = gdf[ward_col].map(normalize_ward) if ward_col else ""
     gdf["source"] = SOURCES["tokyo_public_facility"].label
     gdf["synthetic"] = False
@@ -2389,9 +2592,23 @@ def dedupe_points(gdf: gpd.GeoDataFrame, tag: str) -> gpd.GeoDataFrame:
     if "name" not in gdf.columns or len(gdf) == 0:
         return gdf
 
-    # 全角空白・記号のゆれだけを吸収する。「区立」の有無のような
-    # 実質的な差は残す——別施設を潰す方が、重複を残すより悪い。
+    # 全角空白・記号のゆれに加え、**同じ施設を別の書き方で載せている分だけ**を
+    # 吸収する。かつては「区立」の有無も実質的な差として残していたが、
+    # 23 区分を並べたところ **100m 以内に同一施設が 63 組**残っていた:
+    #   「北新宿図書館」↔「新宿区立北新宿図書館」（新宿・中央・荒川・豊島・目黒）
+    #   「祖師谷児童館」↔「祖師谷児童館（複合施設）」（世田谷）
+    # 出典が違うだけで、どちらも同じ建物を指す。片方は P14、片方は区の一覧。
+    #
+    # **括弧を一律に外してはいけない。** 中野区の「もみじ山文化センター（本館）」と
+    # 「（西館）」は別建物で、外すと 1 件に潰れる。落とすのは
+    # 「（複合施設）」という世田谷区の注記だけに限る（施設を区別する語ではない）。
+    # 「（旧）奥沢まちづくりセンター」も残る形にしてある（廃止施設は
+    # `HOST_EXCLUDE_PATTERNS` の「旧」で別に落ちる）。
     norm = gdf["name"].astype(str).str.replace(r"[\s　・]", "", regex=True)
+    norm = norm.str.replace(r"[（(]複合施設[)）]", "", regex=True)
+    norm = norm.str.replace(
+        r"^(?:" + "|".join(TOKYO_23_WARDS) + r")立?", "", regex=True
+    )
     if "kind" in gdf.columns:
         norm = norm + "\x00" + gdf["kind"].astype(str)
     metric = gdf.to_crs(CRS_PROJECTED).geometry

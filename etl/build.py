@@ -9,8 +9,9 @@
 出力は web/public/data/ 配下:
     mesh.geojson       メッシュ形状 + 正規化済み構成要素 + 既定重みでのスコア
     cards.json         上位メッシュの根拠カード
-    proposals.json     施設単位に束ねた提言リスト
-    hosts.geojson      ホスト施設（供給側）
+    proposals.json     隣接する上位区画を地区にまとめた提言リスト
+                       （施設単位ではない。理由は etl/hosts.py の build_proposals）
+    hosts.geojson      既存の公共施設（供給側）
     demand_points.geojson  需要側の点データ（地図の文脈表示用）
     meta.json          構成要素定義・出典・生成条件
 
@@ -174,6 +175,15 @@ def build_mesh_table(layers: dict, level: int) -> gpd.GeoDataFrame:
         mesh_gdf, layers["parks"]
     ).to_numpy()
 
+    # メッシュ自身の区名。**表示だけの列ではない。** 提言の宛先は施設ではなく
+    # 区であり、地区の見出しにも区名が要る。以前は割り当てた施設の区名で
+    # 代用していたが、それは「この区画がどの区か」ではなく「例示した施設が
+    # どの区か」で、区境際では食い違う。面積最大の区を採る（重心だと
+    # 行政界で切られたセルの重心が区外に出ることがある）。
+    mesh_gdf["ward"] = aggregate.polygon_dominant_class(
+        mesh_gdf, area, "ward"
+    ).to_numpy()
+
     _attach_facts(mesh_gdf, layers)
     return mesh_gdf
 
@@ -199,6 +209,14 @@ def _attach_facts(mesh_gdf: gpd.GeoDataFrame, layers: dict) -> None:
     ).to_numpy()
     mesh_gdf["f_clinic_n"] = aggregate.count_within(
         mesh_gdf, layers["clinics"], walk
+    ).to_numpy()
+
+    # 供給側の実数。**これが供給側について言える唯一のこと**——徒歩圏に
+    # 屋内の公共空間が幾つ在るか。どれが適するかは測っていない。
+    # 数えているのは施設一覧の行数であって建物の数ではない（100m 以内に
+    # 別種別の行が並ぶ組が残っている。docs/issues.md）。
+    mesh_gdf["f_host_n"] = aggregate.count_within(
+        mesh_gdf, layers["hosts"], HOST_MAX_DISTANCE_M
     ).to_numpy()
 
     station = aggregate.nearest_feature(
@@ -228,6 +246,12 @@ def _attach_facts(mesh_gdf: gpd.GeoDataFrame, layers: dict) -> None:
 def _feature_properties(row: pd.Series) -> dict:
     """配信サイズを抑えるため、必要な列だけを丸めて出す。"""
     props = {"c": row["mesh_code"]}
+    # 区名は文字列で持つと 9,507 件で無視できない量になるので、
+    # meta.json の target_wards への添字で渡す。一覧に無い区名なら省く
+    # （ブラウザ側は区名なしとして地区の見出しを組む）。
+    ward = str(row.get("ward") or "")
+    if ward in TARGET_WARDS:
+        props["w"] = TARGET_WARDS.index(ward)
     for comp in ALL_COMPONENTS:
         props[f"n_{comp.key}"] = score.publish_round(row[f"n_{comp.key}"])
     for key in ("demand", "load", "priority"):
@@ -250,6 +274,7 @@ def _feature_properties(row: pd.Series) -> dict:
         ("f_clinic_n", int),
         ("f_station_riders", int),
         ("f_station_dist", int),
+        ("f_host_n", int),
         ("f_noise_db", float),
         ("f_green_pct", float),
     ):
@@ -352,6 +377,18 @@ def write_outputs(
                 "zeroIsAbsence": c.zero_is_absence,
                 "source": c.source,
                 "rationale": c.rationale,
+                # 絶対尺度の層は「対象地域内の相対順位」という但し書きが要らない。
+                # 画面でそこを区別して見せるために配信する（docs/issues.md B2）。
+                "absolute": (
+                    None
+                    if c.absolute is None
+                    else {
+                        "label": c.absolute.label,
+                        "lo": c.absolute.lo,
+                        "hi": c.absolute.hi,
+                        "basis": c.absolute.basis,
+                    }
+                ),
             }
             for c in ALL_COMPONENTS
         ],
@@ -481,10 +518,12 @@ def main(argv: list[str] | None = None) -> int:
         mesh_gdf, scored, layers, cards, proposals, args.live, args.level, provenance
     )
 
-    print(f"\n[提言] 施設単位に集約した候補 {len(proposals)} 件（上位 3 件）:")
+    print(f"\n[提言] 隣接区画を地区にまとめた候補 {len(proposals)} 件（上位 3 件）:")
     for p in proposals[:3]:
-        name = p["host_name"] or "（既存施設では到達不可）"
-        print(f"  {p['best_rank']:>2}位 {name} — {p['narrative'][:80]}…")
+        print(
+            f"  {p['best_rank']:>2}位 {p['area_label']}"
+            f"（{p['mesh_count']}区画 / 徒歩圏に施設が無い区画 {p['unreachable_meshes']}）"
+        )
 
     if args.sensitivity:
         result = sensitivity.run(normalized)

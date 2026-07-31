@@ -1,9 +1,14 @@
 """
-上位メッシュへの「ホスト施設」割当と、根拠カードの生成。
+既存の公共施設（供給側）との距離の集計と、根拠カード・提言リストの生成。
 
-本プロジェクトは分析で終わらせず「この施設に置け」まで言い切る。
-ヒートマップは行政の意思決定にそのまま使えないが、
-施設名の入った提言リストは予算会議の資料になる。
+**この道具は区画について述べる。施設については述べない。**
+需要も負荷もメッシュの属性から作っており、施設の適性を測る項目は
+一つも無い。したがって出せる結論は「この区画の優先度が高い」までで、
+「この建物に置け」ではない。供給側のレイヤーが答えるのは
+「徒歩圏に屋内の公共空間がそもそも在るか」だけである。
+
+かつては割当先の施設名を提言の見出しにしていた（`build_proposals` を参照）。
+やめた経緯もそこに書いてある。
 """
 
 from __future__ import annotations
@@ -12,6 +17,7 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 
+from . import mesh as meshlib
 from .config import (
     ALL_COMPONENTS,
     TARGET_WARDS,
@@ -35,16 +41,19 @@ def assign_hosts(
     hosts: gpd.GeoDataFrame,
     max_distance_m: float = HOST_MAX_DISTANCE_M,
 ) -> pd.DataFrame:
-    """各メッシュに最適なホスト施設を 1 件割り当てる。
+    """各メッシュに、徒歩圏の公共施設を代表 1 件だけ割り当てる。
 
-    最寄りを機械的に選ぶのではなく、`HOST_PREFERENCE` の順位を優先する。
-    150m 先の駅より 400m 先の図書館を選ぶ、という判断を入れている。
-    図書館は静穏であることが既に運営方針に含まれており、
-    一室を転用する合意形成の難易度が最も低いため。
+    **これは設置先の選定ではない。** この列の役割は二つに減っている。
 
-    max_distance_m 以内に候補が無いメッシュは host_name が空になる。
-    これは失敗ではなく「既存の公共施設では届かない＝新設が必要」という
-    それ自体が提言になる出力。
+    1. `max_distance_m` 以内に 1 件も無いメッシュを見つけること。
+       これが「既存の公共施設では届かない」＝地図を眺めても出てこない出力で、
+       失敗ではなくそれ自体が提言になる。
+    2. その区画の徒歩圏に何が在るかを 1 件例示すること。
+
+    どちらも「どこに置くべきか」の判断を含まない。`HOST_PREFERENCE` は
+    例示に選ぶ順番を決めているだけで、到達可否には効かない（1 件でも
+    圏内にあれば到達可能）。したがってこの順位を入れ替えてもスコアも
+    到達不可の件数も動かず、カードに出る施設名だけが変わる。
     """
     idx = pd.Index(mesh_gdf["mesh_code"], name="mesh_code")
     empty = pd.DataFrame(
@@ -144,6 +153,12 @@ def _top_factors(row: pd.Series, side: str, k: int = 3) -> list[dict]:
     return items[:k]
 
 
+def _target_ward(value) -> str:
+    """対象区の一覧に載っている区名だけを返す。それ以外は空。"""
+    name = str(value or "")
+    return name if name in TARGET_WARDS else ""
+
+
 def _narrative(row: pd.Series, rank: int) -> str:
     """予算会議にそのまま出せる日本語の根拠文を組み立てる。"""
     d_factors = _top_factors(row, "demand", 2)
@@ -170,21 +185,22 @@ def _narrative(row: pd.Series, rank: int) -> str:
     if green < 0.15:
         parts.append("緑・公園被覆がほぼ無く、屋外に代替の退避先が存在しない。")
 
+    # 供給側は「在るか / 幾つ在るか」までしか述べない。
+    # かつてここに「設置候補: ◯◯図書館」と書いていたが、それはこのモデルが
+    # 計算していない結論だった（施設の適性を測る項目が無い）。
     host = str(row.get("host_name") or "")
     if host:
+        n = int(row.get("f_host_n") or 0)
         dist = row.get("host_distance_m")
-        where = f"（メッシュ重心から約{int(dist)}m）" if pd.notna(dist) else ""
-        parts.append(f"設置候補: {host}{where}。")
-        ward = str(row.get("host_ward") or "")
-        if ward and ward not in TARGET_WARDS:
-            parts.append(
-                f"ただし{ward}の施設であり、対象区の所管外。"
-                "区境をまたぐ連携が前提になる。"
-            )
+        near = f"、最寄りは{host}で約{int(dist)}m" if pd.notna(dist) else f"（例: {host}）"
+        parts.append(
+            f"徒歩圏（{int(HOST_MAX_DISTANCE_M)}m）に区の公共施設が{n}件{near}"
+            "（施設側の余剰空間も運営体制も測っておらず、適否の判断は含まない）。"
+        )
     else:
         parts.append(
-            f"半径{int(HOST_MAX_DISTANCE_M)}m 以内に転用可能な公共施設が無い。"
-            "既存ストックでは到達できず、新規整備または民間施設との連携が要る。"
+            f"半径{int(HOST_MAX_DISTANCE_M)}m 以内に区の公共施設が 1 件も無い。"
+            "既存ストックの徒歩圏から外れており、新規整備か民間施設との連携が要る。"
         )
     return "".join(parts)
 
@@ -201,7 +217,18 @@ def build_cards(df: pd.DataFrame, top_n: int = 20) -> list[dict]:
                 "mesh_code": row["mesh_code"],
                 "lon": round(float(row["lon"]), 6),
                 "lat": round(float(row["lat"]), 6),
-                "ward": row.get("ward", ""),
+                # メッシュ自身の区名。地区の名前と提言先の自治体はこれで決まる。
+                # 以前は施設側の区名で代用していたが、それは「この区画がどの区か」
+                # ではなく「例示した施設がどの区か」で、区境際で食い違う。
+                #
+                # 対象区の一覧に無い名前は空にする。**ブラウザ側と揃えるため。**
+                # 配信では区名を target_wards への添字で渡しており、一覧に無い
+                # 名前は落ちる。ここで落とさないと、模擬データモードで
+                # Python が「対象地域（模擬・矩形） 渋谷駅周辺」、
+                # ブラウザが「渋谷駅周辺」と別の見出しを出す。
+                "ward": _target_ward(row.get("ward")),
+                "station": str(row.get("f_station_name") or ""),
+                "host_count": int(row.get("f_host_n") or 0),
                 "priority": round(float(row["priority"]), 3),
                 "demand": round(float(row["demand"]), 3),
                 "load": round(float(row["load"]), 3),
@@ -221,60 +248,174 @@ def build_cards(df: pd.DataFrame, top_n: int = 20) -> list[dict]:
     return cards
 
 
-def build_proposals(cards: list[dict], limit: int = 10) -> list[dict]:
-    """カードを施設単位に束ね、重複のない提言リストにする。
+def cluster_adjacent(codes: list[str]) -> list[list[int]]:
+    """隣接するメッシュ同士をひとまとまりにする（連結成分）。
 
-    ひとつの図書館が隣接する複数の高優先度メッシュをまとめて受け持つことは多い。
-    メッシュを羅列すると同じ施設が何度も出てきて提言として読めないため、
-    施設ごとに集約し「何メッシュ分の需要を受け持つか」を併記する。
-    この件数がそのまま費用対効果の説明になる。
+    返すのは `codes` の添字のリストで、各まとまりの中は元の順序を保つ。
+    先頭のまとまりほど元の順位が高い。
     """
-    by_host: dict[str, dict] = {}
-    unreachable: list[dict] = []
+    idx = [meshlib.grid_index(c) for c in codes]
+    parent = list(range(len(codes)))
 
-    for card in cards:
-        host = card["host_name"]
-        if not host:
-            unreachable.append(card)
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for a in range(len(codes)):
+        for b in range(a + 1, len(codes)):
+            if abs(idx[a][0] - idx[b][0]) <= 1 and abs(idx[a][1] - idx[b][1]) <= 1:
+                ra, rb = find(a), find(b)
+                if ra != rb:
+                    parent[max(ra, rb)] = min(ra, rb)
+
+    groups: dict[int, list[int]] = {}
+    for i in range(len(codes)):
+        groups.setdefault(find(i), []).append(i)
+    return [groups[k] for k in sorted(groups)]
+
+
+def _area_label(wards: list[str], stations: list[str]) -> tuple[str, str]:
+    """地区の見出しを組み立て、(表示名, 区の表記) を返す。
+
+    駅名は「その区画から最も近い駅」であって管理者でも所在地でもないので、
+    名指しの問題を起こさずに場所を指せる。順位の高い区画のものから採り、
+    片方がもう片方の先頭に含まれる名前は落とす（「大塚」と「大塚駅前」を
+    並べても場所は 1 つしか指していない）。
+    """
+    picked: list[str] = []
+    for s in stations:
+        if not s or any(s.startswith(p) or p.startswith(s) for p in picked):
             continue
-        entry = by_host.get(host)
-        if entry is None:
-            by_host[host] = {
-                "host_name": host,
-                "host_kind": card["host_kind"],
-                "best_rank": card["rank"],
-                "priority": card["priority"],
-                "lon": card["lon"],
-                "lat": card["lat"],
-                "ward": card["ward"],
-                "covered_meshes": 1,
-                "mesh_codes": [card["mesh_code"]],
-                "narrative": card["narrative"],
-            }
-        else:
-            entry["covered_meshes"] += 1
-            entry["mesh_codes"].append(card["mesh_code"])
+        picked.append(s)
+        if len(picked) == 2:
+            break
 
-    proposals = sorted(by_host.values(), key=lambda d: d["best_rank"])[:limit]
-    for p in proposals:
-        if p["covered_meshes"] > 1:
-            p["narrative"] += (
-                f"この施設 1 箇所で上位{p['covered_meshes']}メッシュ分の"
-                "需要を受け持てる。"
+    uniq_wards = list(dict.fromkeys(w for w in wards if w))
+    if not uniq_wards:
+        ward_label = ""
+    elif len(uniq_wards) == 1:
+        ward_label = uniq_wards[0]
+    else:
+        # またがっていること自体が重要な情報。提言先の自治体が分かれる。
+        ward_label = f"{uniq_wards[0]}ほか"
+
+    where = "・".join(picked) + "周辺" if picked else "周辺"
+    return (f"{ward_label} {where}".strip(), ward_label)
+
+
+def build_proposals(cards: list[dict], limit: int = 10) -> list[dict]:
+    """カードを「隣接する区画のまとまり（地区）」単位に束ねる。
+
+    **以前は割当先の施設ごとに束ね、施設名を見出しにしていた。** やめた理由:
+
+    1. **このモデルは施設を評価していない。** 需要も負荷も区画の属性で、
+       施設の適性を測る構成要素は一つも無い。上位の見出しが図書館ばかりに
+       なるのは、区の公共施設一覧に何が載っていたかと、それがたまたま
+       どこに在ったかの副産物であって、選定の結果ではない。
+       それでも出力は「図書館を選んでいる」ように読めてしまう。
+    2. **見出しの施設は、その区画の中に無いことが多い。** 割当は半径 700m
+       まで許しているので、250m メッシュの重心から 500〜700m 離れた建物が
+       見出しに載る。分析している場所と名指しした建物が一致していない。
+    3. **名指しされる側は同意していない。** 公開地図の見出しに実在の施設名を
+       置けば、それは特定の建物への設置要求として読まれる。オープンデータから
+       言えるのは区画までで、建物の余剰空間も運営体制も測っていない。
+
+    束ねる根拠も変えた。「同じ施設が最寄り（最大 700m）」から
+    「メッシュが格子の上で接している」へ。後者は整数座標だけで決まり、
+    施設の配置にも距離のしきい値にも依存しない。
+    """
+    if not cards:
+        return []
+
+    groups = cluster_adjacent([c["mesh_code"] for c in cards])
+    proposals: list[dict] = []
+
+    for members_idx in groups:
+        members = [cards[i] for i in members_idx]
+        top = members[0]
+        n = len(members)
+
+        wards = [m["ward"] for m in members]
+        label, ward_label = _area_label(wards, [m.get("station", "") for m in members])
+
+        # 徒歩圏に在る施設の「例」。見出しにはしない。
+        facilities: list[dict] = []
+        seen: set[str] = set()
+        for m in members:
+            name = m["host_name"]
+            if name and name not in seen:
+                seen.add(name)
+                facilities.append(
+                    {"name": name, "kind": m["host_kind"], "ward": m["host_ward"]}
+                )
+
+        unreachable_n = sum(1 for m in members if not m["host_name"])
+
+        ward_counts: dict[str, int] = {}
+        for w in wards:
+            if w:
+                ward_counts[w] = ward_counts.get(w, 0) + 1
+
+        proposals.append(
+            {
+                "area_label": label,
+                "ward_label": ward_label,
+                "ward_counts": ward_counts,
+                "best_rank": top["rank"],
+                "priority": top["priority"],
+                "lon": top["lon"],
+                "lat": top["lat"],
+                "mesh_count": n,
+                "mesh_codes": [m["mesh_code"] for m in members],
+                "unreachable_meshes": unreachable_n,
+                "facilities": facilities,
+                "narrative": top["narrative"]
+                + _cluster_narrative(n, ward_counts, unreachable_n, facilities),
+            }
+        )
+
+    proposals.sort(key=lambda d: d["best_rank"])
+    return proposals[:limit]
+
+
+def _cluster_narrative(
+    n: int, ward_counts: dict[str, int], unreachable_n: int, facilities: list[dict]
+) -> str:
+    """地区としてまとまったことで初めて言えることを足す。
+
+    1 区画ずつ眺めても出てこない情報だけを書く。何区画が続いているか、
+    区をまたぐか、そのうち何区画が徒歩圏に施設を持たないか。
+    """
+    parts: list[str] = []
+
+    if n > 1:
+        parts.append(f"隣接する{n}区画がまとまって上位に入っている。")
+
+    if len(ward_counts) > 1:
+        breakdown = "・".join(
+            f"{w}{c}区画" for w, c in sorted(ward_counts.items(), key=lambda kv: -kv[1])
+        )
+        parts.append(f"この地区は{breakdown}にまたがり、提言先の自治体が分かれる。")
+
+    if unreachable_n == n and n > 1:
+        parts.append("全区画が徒歩圏に区の公共施設を持たない。")
+    elif unreachable_n:
+        parts.append(f"うち{unreachable_n}区画は徒歩圏に区の公共施設が無い。")
+
+    # 施設名は「1 区画だけの地区」なら区画側の文が既に挙げているので繰り返さない。
+    if len(facilities) > 1:
+        names = "、".join(f"{f['name']}（{f['kind']}）" for f in facilities[:3])
+        more = f" ほか" if len(facilities) > 3 else ""
+        parts.append(
+            f"各区画から最も近い施設は重複を除いて{len(facilities)}件（{names}{more}）。"
+        )
+    if facilities:
+        other = {f["ward"] for f in facilities if f["ward"] and f["ward"] not in ward_counts}
+        if other:
+            parts.append(
+                f"うち{'・'.join(sorted(other))}の施設が含まれ、区境をまたぐ連携が前提になる。"
             )
 
-    return proposals + [
-        {
-            "host_name": "",
-            "host_kind": "",
-            "best_rank": c["rank"],
-            "priority": c["priority"],
-            "lon": c["lon"],
-            "lat": c["lat"],
-            "ward": c["ward"],
-            "covered_meshes": 1,
-            "mesh_codes": [c["mesh_code"]],
-            "narrative": c["narrative"],
-        }
-        for c in unreachable[:3]
-    ]
+    return "".join(parts)

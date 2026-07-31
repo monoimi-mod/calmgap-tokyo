@@ -25,10 +25,12 @@ import numpy as np
 import pandas as pd
 
 from . import fetch
+from . import hosts as hostlib
 from . import mesh as meshlib
 from . import score
 from .aggregate import join_by_mesh_code, build_mesh_frame
-from .config import ALL_COMPONENTS, DEMAND_COMPONENTS
+from .config import ALL_COMPONENTS, DEMAND_COMPONENTS, LOAD_COMPONENTS, AbsoluteScale
+from .schema import ZONING_LOAD
 
 _failures: list[str] = []
 
@@ -170,6 +172,99 @@ def _publish_round_matches_js():
     assert score.publish_round(0.12344) == 0.1234
     got = score.publish_round(pd.Series([0.03125, 0.5, 0.0]))
     assert list(got) == [0.0313, 0.5, 0.0], list(got)
+
+
+@check("絶対尺度は基準点を守り、範囲外を切り詰める")
+def _absolute_anchors():
+    s = AbsoluteScale(label="", lo=55.0, hi=75.0, basis="")
+    n = score.absolute_normalize(pd.Series([55.0, 60.0, 65.0, 70.0, 75.0]), s)
+    assert list(n) == [0.0, 0.25, 0.5, 0.75, 1.0], list(n)
+
+    # 基準の外側は飽和させる。40dB と 50dB の差にスコア上の意味は無いし、
+    # 要請限度を超えた先で線形に伸ばし続ける根拠も無い。
+    n = score.absolute_normalize(pd.Series([40.0, 90.0]), s)
+    assert list(n) == [0.0, 1.0], list(n)
+
+    try:
+        score.absolute_normalize(pd.Series([1.0]), AbsoluteScale("", 1.0, 1.0, ""))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("lo == hi のスケールが素通りした")
+
+
+@check("絶対尺度は他のメッシュの値に依存しない")
+def _absolute_is_context_free():
+    """順位化との決定的な違い。ここが崩れると A1 の事故が再発する。
+
+    同じ 70dB のメッシュが、周りが静かか騒がしいかでスコアを変えてはいけない。
+    パーセンタイル正規化に戻してしまうと、この検査だけが落ちる。
+    """
+    s = AbsoluteScale(label="", lo=55.0, hi=75.0, basis="")
+    quiet = score.absolute_normalize(pd.Series([70.0, 56.0, 57.0, 58.0]), s)
+    loud = score.absolute_normalize(pd.Series([70.0, 73.0, 74.0, 75.0]), s)
+    assert quiet.iloc[0] == loud.iloc[0] == 0.75, (quiet.iloc[0], loud.iloc[0])
+
+    # 対比: 同じ入力を順位化すると 1.0 と 0.0 に割れる。
+    q = score.percentile_normalize(pd.Series([70.0, 56.0, 57.0, 58.0]), False)
+    l = score.percentile_normalize(pd.Series([70.0, 73.0, 74.0, 75.0]), False)
+    assert q.iloc[0] == 1.0 and l.iloc[0] == 0.0, (q.iloc[0], l.iloc[0])
+
+
+@check("狭い範囲のデータが 0〜1 いっぱいへ引き伸ばされない")
+def _absolute_preserves_spread():
+    """A1 の事故そのものを検査する。
+
+    対象 2 区の内挿騒音は 62.0〜75.8 dB（標準偏差 2.24 dB）に収まる。
+    順位化するとこれが σ 0.289 まで広がり、測定点の区依存の偏りが
+    そのまま増幅されて区ダミーとして働いていた。
+    """
+    rng = np.random.default_rng(0)
+    # 尺度の内側（55〜75dB）に収めて、切り詰めの影響を除いた関係を検査する。
+    db = pd.Series(np.clip(rng.normal(69.7, 2.24, 1000), 62.0, 75.0))
+    s = AbsoluteScale(label="", lo=55.0, hi=75.0, basis="")
+
+    absolute = score.absolute_normalize(db, s)
+    ranked = score.percentile_normalize(db, False)
+    assert absolute.std() < ranked.std() / 2, (
+        f"絶対尺度がばらつきを縮めていない: {absolute.std():.3f} vs {ranked.std():.3f}"
+    )
+    # dB のばらつきが 20dB 幅の尺度上へそのまま縮小して載る（順位化は載せない）。
+    assert abs(absolute.std() - db.std() / 20.0) < 1e-12, absolute.std()
+
+
+@check("用途地域の設計値が正規化で潰れない")
+def _zoning_absolute_survives():
+    """ZONING_LOAD は用途制限の強さから導いた絶対尺度で、
+    「第二種住居地域でカラオケ・パチンコが解禁される」といった段差を
+    意図して置いてある。順位化に通すとこの段差が均され、
+    第一種低層住居専用地域（設計値 0.05）が 0.285 まで持ち上がっていた。
+    """
+    zoning = next(c for c in LOAD_COMPONENTS if c.key == "zoning")
+    assert zoning.absolute is not None, "用途地域が絶対尺度になっていない"
+
+    # 実際の分布に近い構成（低層住専が過半）を作る。
+    raw = pd.Series([ZONING_LOAD[1]] * 55 + [ZONING_LOAD[3]] * 22 + [ZONING_LOAD[9]] * 7)
+    out = score.normalize_components(pd.DataFrame({"zoning": raw}), (zoning,))
+    n = out["n_zoning"]
+
+    assert n.iloc[0] == ZONING_LOAD[1], f"第一種低層が {n.iloc[0]}（設計値 0.05）"
+    assert n.iloc[-1] == ZONING_LOAD[9], f"商業地域が {n.iloc[-1]}（設計値 1.00）"
+    # 段差の比が保存されること。順位化すると 0.285 対 0.966 で 3.4 倍まで縮む。
+    assert n.iloc[-1] / n.iloc[0] == ZONING_LOAD[9] / ZONING_LOAD[1]
+
+
+@check("絶対尺度の層は基準の出典を必ず持つ")
+def _absolute_requires_basis():
+    """lo / hi をどの法令から取ったか書けない層に絶対尺度を使うと、
+    順位化の恣意性を別の恣意性に置き換えただけになる。
+    """
+    for c in ALL_COMPONENTS:
+        if c.absolute is None:
+            continue
+        assert c.absolute.basis.strip(), f"{c.key} の absolute.basis が空"
+        assert c.absolute.label.strip(), f"{c.key} の absolute.label が空"
+        assert c.absolute.lo < c.absolute.hi, f"{c.key} の lo < hi が成り立たない"
 
 
 # ---------------------------------------------------------------------------
@@ -781,6 +876,14 @@ def _facilities_normalizes_ward():
     # 「府中市」を都道府県付きと誤読して「中市」にしないこと。
     assert fetch.normalize_ward("府中市") == "府中市"
     assert fetch.normalize_ward(None) == ""
+    # **欠測が区名として持ち回られないこと。** float('nan') は真なので
+    # `str(value or "")` と書くと "nan" が返り、区名になる。実際に千代田区で
+    # これが起き、公開中の提言 3 件に「ただしnanの施設であり、対象区の所管外」
+    # という逆の注記が出ていた。空文字なら注記そのものが出ない（安全側）。
+    assert fetch.normalize_ward(float("nan")) == ""
+    assert fetch.normalize_ward("nan") == ""
+    assert fetch.normalize_ward("") == ""
+    assert fetch.normalize_ward("  ") == ""
 
 
 # ---------------------------------------------------------------------------
@@ -899,6 +1002,143 @@ def _dedupe_by_name_and_distance():
         got = fetch.dedupe_points(_hosts_frame(rows), tag="test")
     assert len(got) == 2, [n for n in got["name"]]
     assert got.iloc[0]["source"] == "P14", "先に入っていた側を残していない"
+
+
+# ---------------------------------------------------------------------------
+# 提言の単位（地区）
+#
+# 提言を施設名で出すのをやめ、隣接する区画のまとまりで出すようにした。
+# **束ね方が壊れても出力はもっともらしく見える** ——地区が 1 つに繋がりすぎても
+# バラバラでも、それらしい見出しと文章が出てしまい、眺めても気付けない。
+# ---------------------------------------------------------------------------
+
+
+@check("メッシュの格子座標が隣接関係を正しく表す")
+def _grid_index_adjacency():
+    # 5339458711 の 4 近傍を、コードから作らず緯度経度から作る（実装の裏取り）。
+    base = "5339458711"
+    cell = meshlib.decode(base)
+    dlat, dlon = meshlib.CELL_SIZE[5]
+    clat = (cell.min_lat + cell.max_lat) / 2
+    clon = (cell.min_lon + cell.max_lon) / 2
+
+    for di, dj in ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, -1)):
+        code = meshlib.encode(clat + di * dlat, clon + dj * dlon, 5)
+        gi, gj = meshlib.grid_index(code)
+        bi, bj = meshlib.grid_index(base)
+        assert (gi - bi, gj - bj) == (di, dj), (code, gi - bi, gj - bj, di, dj)
+        assert meshlib.is_adjacent(base, code), code
+
+    # 2 セル離れたら隣ではない。
+    far = meshlib.encode(clat + 2 * dlat, clon, 5)
+    assert not meshlib.is_adjacent(base, far), far
+
+
+@check("離れた区画は 1 つの地区にまとめない")
+def _cluster_keeps_separate_areas():
+    a = "5339458711"
+    cell = meshlib.decode(a)
+    dlat, dlon = meshlib.CELL_SIZE[5]
+    clat = (cell.min_lat + cell.max_lat) / 2
+    clon = (cell.min_lon + cell.max_lon) / 2
+
+    neighbor = meshlib.encode(clat, clon + dlon, 5)  # 隣
+    far = meshlib.encode(clat + 10 * dlat, clon, 5)  # 10 セル北
+    # far の隣を挟んでも、a とは繋がらない。
+    far_neighbor = meshlib.encode(clat + 10 * dlat, clon + dlon, 5)
+
+    groups = hostlib.cluster_adjacent([a, neighbor, far, far_neighbor])
+    assert len(groups) == 2, groups
+    assert groups[0] == [0, 1], groups
+    assert groups[1] == [2, 3], groups
+
+
+@check("地区の見出しが同じ場所を指す駅名を重ねない")
+def _area_label_dedupes_stations():
+    label, ward = hostlib._area_label(
+        ["豊島区", "豊島区", "豊島区"], ["大塚", "大塚駅前", "大塚"]
+    )
+    assert label == "豊島区 大塚周辺", label
+    assert ward == "豊島区", ward
+
+    # 別の場所を指す駅名は 2 つまで残す。
+    label, _ = hostlib._area_label(["豊島区"] * 2, ["池袋", "北池袋"])
+    assert label == "豊島区 池袋・北池袋周辺", label
+
+    # 区をまたぐことは見出しから消さない（提言先の自治体が分かれるため）。
+    label, ward = hostlib._area_label(["千代田区", "文京区"], ["水道橋"])
+    assert label.startswith("千代田区ほか"), label
+    assert ward == "千代田区ほか", ward
+
+
+@check("提言に施設への設置を指示する語を出さない")
+def _proposal_never_recommends_a_facility():
+    # 施設名は「徒歩圏に在るもの」としてなら出てよいが、
+    # それを設置先として名指しする語と結び付けてはいけない。
+    cards = [
+        {
+            "rank": 1,
+            "mesh_code": "5339458711",
+            "lon": 139.71,
+            "lat": 35.73,
+            "ward": "豊島区",
+            "station": "池袋",
+            "priority": 1.0,
+            "host_count": 5,
+            "host_name": "上池袋図書館",
+            "host_kind": "図書館",
+            "host_ward": "豊島区",
+            "narrative": "（区画の説明）",
+        }
+    ]
+    got = hostlib.build_proposals(cards)
+    assert len(got) == 1, got
+    assert "area_label" in got[0] and got[0]["area_label"] == "豊島区 池袋周辺", got[0]
+    # 見出しは地区名であって施設名ではない。
+    assert "図書館" not in got[0]["area_label"], got[0]["area_label"]
+    for word in ("設置候補", "設置先", "設置すべき", "転用"):
+        assert word not in got[0]["narrative"], (word, got[0]["narrative"])
+
+
+@check("地区にまたがる区と到達不可の区画数を落とさない")
+def _proposal_reports_wards_and_gaps():
+    def card(rank, code, ward, station, host):
+        return {
+            "rank": rank,
+            "mesh_code": code,
+            "lon": 139.75,
+            "lat": 35.70,
+            "ward": ward,
+            "station": station,
+            "priority": 1.0,
+            "host_count": 0 if not host else 3,
+            "host_name": host,
+            "host_kind": "図書館" if host else "",
+            "host_ward": ward if host else "",
+            "narrative": "（区画の説明）",
+        }
+
+    base = "5339464011"
+    cell = meshlib.decode(base)
+    dlat, dlon = meshlib.CELL_SIZE[5]
+    clat = (cell.min_lat + cell.max_lat) / 2
+    clon = (cell.min_lon + cell.max_lon) / 2
+    right = meshlib.encode(clat, clon + dlon, 5)
+
+    got = hostlib.build_proposals(
+        [
+            card(1, base, "千代田区", "水道橋", "千代田図書館"),
+            card(2, right, "文京区", "水道橋", ""),
+        ]
+    )
+    assert len(got) == 1, got
+    p = got[0]
+    assert p["mesh_count"] == 2, p
+    assert p["unreachable_meshes"] == 1, p
+    assert p["ward_counts"] == {"千代田区": 1, "文京区": 1}, p
+    assert "千代田区ほか" in p["area_label"], p["area_label"]
+    assert "文京区1区画" in p["narrative"], p["narrative"]
+    assert "1区画は徒歩圏に区の公共施設が無い" in p["narrative"], p["narrative"]
 
 
 def main() -> int:
