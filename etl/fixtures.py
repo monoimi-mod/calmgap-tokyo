@@ -129,7 +129,12 @@ def welfare_facilities(rng: np.random.Generator, n: int = 260) -> gpd.GeoDataFra
     urban_bias を中程度にしてあるのは、実際の事業所が
     賃料の関係で駅前一等地を避け、住宅地寄りに分布する傾向を模したもの。
     """
-    from .schema import WELFARE_DEMAND_WEIGHT, welfare_weight
+    from .schema import (
+        ASSUMED_ONLY_KINDS,
+        WELFARE_DEMAND_WEIGHT,
+        assumed_capacity,
+        welfare_weight,
+    )
 
     lon, lat = _sample_points(rng, n, urban_bias=0.45)
     kinds = rng.choice(
@@ -138,12 +143,21 @@ def welfare_facilities(rng: np.random.Generator, n: int = 260) -> gpd.GeoDataFra
         p=_kind_probabilities(list(WELFARE_DEMAND_WEIGHT.keys())),
     )
     capacity = np.clip(rng.lognormal(mean=2.9, sigma=0.6, size=n), 5, 120).round()
+    # 実データでは訪問系・相談系に制度上定員が無く、種別ごとの仮定員で補う。
+    # 模擬でも同じ割合で立てておかないと、**模擬モードだけ感度分析の
+    # 「仮定員を落とす」群が空振りして 100% 維持と表示される**。
+    assumed = np.isin(kinds, sorted(ASSUMED_ONLY_KINDS))
+    # 仮定員の行は実データと同じく「種別ごとの仮定員そのもの」を入れる。
+    # 乱数のままだと、感度分析が仮定員を 1.0 倍したときに元の値へ戻らず、
+    # 基準との比較にならない。
+    capacity = np.where(assumed, [assumed_capacity(k) for k in kinds], capacity)
 
     df = pd.DataFrame(
         {
             "name": [f"模擬事業所 W-{i:03d}" for i in range(n)],
             "kind": kinds,
             "capacity": capacity,
+            "capacity_assumed": assumed,
             "lon": lon,
             "lat": lat,
             "source": SYNTHETIC_SOURCE,

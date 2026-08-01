@@ -1594,7 +1594,10 @@ def normalize_welfare(path: Path, clip: bool = True) -> gpd.GeoDataFrame:
             "kind": gdf["kind"],
             "subclass": gdf[sub_col].astype(str),
             "capacity": gdf["capacity"],
-            "capacity_estimated": True,  # WAM NET が入れば False になる
+            # P14 は定員フィールドを持たないので全件が仮定員。
+            # 列名は WAM NET 側と揃える——同じ意味の列が出典ごとに別名だと、
+            # 「仮定員の行だけ落とす」検査が片方の出典で静かに空振りする。
+            "capacity_assumed": True,
             "weight": gdf["weight"],
             "demand_value": gdf["capacity"] * gdf["weight"],
             "source": SOURCES["ksj_p14_welfare"].label,
@@ -1785,9 +1788,16 @@ def normalize_wamnet(
             file=sys.stderr,
         )
         capacity = pd.Series(WAMNET_CAPACITY_FALLBACK, index=gdf.index)
+        assumed = pd.Series(True, index=gdf.index)
     else:
         capacity = pd.to_numeric(gdf[cap_col], errors="coerce")
-        blank = int(capacity.isna().sum())
+        # **どの行が仮定員かを列として残す。** 後から
+        # 「capacity == assumed_capacity(kind)」で復元しようとすると、
+        # 実定員がたまたま仮定員と同じ値だった行（生活介護の定員 20 人など）を
+        # 仮定と誤判定する。需要寄与の 68.9% がこの側から来ている以上、
+        # その 68.9% 自体が推定値では感度分析の土台にならない。
+        assumed = capacity.isna()
+        blank = int(assumed.sum())
         if blank:
             # 訪問系・相談系・居住系には制度上そもそも定員が無く、WAM NET でも
             # 空欄になる。一律の既定値で埋めると「人が集まらない拠点」に
@@ -1809,6 +1819,7 @@ def normalize_wamnet(
             "name": gdf[name_col] if name_col else "",
             "kind": kinds,
             "capacity": capacity,
+            "capacity_assumed": assumed,
             "weight": weights,
             "demand_value": capacity * weights,
             "source": SOURCES["wamnet_jigyosho"].label,
