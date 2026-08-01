@@ -254,7 +254,11 @@ LOAD_COMPONENTS: tuple[Component, ...] = (
     ),
     Component(
         key="noise",
-        label="自動車・鉄道騒音",
+        # **「鉄道」を名乗っていたが、鉄道騒音は入っていない。**
+        # 都の鉄道騒音調査は測定点が疎で、線路からの距離減衰で補完する設計を
+        # 検討したまま入れていない（`SOURCES["tokyo_rail_noise"]` は未使用）。
+        # 名前だけ残っていると、画面のこの 1 行が実装より広い範囲を主張する。
+        label="自動車騒音（幹線道路の道路端）",
         side="load",
         weight=0.9,
         sign=1,
@@ -319,6 +323,16 @@ PRIORITY_BETA = 1.0
 
 # 根拠カードを生成する上位メッシュ数
 TOP_N_CARDS = 20
+
+# 提言リストを組み立てるときの母数と上限。
+#
+# **ここが Python と TypeScript で食い違っていた。** 静的な proposals.json は
+# 根拠カード（上位 20 区画）から束ねる一方、画面は上位 40 区画から束ねていた。
+# 同じ「提言リスト」を名乗りながら母数が違うので、資料に添付した JSON と
+# 画面の一覧が別物になり得る。config を唯一の出所にして meta.json 経由で
+# 配信する（重みプリセットと同じ扱い）。
+PROPOSAL_TOP_N = 40
+PROPOSAL_LIMIT = 12
 
 # ---------------------------------------------------------------------------
 # 重みプリセット
@@ -395,6 +409,24 @@ SENSITIVITY_TRIALS = 500
 # 安定性を測る上位件数。
 SENSITIVITY_TOP_K: tuple[int, ...] = (10, 20, 50)
 
+# 重み以外の固定値（仮定員・種別重み・帯域・用途地域の負荷値・α/β・IDW）を
+# 揺さぶる試行回数。重みの摂動と違って**集計まで遡って計算し直す**ため
+# 1 試行あたり 20〜500 ミリ秒かかり、500 回は現実的でない。
+# 群が 7 つあるので、ここを増やすときは全体の実行時間を見て決めること。
+FIXED_VALUE_TRIALS = 60
+
+# 帯域を 1 層ずつ掃くときの倍率と試行回数。
+# ±30% の乱数より広く取る——**帯域は「徒歩10分 ≒ 800m」という目安から
+# 置いた値で、外部の告示に紐づいていない唯一の主要な固定値**なので、
+# 「どこまで動かすと結論が変わるか」を範囲で出す（docs/issues.md D1）。
+BANDWIDTH_SWEEP: tuple[float, ...] = (0.5, 0.7, 0.85, 1.0, 1.2, 1.5, 2.0)
+BANDWIDTH_TRIALS = 40
+
+# 「既存施設では到達不可」を決めている 700m を動かしてみる範囲。
+# 優先度は動かない（供給側はスコアの構成要素ではない）が、
+# 到達不可という出力そのものはこの 1 つの数字に乗っている。
+HOST_DISTANCE_TRIALS: tuple[float, ...] = (500.0, 600.0, 700.0, 800.0, 1000.0)
+
 # 配信 JSON における正規化値の小数桁。
 #
 # ここで丸めた値がブラウザへ渡り、スライダー操作のたびに再計算される。
@@ -447,8 +479,32 @@ class Source:
     api_key_env: str | None = None
     params: dict = field(default_factory=dict)
 
+    # --- ここから下は「画面に出すため」の欄 ---
+    #
+    # レジストリに載っているだけでは、その出典を実際に使ったことにならない。
+    # 実際 16 件のうち 5 件は検討しただけで使っていない（ODPT・不動産情報
+    # ライブラリ・鉄道騒音・手帳交付状況・既存スペース）。**画面が出典一覧を
+    # 出すなら、使っていないものを混ぜて数を稼いではいけない。**
+    layer: str | None = None  # 生成に使ったレイヤー名。None = 未使用
+    vintage: str = ""  # 年次。年がそろっていないこと自体が課題（issues.md C1）
+
 
 SOURCES: dict[str, Source] = {
+    # --- 対象地域そのもの ---
+    # **画面の出典一覧から抜けていた。** メッシュを張る範囲も、提言の見出しの
+    # 区名も、到達不可の区ごとの集計もこのレイヤーで決まる。
+    # 「地図の下敷きだから出典ではない」ということはない。
+    "ksj_n03_boundary": Source(
+        key="ksj_n03_boundary",
+        label="国土数値情報 N03 行政区域",
+        url="https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-N03-v3_1.html",
+        kind="shp",
+        license="国土数値情報 利用約款（出典表示）",
+        note="メッシュを張る範囲・区名・区ごとの集計の基準。"
+        "名称とコード（N03_007）の両方で対象 23 区を判定する。",
+        layer="area",
+        vintage="2024年",
+    ),
     # --- 需要レイヤー ---
     "wamnet_jigyosho": Source(
         key="wamnet_jigyosho",
@@ -458,6 +514,8 @@ SOURCES: dict[str, Source] = {
         license="WAM NET 二次利用可（出典表示）",
         note="サービス種別ごとに 29 分割された全国 CSV（都道府県別ではない）。"
         "事業所緯度・経度を持つのでジオコーディングは不要。",
+        layer="welfare",
+        vintage="2026年3月",
     ),
     "ksj_p29_school": Source(
         key="ksj_p29_school",
@@ -467,6 +525,8 @@ SOURCES: dict[str, Source] = {
         license="国土数値情報 利用約款（出典表示）",
         note="P29_003 学校分類コード 16012 = 特別支援学校。"
         "**在籍者数は持たない**ので規模は tokyo_sped_enrollment から当てる。",
+        layer="schools",
+        vintage="2023年度",
     ),
     "tokyo_sped_enrollment": Source(
         key="tokyo_sped_enrollment",
@@ -477,6 +537,8 @@ SOURCES: dict[str, Source] = {
         license="東京都 オープンデータ（出典表示）",
         note="令和7年度・5月1日現在。**公立のみ**が対象で国立・私立は載らない。"
         "1 行 = 学校 × 障害種別で、併置校は同じ学校番号が複数行に分かれる。",
+        layer="schools",
+        vintage="令和7年度（2025年5月1日）",
     ),
     "ksj_p14_welfare": Source(
         key="ksj_p14_welfare",
@@ -485,6 +547,8 @@ SOURCES: dict[str, Source] = {
         kind="shp",
         license="国土数値情報 利用約款（出典表示）",
         note="需要側は WAM NET へ置き換えた。現在はホスト施設（児童館）の出典。",
+        layer="hosts",
+        vintage="2022年度",
     ),
     "ksj_p04_medical": Source(
         key="ksj_p04_medical",
@@ -493,6 +557,8 @@ SOURCES: dict[str, Source] = {
         kind="shp",
         license="国土数値情報 利用約款（出典表示）",
         note="診療科目欄から精神科・心療内科を抽出する。",
+        layer="clinics",
+        vintage="2020年度",
     ),
     "ksj_s12_station": Source(
         key="ksj_s12_station",
@@ -502,6 +568,8 @@ SOURCES: dict[str, Source] = {
         license="国土数値情報 利用約款（出典表示）",
         note="ODPT の代替。アクセストークンが要らず、乗降客数が年次で入る。"
         "1 行が「駅×事業者×路線」なのでグループコードで束ねて合算する。",
+        layer="stations",
+        vintage="2024年値",
     ),
     "odpt_station": Source(
         key="odpt_station",
@@ -538,6 +606,8 @@ SOURCES: dict[str, Source] = {
         license="国土数値情報 利用約款（出典表示）",
         note="reinfolib_youto の代替。用途地域コードは A29-19_13 では A29_004"
         "（列名は年度で変わるため中身から自動判定する）。",
+        layer="zoning",
+        vintage="2019年度",
     ),
     "tokyo_road_noise": Source(
         key="tokyo_road_noise",
@@ -546,6 +616,8 @@ SOURCES: dict[str, Source] = {
         kind="csv",
         license="東京都オープンデータカタログ CC BY 4.0",
         note="測定地点の点データ。等価騒音レベル LAeq を距離重み付き内挿する。",
+        layer="noise",
+        vintage="平成25年度（2013）",
     ),
     "tokyo_rail_noise": Source(
         key="tokyo_rail_noise",
@@ -562,6 +634,8 @@ SOURCES: dict[str, Source] = {
         kind="shp",
         license="国土数値情報 利用約款（出典表示）",
         note="ポリゴンの面積被覆率をメッシュ単位で算出する。",
+        layer="parks",
+        vintage="2011年度",
     ),
     "estat_mesh_pop": Source(
         key="estat_mesh_pop",
@@ -571,6 +645,8 @@ SOURCES: dict[str, Source] = {
         license="政府統計 e-Stat 利用規約（出典表示）",
         api_key_env="ESTAT_APP_ID",
         note="メッシュコードで直接結合できる唯一のレイヤー。空間補間が不要。",
+        layer="population",
+        vintage="2021年 経済センサス",
     ),
     # --- 供給側 ---
     "tokyo_public_facility": Source(
@@ -580,6 +656,8 @@ SOURCES: dict[str, Source] = {
         kind="csv",
         license="東京都オープンデータカタログ CC BY 4.0",
         note="区市町村ごとに様式が異なるため normalize 側で名寄せする。",
+        layer="hosts",
+        vintage="2025年時点で各区が公開",
     ),
     # --- Phase 2 ---
     "existing_calmdown": Source(

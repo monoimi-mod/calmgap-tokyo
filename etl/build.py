@@ -42,6 +42,8 @@ from .config import (
     PRIORITY_ALPHA,
     PRIORITY_BETA,
     PRESETS,
+    PROPOSAL_LIMIT,
+    PROPOSAL_TOP_N,
     CRS_GEOGRAPHIC,
     SOURCES,
     STUDY_BBOX,
@@ -297,6 +299,7 @@ def write_outputs(
     live: bool,
     level: int,
     provenance: dict[str, str],
+    generated_at: str,
 ) -> None:
     WEB_DATA.mkdir(parents=True, exist_ok=True)
 
@@ -342,7 +345,7 @@ def write_outputs(
 
     # --- meta.json ---
     meta = {
-        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "generated_at": generated_at,
         "data_mode": "live" if live else "fixture",
         "layer_provenance": provenance,
         "real_layer_count": sum(1 for v in provenance.values() if v == "real"),
@@ -358,6 +361,10 @@ def write_outputs(
         "priority_alpha": PRIORITY_ALPHA,
         "priority_beta": PRIORITY_BETA,
         "host_max_distance_m": HOST_MAX_DISTANCE_M,
+        # 提言リストの母数と上限。TypeScript 側に重複定義を作らない
+        #（画面と配信 JSON が別物になっていた。config.PROPOSAL_TOP_N 参照）。
+        "proposal_top_n": PROPOSAL_TOP_N,
+        "proposal_limit": PROPOSAL_LIMIT,
         "presets": [
             {
                 "id": p["id"],
@@ -392,6 +399,10 @@ def write_outputs(
             }
             for c in ALL_COMPONENTS
         ],
+        # **実際に使った出典だけを配信する。** レジストリには検討しただけの
+        # 出典も入っており（ODPT・不動産情報ライブラリ・鉄道騒音・手帳交付状況・
+        # 既存スペースの 5 件）、全部出すと「16 出典を使っている」に見える。
+        # 使っていないものは件数だけ別に伝える。
         "sources": [
             {
                 "key": s.key,
@@ -399,9 +410,16 @@ def write_outputs(
                 "url": s.url,
                 "license": s.license,
                 "note": s.note,
+                "layer": s.layer,
+                "vintage": s.vintage,
+                "count": int(len(layers[s.layer]))
+                if s.layer in layers and hasattr(layers[s.layer], "__len__")
+                else None,
             }
             for s in SOURCES.values()
+            if s.layer is not None
         ],
+        "unused_source_count": sum(1 for s in SOURCES.values() if s.layer is None),
         "layer_counts": {
             k: int(len(v))
             for k, v in layers.items()
@@ -512,10 +530,26 @@ def main(argv: list[str] | None = None) -> int:
     scored = scored.merge(host_df, on="mesh_code", how="left")
 
     cards = hostlib.build_cards(scored, args.top)
-    proposals = hostlib.build_proposals(cards)
+    # 提言は根拠カードとは別の母数で束ねる（PROPOSAL_TOP_N のコメント参照）。
+    # cards.json は上位 20 区画のままでよいが、提言リストは画面と揃える。
+    proposals = hostlib.build_proposals(
+        hostlib.build_cards(scored, PROPOSAL_TOP_N), limit=PROPOSAL_LIMIT
+    )
+
+    # meta.json と sensitivity.json が同じ値を持つことで、画面が
+    # 「別のビルドで作られた感度分析」を無言で出すのを防ぐ（docs/issues.md F-4）。
+    generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
     write_outputs(
-        mesh_gdf, scored, layers, cards, proposals, args.live, args.level, provenance
+        mesh_gdf,
+        scored,
+        layers,
+        cards,
+        proposals,
+        args.live,
+        args.level,
+        provenance,
+        generated_at,
     )
 
     print(f"\n[提言] 隣接区画を地区にまとめた候補 {len(proposals)} 件（上位 3 件）:")
@@ -526,7 +560,15 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     if args.sensitivity:
-        result = sensitivity.run(normalized)
+        # 重み以外の固定値まで揺さぶるには、正規化済みの列だけでは足りない
+        #（集計まで遡って計算し直すため、メッシュ形状と入力レイヤーが要る）。
+        model = sensitivity.FixedValueModel(mesh_gdf, layers)
+        result = sensitivity.run(normalized, model)
+        result["host_distance"] = sensitivity.host_distance_report(
+            scored, mesh_gdf, layers["hosts"]
+        )
+        # 画面が古い感度分析を無言で出さないための照合キー（docs/issues.md F-4）。
+        result["generated_at"] = generated_at
         _write_json(WEB_DATA / "sensitivity.json", result)
         print(sensitivity.format_report(result))
 
@@ -535,6 +577,14 @@ def main(argv: list[str] | None = None) -> int:
         print(score.sanity_report(scored).to_string(index=False))
         print("\n[点検] 構成要素間の相関（0.9超は二重計上を疑う）")
         print(score.correlation_report(scored).to_string())
+
+        # 2 変数間の相関では「4 層が揃って 1 つの現象を指している」形の
+        # 重複が見えない（docs/issues.md A2）。VIF と主成分で見る。
+        vif_df, pc_df = score.collinearity_report(scored)
+        print("\n[点検] VIF（他の層から予測できてしまう度合い。5超は多重共線を疑う）")
+        print(vif_df.to_string(index=False))
+        print("\n[点検] 主成分（同符号で並ぶ層が、同じ現象を数え直している層）")
+        print(pc_df.to_string())
 
         # 到達不可は生の件数を区の間で並べても意味を持たない
         #（非市街地の面積比でほぼ決まる）。hosts.reach_report のコメント参照。

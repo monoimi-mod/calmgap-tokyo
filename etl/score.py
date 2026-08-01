@@ -249,3 +249,63 @@ def correlation_report(df: pd.DataFrame) -> pd.DataFrame:
     """
     cols = [f"n_{c.key}" for c in ALL_COMPONENTS if f"n_{c.key}" in df.columns]
     return df[cols].corr().round(3)
+
+
+def collinearity_report(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """VIF と主成分。**2 変数間の相関では見えない多重計上**を捕まえる。
+
+    相関行列は「どの 2 つが似ているか」しか答えない。ところが
+    このモデルで疑わしいのは **駅・混雑・精神科・用途地域が揃って
+    「ターミナル性」という 1 つの現象を指しているのではないか**という
+    形の重複で（docs/issues.md A2）、2 つずつ見ても 0.9 を超えないまま
+    4 層で同じものを 4 回足していることがあり得る。
+
+    VIF は「その層を他の全層から線形に予測できてしまう度合い」。
+    5 を超えたら、その層が持っている情報の 8 割が他層に既に在る。
+
+    主成分は「実質いくつの独立な軸で動いているか」。第 1 主成分の寄与率が
+    高く、そこに同符号で複数の層が乗っていれば、それが多重計上の中身になる。
+
+    Returns
+    -------
+    (VIF の表, 主成分の表)
+    """
+    cols = [f"n_{c.key}" for c in ALL_COMPONENTS if f"n_{c.key}" in df.columns]
+    labels = {f"n_{c.key}": c.label for c in ALL_COMPONENTS}
+    X = df[cols].to_numpy(dtype=float)
+
+    # --- VIF ---
+    rows = []
+    for i, col in enumerate(cols):
+        y = X[:, i]
+        others = np.delete(X, i, axis=1)
+        # 切片つきの最小二乗。決定係数から VIF を出す。
+        A = np.column_stack([np.ones(len(others)), others])
+        coef, *_ = np.linalg.lstsq(A, y, rcond=None)
+        resid = y - A @ coef
+        ss_tot = float(((y - y.mean()) ** 2).sum())
+        r2 = 1.0 - float((resid**2).sum()) / ss_tot if ss_tot > 0 else 0.0
+        vif = float("inf") if r2 >= 1.0 else 1.0 / (1.0 - r2)
+        rows.append({"構成要素": labels[col], "R2": round(r2, 3), "VIF": round(vif, 2)})
+    vif_df = pd.DataFrame(rows).sort_values("VIF", ascending=False, ignore_index=True)
+
+    # --- 主成分（相関行列の固有分解）---
+    # 標準化してから固有分解する。単位が違う層を混ぜないため。
+    sd = X.std(axis=0, ddof=1)
+    sd[sd == 0] = 1.0
+    Z = (X - X.mean(axis=0)) / sd
+    corr = np.corrcoef(Z, rowvar=False)
+    corr = np.nan_to_num(corr, nan=0.0)
+    vals, vecs = np.linalg.eigh(corr)
+    order = np.argsort(vals)[::-1]
+    vals, vecs = vals[order], vecs[:, order]
+    ratio = vals / vals.sum()
+
+    n_show = min(3, len(cols))
+    pc = pd.DataFrame(
+        {f"PC{j + 1}": np.round(vecs[:, j], 3) for j in range(n_show)},
+        index=[labels[c] for c in cols],
+    )
+    pc.loc["── 寄与率"] = [round(float(ratio[j]), 3) for j in range(n_show)]
+    pc.loc["── 累積"] = [round(float(ratio[: j + 1].sum()), 3) for j in range(n_show)]
+    return vif_df, pc

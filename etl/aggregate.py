@@ -96,32 +96,118 @@ def points_to_mesh(
     if points is None or len(points) == 0:
         return pd.Series(np.zeros(len(mesh_gdf)), index=index, dtype=float)
 
-    mesh_xy = _xy(mesh_gdf)
-    pt_xy = _xy(points)
     values = (
         points[value_col].fillna(0).to_numpy(dtype=float)
         if value_col
         else np.ones(len(points), dtype=float)
     )
+    triplets = kernel_triplets(mesh_gdf, points, bandwidth_m, cutoff_factor)
+    out = apply_kernel(triplets, values, len(mesh_gdf))
+    return pd.Series(out, index=index, dtype=float)
 
+
+def kernel_triplets(
+    mesh_gdf: gpd.GeoDataFrame,
+    points: gpd.GeoDataFrame,
+    bandwidth_m: float = 800.0,
+    cutoff_factor: float = 2.0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """点→メッシュのカーネル重みを (メッシュ行, 点列, 重み) の三つ組で返す。
+
+    points_to_mesh の中身をそのまま取り出したもの。**分けてある理由は
+    感度分析**——仮定員や種別重みを揺さぶるとき、変わるのは点の持つ値だけで
+    カーネルの重みは変わらない。三つ組を 1 度作っておけば、
+    1 試行が 0.5 秒から 20 ミリ秒になる（docs/issues.md A3）。
+
+    **式は 1 つしか持たない。** points_to_mesh もここを呼ぶ。
+    速い経路を別に書くと、感度分析が本番と違う式で「変わりません」と
+    言うことになり、その数字が一番信用できないものになる。
+
+    Returns
+    -------
+    (rows, cols, weights)
+        重みが 0 でない組だけ。rows は mesh_gdf の行番号、cols は points の行番号。
+    """
+    mesh_xy = _xy(mesh_gdf)
+    pt_xy = _xy(points)
     cutoff = bandwidth_m * cutoff_factor
-    out = np.zeros(len(mesh_gdf), dtype=float)
 
     # メッシュ数 × 点数 が大きくなりすぎないようブロック処理する。
     # 5次メッシュ 2 区分（約 5,000）× 事業所（約 1,000）程度なら全く問題ない規模だが、
     # 23 区拡張（Phase 2）でも同じコードが動くようにしておく。
     block = max(1, int(4_000_000 / max(len(pt_xy), 1)))
+    rows: list[np.ndarray] = []
+    cols: list[np.ndarray] = []
+    vals: list[np.ndarray] = []
     for start in range(0, len(mesh_xy), block):
         chunk = mesh_xy[start : start + block]
         d2 = (
             (chunk[:, 0][:, None] - pt_xy[None, :, 0]) ** 2
             + (chunk[:, 1][:, None] - pt_xy[None, :, 1]) ** 2
         )
-        w = np.exp(-0.5 * d2 / (bandwidth_m**2))
-        w[d2 > cutoff**2] = 0.0
-        out[start : start + block] = w @ values
+        r, c = np.nonzero(d2 <= cutoff**2)
+        rows.append(r + start)
+        cols.append(c)
+        vals.append(np.exp(-0.5 * d2[r, c] / (bandwidth_m**2)))
 
-    return pd.Series(out, index=index, dtype=float)
+    empty_i = np.zeros(0, dtype=np.intp)
+    return (
+        np.concatenate(rows) if rows else empty_i,
+        np.concatenate(cols) if cols else empty_i,
+        np.concatenate(vals) if vals else np.zeros(0, dtype=float),
+    )
+
+
+def apply_kernel(
+    triplets: tuple[np.ndarray, np.ndarray, np.ndarray],
+    values: np.ndarray,
+    n_mesh: int,
+) -> np.ndarray:
+    """kernel_triplets の結果に点の値を掛けてメッシュへ合算する。"""
+    rows, cols, w = triplets
+    return np.bincount(rows, weights=w * np.asarray(values, dtype=float)[cols],
+                       minlength=n_mesh)
+
+
+def polygon_area_shares(
+    mesh_gdf: gpd.GeoDataFrame,
+    polygons: gpd.GeoDataFrame,
+    class_col: str,
+) -> tuple[list, np.ndarray]:
+    """メッシュごとの、区分別の面積シェアを返す。
+
+    polygon_area_weighted_mean と同じ重なり計算だが、値を掛ける前で止める。
+    **用途地域の負荷値 13 個を差し替えて計算し直すため**にある
+    （重なり計算に 0.7 秒かかり、200 試行では 2 分以上になる）。
+
+    Returns
+    -------
+    (区分の一覧, 形状 (メッシュ数, 区分数) のシェア行列)
+        行の和は、ポリゴンに全く覆われないメッシュでは 0 になる。
+        シェア行列に区分ごとの値を掛けて足せば
+        polygon_area_weighted_mean と同じ値になる（selftest で検査する）。
+    """
+    m = mesh_gdf[["mesh_code", "geometry"]].to_crs(CRS_PROJECTED)
+    p = polygons[[class_col, "geometry"]].to_crs(CRS_PROJECTED)
+
+    inter = gpd.overlay(m, p, how="intersection", keep_geom_type=True)
+    classes: list = sorted(polygons[class_col].dropna().unique().tolist())
+    shares = np.zeros((len(mesh_gdf), len(classes)), dtype=float)
+    if len(inter) == 0 or not classes:
+        return classes, shares
+
+    row_of = {code: i for i, code in enumerate(mesh_gdf["mesh_code"])}
+    col_of = {cls: j for j, cls in enumerate(classes)}
+    inter["_area"] = inter.geometry.area
+    grouped = inter.groupby(["mesh_code", class_col])["_area"].sum()
+    for (code, cls), area in grouped.items():
+        i, j = row_of.get(code), col_of.get(cls)
+        if i is not None and j is not None:
+            shares[i, j] = area
+
+    total = shares.sum(axis=1, keepdims=True)
+    np.divide(shares, total, out=shares, where=total > 0)
+    return classes, shares
 
 
 def count_within(

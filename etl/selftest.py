@@ -50,6 +50,16 @@ def check(name: str):
     return wrap
 
 
+@contextlib.contextmanager
+def _quiet():
+    """正規化の進捗表示を伏せる。テストの合否だけを読めるようにするため。"""
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            yield buf
+
+
 # ---------------------------------------------------------------------------
 # 地域メッシュ
 # ---------------------------------------------------------------------------
@@ -349,6 +359,129 @@ def _population_split():
 
 
 # ---------------------------------------------------------------------------
+# 感度分析の速い経路が、本番と同じ数字を出すこと
+# ---------------------------------------------------------------------------
+#
+# 重み以外の固定値を揺さぶる感度分析は、build_mesh_table を毎回呼ぶ代わりに
+# カーネルの三つ組と面積シェアを使い回す（1 試行 24 秒 → 20 ミリ秒）。
+# **速い経路が本番と違う数字を出していたら、そこで測った「変わりません」が
+# 一番信用できないものになる。** ここはその一致を検査する。
+
+
+@check("カーネルの三つ組から組み立てた集計が、本番の集計と一致する")
+def _kernel_triplets_match_points_to_mesh():
+    from .aggregate import apply_kernel, kernel_triplets, points_to_mesh
+    from shapely.geometry import Point
+
+    rng = np.random.default_rng(0)
+    mesh_gdf = build_mesh_frame((139.69, 35.65, 139.72, 35.67), 5)
+    n = 40
+    pts = gpd.GeoDataFrame(
+        {"demand_value": rng.uniform(1, 100, n)},
+        geometry=[
+            Point(139.685 + rng.uniform(0, 0.04), 35.645 + rng.uniform(0, 0.03))
+            for _ in range(n)
+        ],
+        crs="EPSG:4326",
+    )
+    direct = points_to_mesh(mesh_gdf, pts, "demand_value", 800.0).to_numpy()
+    fast = apply_kernel(
+        kernel_triplets(mesh_gdf, pts, 800.0),
+        pts["demand_value"].to_numpy(),
+        len(mesh_gdf),
+    )
+    assert np.allclose(direct, fast, atol=1e-12), (
+        f"最大乖離 {np.abs(direct - fast).max():.3e}"
+    )
+    # 打ち切りの外が三つ組に入っていないこと（入ると重みが 0 でも数が膨れる）。
+    _, _, w = kernel_triplets(mesh_gdf, pts, 800.0)
+    assert (w > 0).all(), "重み 0 の組が三つ組に残っている"
+
+
+@check("面積シェアに値を掛けると、面積加重平均と一致する")
+def _area_shares_match_weighted_mean():
+    from .aggregate import polygon_area_shares, polygon_area_weighted_mean
+    from shapely.geometry import box
+
+    mesh_gdf = build_mesh_frame((139.70, 35.65, 139.71, 35.66), 5)
+    # 縦に 3 分割した帯。1 メッシュが複数区分に跨る形にする。
+    polys = gpd.GeoDataFrame(
+        {"zoning_code": [1, 7, 12], "zoning_load": [0.05, 0.60, 0.90]},
+        geometry=[
+            box(139.698, 35.648, 139.704, 35.662),
+            box(139.704, 35.648, 139.708, 35.662),
+            box(139.708, 35.648, 139.714, 35.662),
+        ],
+        crs="EPSG:4326",
+    )
+    want = polygon_area_weighted_mean(
+        mesh_gdf, polys, "zoning_load", default=0.30
+    ).to_numpy()
+    classes, shares = polygon_area_shares(mesh_gdf, polys, "zoning_code")
+    loads = dict(zip(polys["zoning_code"], polys["zoning_load"]))
+    vec = np.array([loads[c] for c in classes], dtype=float)
+    got = np.where(shares.sum(axis=1) > 0, shares @ vec, 0.30)
+    assert np.allclose(want, got, atol=1e-9), (
+        f"最大乖離 {np.abs(want - got).max():.3e}"
+    )
+
+
+@check("固定値を差し替えない感度分析は、本番の生値と完全に一致する")
+def _fixed_value_model_reproduces_build():
+    from . import build as buildlib
+    from . import sensitivity
+    from .config import BANDWIDTH_M
+    from .schema import ASSUMED_CAPACITY, WELFARE_DEMAND_WEIGHT
+
+    with _quiet():
+        layers, _ = buildlib.load_layers(live=False)
+        mesh_gdf = buildlib.build_mesh_table(layers, 4)
+        model = sensitivity.FixedValueModel(mesh_gdf, layers)
+
+        # 1. 何も渡さないとき。
+        raw = model.raw_columns()
+        # 2. 既定値をそのまま「差し替え」たとき。作り直しの経路を通る。
+        rebuilt = model.raw_columns(
+            welfare_weights=dict(WELFARE_DEMAND_WEIGHT),
+            assumed_capacities=dict(ASSUMED_CAPACITY),
+            zoning_loads=dict(ZONING_LOAD),
+            bandwidths=dict(BANDWIDTH_M),
+            idw={"smoothing_m": 50.0, "max_distance_m": 1500.0},
+        )
+
+    for c in ALL_COMPONENTS:
+        want = mesh_gdf[c.key].to_numpy(dtype=float)
+        assert np.allclose(raw[c.key].to_numpy(), want, rtol=1e-12, atol=1e-9), (
+            f"{c.key}: 何も差し替えないのに生値がずれる"
+        )
+        # 帯域の作り直しは距離の再計算を通るので、丸め誤差の分だけ緩める。
+        assert np.allclose(rebuilt[c.key].to_numpy(), want, rtol=1e-6, atol=1e-6), (
+            f"{c.key}: 既定値で作り直すと元に戻らない "
+            f"（最大乖離 {np.abs(rebuilt[c.key].to_numpy() - want).max():.3e}）"
+        )
+
+
+@check("「仮定員を落とす」は空振りしない（模擬データでも仮定員の行が在る）")
+def _drop_assumed_actually_changes_demand():
+    from . import build as buildlib
+    from . import sensitivity
+
+    # 模擬データに仮定員の行が無いと、A3 の最重要シナリオが
+    # **模擬モードでだけ「100% 維持」と表示される**。
+    with _quiet():
+        layers, _ = buildlib.load_layers(live=False)
+        mesh_gdf = buildlib.build_mesh_table(layers, 4)
+        model = sensitivity.FixedValueModel(mesh_gdf, layers)
+        dropped = model.raw_columns(drop_assumed=True)
+
+    assert model.n_assumed > 0, "模擬データに仮定員の行が 1 件も無い"
+    base = model.base_raw["welfare_capacity"].to_numpy()
+    got = dropped["welfare_capacity"].to_numpy()
+    assert got.sum() < base.sum(), "仮定員を落としたのに需要が減っていない"
+    assert (got <= base + 1e-9).all(), "落としたのに増えたメッシュがある"
+
+
+# ---------------------------------------------------------------------------
 # 列の特定（決め打ちが外れたときに止まること）
 # ---------------------------------------------------------------------------
 
@@ -381,16 +514,6 @@ def _tmp_csv(tmp: Path, name: str, rows: list[dict]) -> Path:
     path = tmp / name
     pd.DataFrame(rows).to_csv(path, index=False, encoding="utf-8")
     return path
-
-
-@contextlib.contextmanager
-def _quiet():
-    """正規化の進捗表示を伏せる。テストの合否だけを読めるようにするため。"""
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            yield buf
 
 
 def _raises(fn, *, contains: str) -> str:
@@ -784,8 +907,9 @@ def _p14_happy_path():
         with _quiet():
             out = fetch.normalize_welfare(path)
         assert len(out) == 3, f"3 件のはずが {len(out)} 件"
-        # 定員は推定値であることが列として残っていること（提言時の但し書きの根拠）。
-        assert out["capacity_estimated"].all(), "推定であることが失われている"
+        # 定員は推定値であることが列として残っていること（提言時の但し書きの根拠。
+        # 感度分析が「仮定員の行だけ落とす」ためにこの列を見る）。
+        assert out["capacity_assumed"].all(), "推定であることが失われている"
         assert (out["demand_value"] > 0).all(), out["demand_value"].tolist()
 
 
@@ -987,6 +1111,34 @@ def _wamnet_capacity_fallback_by_kind():
         cap = dict(zip(out["name"], out["capacity"]))
         assert cap["B"] == 40.0, cap
         assert cap["A"] == 5.0, f"居宅介護の仮定員は 5 人のはず: {cap}"
+
+
+@check("WAM NET: 実定員が仮定員と同値でも「仮定」とは印を付けない")
+def _wamnet_marks_only_blank_as_assumed():
+    # 感度分析は capacity_assumed の行だけを揺さぶる（docs/issues.md A3）。
+    # この列を後から「capacity == assumed_capacity(kind)」で復元すると、
+    # **実定員がたまたま仮定員と同じ 20 人だった生活介護**を仮定側に数え、
+    # 「需要の何割が仮定に由来するか」という土台の数字が過大になる。
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        lat, lon = _INSIDE
+        rows = [
+            # 空欄 → 仮定員 5 人。
+            {"事業所緯度": lat, "事業所経度": lon, "事業所の名称": "訪問",
+             "サービス種別": "居宅介護", "定員": ""},
+            # 実定員 20 人。生活介護の仮定員も 20 人だが、これは届出の値。
+            {"事業所緯度": lat, "事業所経度": lon + 0.002, "事業所の名称": "通所",
+             "サービス種別": "生活介護", "定員": 20},
+        ]
+        path = _tmp_csv(tmp, "wamnet.csv", rows)
+        with _quiet():
+            out = fetch.normalize_wamnet(path)
+        flag = dict(zip(out["name"], out["capacity_assumed"]))
+        assert flag["訪問"], "空欄の行に仮定の印が付いていない"
+        assert not flag["通所"], (
+            "実定員 20 人が仮定扱いになっている。"
+            "値の一致ではなく「空欄だったか」で判定すること"
+        )
 
 
 @check("公共施設: 駐輪場・公衆便所・喫煙場所はホスト候補に入らない")
