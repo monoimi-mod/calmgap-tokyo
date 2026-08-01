@@ -49,10 +49,27 @@ export interface Meta {
   priority_alpha: number;
   priority_beta: number;
   host_max_distance_m: number;
+  /** 提言リストを組み立てる母数と上限。etl/config.py が唯一の出所。 */
+  proposal_top_n: number;
+  proposal_limit: number;
   /** 重みプリセット。etl/config.py の PRESETS が単一の情報源。 */
   presets: { id: string; label: string; note: string; weights: Weights }[];
   components: ComponentDef[];
-  sources: { key: string; label: string; url: string; license: string; note: string }[];
+  /** **実際に使った出典だけ**が入る。検討しただけのものは含まれない。 */
+  sources: {
+    key: string;
+    label: string;
+    url: string;
+    license: string;
+    note: string;
+    /** 生成に使ったレイヤー名。 */
+    layer: string;
+    /** 年次。レイヤーごとに 15 年ぶん開いていること自体が課題（issues.md C1）。 */
+    vintage: string;
+    count: number | null;
+  }[];
+  /** レジストリにあるが使っていない出典の件数。「N 出典を使った」と誤読させないため。 */
+  unused_source_count: number;
   layer_counts: Record<string, number>;
 }
 
@@ -133,6 +150,38 @@ export type Weights = Record<string, number>;
 
 /** sensitivity.json。感度分析の結果（任意・無ければ表示しない）。 */
 export interface Sensitivity {
+  /**
+   * meta.json と同じビルドで作られたことの照合キー。
+   * `--sensitivity` を付けたときだけ書かれるため、現物が別ビルドのものに
+   * なり得る。**古い感度分析を無言で出さない**ために突き合わせる。
+   */
+  generated_at?: string;
+  /** 重み以外の固定値を揺さぶった結果（issues.md A3・D1）。 */
+  fixed_values?: {
+    perturbation: number;
+    trials: number;
+    assumed_capacity_rows: number;
+    groups: {
+      id: string;
+      label: string;
+      constants: number;
+      overlap_mean: Record<string, number>;
+      overlap_min: Record<string, number>;
+      rank_shift_median: number;
+    }[];
+    scenarios: {
+      id: string;
+      label: string;
+      overlap: Record<string, number>;
+      rank_shift_median: number;
+    }[];
+  };
+  host_distance?: {
+    radius_m: number;
+    unreachable: number;
+    unreachable_ratio: number;
+    mid_or_above: number;
+  }[];
   random_perturbation: {
     perturbation: number;
     trials: number;

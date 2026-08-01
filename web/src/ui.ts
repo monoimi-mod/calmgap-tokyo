@@ -55,11 +55,15 @@ export interface UiProposal {
  */
 export function buildProposals(
   state: AppState,
-  topN = 40,
-  limit = 12,
+  topN?: number,
+  limit?: number,
 ): UiProposal[] {
   const { rows, score, meta, weights } = state;
-  const top = score.order.slice(0, topN);
+  // 母数と上限は etl/config.py が唯一の出所（meta.json 経由）。
+  // ここに数値を置くと、資料添付用の proposals.json と画面が別物になる。
+  const n = topN ?? meta.proposal_top_n;
+  const max = limit ?? meta.proposal_limit;
+  const top = score.order.slice(0, n);
   const wardOf = (row: MeshProps) =>
     typeof row.w === "number" ? (meta.target_wards[row.w] ?? "") : "";
 
@@ -114,7 +118,7 @@ export function buildProposals(
     };
   });
 
-  return list.sort((a, b) => a.bestRank - b.bestRank).slice(0, limit);
+  return list.sort((a, b) => a.bestRank - b.bestRank).slice(0, max);
 }
 
 /**
@@ -242,9 +246,15 @@ function narrate(
   const row = rows[idx];
   const parts: string[] = [];
 
+  // **母数を必ず書く。** 「需要 0.99 × 負荷 0.98」は 9,507 区画の中での
+  // 順位でしかなく、対象の取り方で全部変わる（実際、模擬 → 2 区 → 23 区で
+  // 上位 10 件は毎回入れ替わった）。文書には書いてあったが、
+  // カードの文面そのものには母数が無かった（docs/issues.md B2）。
   parts.push(
-    `優先度 第${rank}位（対象地域内 上位${pctRank(score.priority[idx])}%）。`,
-    `需要 ${fmt(score.demand[idx])} × 負荷 ${fmt(score.load[idx])}。`,
+    `優先度 第${rank}位 / ${meta.mesh_count.toLocaleString("ja-JP")}区画中` +
+      `（上位${pctRank(score.priority[idx])}%）。`,
+    `需要 ${fmt(score.demand[idx])} × 負荷 ${fmt(score.load[idx])}` +
+      "（いずれも対象地域内での相対値で、絶対的な水準ではない）。",
   );
 
   // --- 需要側を実数で述べる ---
@@ -602,9 +612,15 @@ function renderSelected(body: HTMLElement, state: AppState): void {
       const negative = f.component.sign < 0;
       const el = document.createElement("div");
       el.className = "factor";
+      // 数値のすぐ隣で「この 0.89 は何の 0.89 か」を言う。
+      // 8 層のうち 2 層（騒音・用途地域）は地域内順位ではない。
+      const abs = f.component.absolute;
+      const tag = abs
+        ? `<span class="scale-tag is-absolute" title="${escapeAttr(abs.label)}&#10;根拠: ${escapeAttr(abs.basis)}">絶対尺度</span>`
+        : `<span class="scale-tag" title="${escapeAttr(`${meta.mesh_count.toLocaleString("ja-JP")}区画の中での順位。対象地域を変えれば値も変わる。`)}">地域内順位</span>`;
       el.innerHTML = `
         <div>
-          <div class="factor-label">${escapeHtml(f.component.label)}</div>
+          <div class="factor-label">${escapeHtml(f.component.label)} ${tag}</div>
           <div class="factor-bar${negative ? " is-negative" : ""}">
             <i style="width:${Math.round(f.normalized * 100)}%"></i>
           </div>
@@ -700,6 +716,88 @@ export function renderBanner(meta: Meta): void {
     </span>`;
 }
 
+/**
+ * この分析で分からないこと。
+ *
+ * 普通の作品は「できること」しか書かない。**この作品は「できないこと」を
+ * 画面に出す**——文書（docs/issues.md）に全部書いてあるのに画面に無いと、
+ * 画面が最も強く主張しているのは網羅性（実データ 10/10）であって
+ * 確からしさではない、という状態になる。
+ *
+ * ここに書くのは「一般論としての限界」ではなく、**この実装で実際に
+ * 測っていないもの**に限る。測っていないことの一覧は、
+ * 測ったことの一覧と同じだけ具体的でなければ意味がない。
+ */
+export function renderLimitations(meta: Meta): void {
+  const el = document.getElementById("limitations");
+  if (!el) return;
+  const items: [string, string][] = [
+    [
+      "施設の適否は測っていない",
+      "このツールが述べるのは 250m 区画についてであって、施設についてではない。" +
+        "需要も負荷も区画の属性から作っており、余剰空間・運営体制・" +
+        "個室の有無といった施設側の条件を測る構成要素は一つも無い。" +
+        "供給側から言えるのは「徒歩圏に屋内の公共空間が何件あるか」までである。",
+    ],
+    [
+      "屋内の静けさを測っていない",
+      "騒音は幹線道路の道路端 5m で測った屋外の値（要請限度測定）で、" +
+        "繁華街の雑踏も、建物の中の音環境も含まない。",
+    ],
+    [
+      "光・匂い・触覚は未評価",
+      "感覚過敏の負荷は音だけではないが、面として推定できる" +
+        "オープンデータが見つかっていない。用途地域を「法的な騒がしさの上限」" +
+        "として代理に使っているのはこの穴を埋めるためで、直接の測定ではない。",
+    ],
+    [
+      "鉄道騒音は入っていない",
+      "都の鉄道騒音調査は測定点が疎で、線路からの距離減衰で補完する必要がある。" +
+        "補完の妥当性を検証できていないため入れていない。",
+    ],
+    [
+      "混雑は昼間人口ではなく従業者数",
+      "昼間人口のメッシュ統計が配信されていないため、経済センサス（2021年）の" +
+        "従業者数で代替している。買い物客・通学者・観光客を含まない。",
+    ],
+    [
+      "都・国・民間の施設は供給側に入っていない",
+      `徒歩圏${meta.host_max_distance_m}m の判定に使うのは 23 区が公開する` +
+        "公共施設一覧のみ。都立施設・駅ナカ・商業施設は数えていないので、" +
+        "「到達不可」は過大に出る。北区は区が一覧を公開しておらず特に薄い。",
+    ],
+    [
+      "提言の単位は地区であって地点ではない",
+      "上位区画を隣接関係で束ねた「区名＋最寄り駅名」の地区を示す。" +
+        "250m 区画の中のどこに置くべきかは、この分析からは言えない。",
+    ],
+    [
+      "順位は特別支援学校というレイヤー 1 枚に強く依存している",
+      "23 区に 45 校しかないため、この層は「学校の徒歩圏に入っているか」という" +
+        "ゲートとして働く。どの半径で撒くかが「恩恵を受ける区画」を決めてしまい、" +
+        "半径 800m ではこの層を外すと上位 10 区画が全部入れ替わる。" +
+        "順位そのものを固定の答えとして読まないこと。" +
+        "対して「徒歩圏に公共施設が 1 件も無い区画」はこの層と無関係に決まる。",
+    ],
+    [
+      "当事者による検証を経ていない",
+      "感覚過敏の当事者に必要な場所を、当事者への聞き取り無しに" +
+        "オープンデータだけで推定している。この構造そのものが最大の限界である。",
+    ],
+  ];
+
+  el.innerHTML =
+    '<h2>この分析で分からないこと</h2>' +
+    '<ul class="sources">' +
+    items
+      .map(
+        ([title, body]) =>
+          `<li><b>${escapeHtml(title)}</b><br>${escapeHtml(body)}</li>`,
+      )
+      .join("") +
+    "</ul>";
+}
+
 export function renderLegendNote(meta: Meta): void {
   document.getElementById("legend-note")!.textContent =
     `${meta.mesh_label}・${meta.mesh_count.toLocaleString("ja-JP")}区画。` +
@@ -712,11 +810,26 @@ export function renderLegendNote(meta: Meta): void {
  * スライダーで確かめられるようにしてあるが、審査員が実際に動かすとは限らない。
  * 動かした結果がどうなるかを、あらかじめ数値で出しておく。
  */
-export function renderSensitivity(s: Sensitivity | null): void {
+export function renderSensitivity(s: Sensitivity | null, meta?: Meta): void {
   const el = document.getElementById("sensitivity");
   if (!el) return;
   if (!s) {
     el.hidden = true;
+    return;
+  }
+
+  // sensitivity.json は --sensitivity を付けたビルドでだけ書かれる。
+  // つまり現物が mesh.geojson より古いことがあり得るのに、画面はそれを
+  // 無言で出していた。**古い感度分析は、無いより悪い。**
+  if (meta && s.generated_at && s.generated_at !== meta.generated_at) {
+    el.hidden = false;
+    el.innerHTML = `
+      <p class="card-narrative">
+        <b>感度分析は別のビルドの結果です</b>（分析 ${escapeHtml(s.generated_at)} /
+        現在のデータ ${escapeHtml(meta.generated_at)}）。
+        値が現在の地図と対応しないため表示していません。
+        <code>python -m etl.build --live --sensitivity</code> で作り直せます。
+      </p>`;
     return;
   }
   el.hidden = false;
@@ -739,22 +852,150 @@ export function renderSensitivity(s: Sensitivity | null): void {
     <p class="card-narrative" style="margin-top:10px">
       立場の違う ${pa.preset_ids.length} つのプリセット全てで上位${pa.top_k}件に入った区画は
       <b>${pa.common_count}件（${Math.round(pa.common_ratio * 100)}%）</b>。
-      重みの選び方に関係なく上位に来る場所がある、ということ。
+      ${
+        // **0 件のときに「共通して上位に来る場所がある」と書いてはいけない。**
+        // 文が数値と逆になる。実際、特別支援学校の帯域を直したらこの値が
+        // 3 件 → 0 件になり、画面だけが古い主張を続けた。
+        pa.common_count > 0
+          ? "重みの選び方に関係なく上位に来る場所がある、ということ。"
+          : "<b>重みの選び方に関係なく上位に来る場所は無い</b>——" +
+            "どこを優先すべきかは、何を重視するかに依存する。"
+      }
     </p>
     <p class="card-narrative">
       最も結果を左右するレイヤーは<b>${escapeHtml(shortLabel({ label: driver.label } as ComponentDef))}</b>で、
       これを外すと上位10件の重なりは ${Math.round(driver.overlap_top10 * 100)}% まで下がる。
-    </p>`;
+      ${
+        // **依存が極端なときは、数字を出すだけで終わらせない。**
+        // 「40% です」と「全部入れ替わります」は読み手にとって別の話で、
+        // 後者なら順位そのものの読み方を変えてもらう必要がある。
+        // しきい値ではなく現物の値で分岐させる（層が入れ替わっても効く）。
+        driver.overlap_top10 <= 0.3
+          ? "<b>つまり、この 1 枚で上位の顔ぶれがほぼ決まっている。</b>" +
+            "順位を固定の答えとして読まないこと。" +
+            "一方「徒歩圏に公共施設が 1 件も無い区画」は、" +
+            "どのレイヤーの重みとも無関係に決まる。"
+          : ""
+      }
+    </p>
+    ${renderFixedValues(s)}`;
+}
+
+/**
+ * 重み以外の固定値を揺さぶった結果。
+ *
+ * スライダーで動かせるのは 8 レイヤーの重みだけで、**結果を決めている
+ * 固定値は他に 76 個ある**（仮定員・種別重み・帯域・用途地域の負荷値・
+ * IDW・α/β）。画面が「重みを動かしても変わりません」しか言わないと、
+ * 触れない固定値の方が効いていることを隠すことになる。
+ */
+function renderFixedValues(s: Sensitivity): string {
+  const fv = s.fixed_values;
+  if (!fv) return "";
+
+  const all = fv.groups.find((g) => g.id === "all");
+  // 重い順に並べる。上位10件の重なりが小さいほど、その固定値が効いている。
+  const groups = fv.groups
+    .filter((g) => g.id !== "all")
+    .slice()
+    .sort((a, b) => (a.overlap_mean["10"] ?? 1) - (b.overlap_mean["10"] ?? 1));
+
+  const pct = (v: number | undefined) => `${Math.round((v ?? 0) * 100)}%`;
+
+  const rows = groups
+    .map(
+      (g) =>
+        `<tr><th style="text-transform:none;letter-spacing:0">${escapeHtml(g.label)}
+           <span class="factor-source">固定値 ${g.constants} 個</span></th>
+         <td class="num">${pct(g.overlap_mean["10"])}
+           <span class="factor-source">最悪 ${pct(g.overlap_min["10"])}</span></td></tr>`,
+    )
+    .join("");
+
+  const drop = fv.scenarios.find((x) => x.id === "drop_assumed_capacity");
+
+  return `
+    <details style="margin-top:10px">
+      <summary>スライダーに出ていない固定値の影響</summary>
+      <p class="card-narrative" style="margin-top:8px">
+        重みを動かせるのは 8 レイヤーだけですが、結果を決めている固定値は
+        他にもあります（徒歩圏の帯域、サービス種別ごとの重み、定員の無い種別に
+        当てている仮定員、用途地域から負荷への写像など）。
+        これらを ±${Math.round(fv.perturbation * 100)}% 揺さぶったときに
+        上位10区画に残り続けた割合です（${fv.trials}回試行・重い順）。
+      </p>
+      <table class="data-table">${rows}</table>
+      ${
+        all
+          ? `<p class="card-narrative"><b>${all.constants} 個すべてを同時に動かすと
+             ${pct(all.overlap_mean["10"])}（最悪 ${pct(all.overlap_min["10"])}）</b>。
+             この作品が出せる中で最も不利な数字です。</p>`
+          : ""
+      }
+      ${
+        drop
+          ? `<p class="card-narrative">定員が公表されない事業所
+             ${fv.assumed_capacity_rows.toLocaleString("ja-JP")}件には種別ごとの仮定値を当てています。
+             <b>この ${fv.assumed_capacity_rows.toLocaleString("ja-JP")}件を需要から全部落としても、
+             上位10区画は ${pct(drop.overlap["10"])} が残ります</b>
+             （上位50区画では ${pct(drop.overlap["50"])}）。</p>`
+          : ""
+      }
+    </details>`;
+}
+
+/**
+ * 各層が「対象地域内の順位」か「外部の基準に固定した絶対尺度」かを示す札。
+ *
+ * **ここは以前、画面が実装と違うことを断言していた箇所である。**
+ * 「各レイヤーは対象地域内のパーセンタイル順位で 0〜1 に正規化しています」と
+ * 書いていたが、騒音と用途地域は絶対尺度で、23 区へ広げても値が変わらない。
+ * 誤りである以前に、**この 2 層には「順位は相対値」という但し書きが
+ * 要らないという有利な事実を、画面が自分で捨てていた。**
+ */
+function scaleBadge(c: ComponentDef): string {
+  if (c.absolute) {
+    return (
+      `<span class="scale-tag is-absolute" title="${escapeAttr(c.absolute.basis)}">絶対尺度</span>` +
+      `<span class="factor-source">${escapeHtml(c.absolute.label)}` +
+      `（根拠: ${escapeHtml(c.absolute.basis)}）。対象地域を変えても値が変わりません。</span>`
+    );
+  }
+  return (
+    '<span class="scale-tag">地域内順位</span>' +
+    '<span class="factor-source">対象地域内での順位を 0〜1 に配分。' +
+    "<b>対象地域を変えれば値も変わります。</b></span>"
+  );
 }
 
 export function renderMethodology(meta: Meta): void {
   const el = document.getElementById("methodology")!;
+  const n = meta.mesh_count.toLocaleString("ja-JP");
+
   const rows = meta.components
     .map(
       (c) =>
         `<li><b>${escapeHtml(c.label)}</b>（${c.side === "demand" ? "需要" : "負荷"}${c.sign < 0 ? "・減点" : ""}）<br>
          ${escapeHtml(c.rationale)}<br>
+         ${scaleBadge(c)}<br>
          <span class="factor-source">出典: ${escapeHtml(c.source)}</span></li>`,
+    )
+    .join("");
+
+  const absolute = meta.components.filter((c) => c.absolute);
+
+  const sources = meta.sources
+    .map(
+      (s) =>
+        `<tr>
+           <th style="text-transform:none;letter-spacing:0">
+             ${s.url ? `<a href="${escapeAttr(s.url)}" target="_blank" rel="noopener">${escapeHtml(s.label)}</a>` : escapeHtml(s.label)}
+             <span class="factor-source">${escapeHtml(s.license)}</span>
+           </th>
+           <td class="num">${escapeHtml(s.vintage)}<br>
+             <span class="factor-source">${s.count != null ? `${s.count.toLocaleString("ja-JP")}件` : ""}</span>
+           </td>
+         </tr>`,
     )
     .join("");
 
@@ -762,9 +1003,26 @@ export function renderMethodology(meta: Meta): void {
     <p class="card-narrative" style="margin-top:8px">
       設置優先度 = 需要スコア × 負荷スコア。足し算ではなく掛け算にすることで、
       「人がいて、かつ過負荷」の両方が揃った場所だけが上位に出ます。
-      各レイヤーは対象地域内のパーセンタイル順位で 0〜1 に正規化しています。
+    </p>
+    <p class="card-narrative">
+      正規化は層によって違います。<b>${meta.components.length - absolute.length} 層</b>は
+      対象地域（${n} 区画）内のパーセンタイル順位で 0〜1 に配分するので、
+      <b>対象地域を変えれば値も変わります</b>。残る
+      <b>${absolute.length} 層</b>（${absolute.map((c) => escapeHtml(c.label.split("（")[0])).join("・")}）は
+      法令・告示に 0 と 1 を固定した<b>絶対尺度</b>で、対象地域を変えても値は変わりません。
     </p>
     <ul class="sources">${rows}</ul>
+
+    <h2 style="margin-top:14px">データ出典と年次</h2>
+    <p class="card-narrative">
+      <b>年次はそろっていません</b>（事業所 2026 年 〜 公園 2011 年）。
+      各レイヤーで入手できる最新版を使っています。
+    </p>
+    <table class="data-table">${sources}</table>
+    <p class="card-narrative">
+      レジストリには他に ${meta.unused_source_count} 件の出典がありますが、
+      <b>検討しただけで使っていない</b>ため、ここには出していません。
+    </p>
     <p class="card-narrative">
       データ生成: ${escapeHtml(meta.generated_at)} / モード: ${meta.data_mode}
     </p>`;

@@ -16,6 +16,7 @@ import {
   renderBanner,
   renderDetail,
   renderLegendNote,
+  renderLimitations,
   renderMethodology,
   renderSensitivity,
   renderPresets,
@@ -67,11 +68,12 @@ async function boot(): Promise<void> {
   renderBanner(meta);
   renderLegendNote(meta);
   renderMethodology(meta);
+  renderLimitations(meta);
 
   // 感度分析は --sensitivity を付けたビルドでのみ出力される。
   // 無くても地図は動くので、失敗しても起動は止めない。
   loadJSON<Sensitivity>("sensitivity.json")
-    .then(renderSensitivity)
+    .then((s) => renderSensitivity(s, meta))
     .catch(() => renderSensitivity(null));
 
   const handles: MapHandles = await initMap("map", meta, (meshCode) => {

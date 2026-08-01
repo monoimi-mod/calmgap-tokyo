@@ -567,6 +567,31 @@ p {
   color: var(--text-muted);
 }
 
+/*
+ * 正規化の物差しを示す札。「その 0.89 は何の 0.89 か」を数値の隣で言う。
+ * 8 層のうち 2 層（騒音・用途地域）は対象地域内の順位ではなく、
+ * 法令・告示に 0 と 1 を固定した絶対尺度である（docs/issues.md B2）。
+ * 絶対尺度の側を強調色にしてあるのは、そちらが「対象地域を変えても
+ * 値が変わらない」という強い性質を持つほうだから。
+ */
+.scale-tag {
+  display: inline-block;
+  font-size: 9.5px;
+  line-height: 1.5;
+  padding: 0 5px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  white-space: nowrap;
+  vertical-align: 1px;
+  cursor: help;
+}
+
+.scale-tag.is-absolute {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 /* ---------------------------------------------------------------- 表 */
 
 .data-table {
