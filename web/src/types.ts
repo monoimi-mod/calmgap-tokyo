@@ -49,6 +49,18 @@ export interface Meta {
   priority_alpha: number;
   priority_beta: number;
   host_max_distance_m: number;
+  /**
+   * 「既存施設では到達不可」の要約。**重みにもスコアにも依存しない**ので
+   * 画面の見出しに使う。mid_or_above は区内の優先度の中央値で切った件数で、
+   * しきい値の取り方が込み入っているため Python 側でだけ計算する
+   * （TypeScript に書き直すと静かに食い違う）。
+   */
+  unreachable: {
+    count: number;
+    ratio: number;
+    mid_or_above: number;
+    note: string;
+  };
   /** 提言リストを組み立てる母数と上限。etl/config.py が唯一の出所。 */
   proposal_top_n: number;
   proposal_limit: number;
@@ -83,6 +95,12 @@ export interface MeshProps {
   w?: number;
   /** 徒歩圏（meta.host_max_distance_m）にある区の公共施設の件数。 */
   f_host_n?: number;
+  /**
+   * 徒歩圏の障害福祉事業所のうち、対象 23 区の外にあるものの件数。
+   * 入力は区界の外側 2km まで拾う設計なので（エッジ効果の回避）、
+   * 外周のメッシュは隣接自治体の施設で需要が決まっていることがある。
+   */
+  f_welfare_outside_n?: number;
   /** 徒歩圏の公共施設のうち代表 1 件。設置先の選定ではなく例示。 */
   host?: string;
   host_kind?: string;

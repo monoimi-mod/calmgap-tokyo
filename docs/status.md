@@ -23,6 +23,7 @@ ETL・スコアリング・地図 UI・検証まで一通り動いている。
 | 実データ | **10 / 10 レイヤー**（模擬データなし） |
 | ホスト施設 | **1,541 件**（23 区すべてで公共施設一覧を投入済み） |
 | 既存施設で到達不可 | **1,058 区画（11.1%）**。うち区内で優先度が中位以上は 151 件 |
+| 提言 | 既定重みで **11 件**（上位 40 区画を隣接で束ねた地区）。**順位は特別支援学校 1 層に強く依存する**ので、到達不可のほうを主張の起点にする |
 | 公開 | https://calmgap-tokyo.hiroaki-kuwabara.workers.dev |
 | ブランチ | `claude/continue-session-vsfetr` |
 
@@ -502,6 +503,7 @@ python -m etl.fetch --normalize facilities ~/Downloads/渋谷区.csv ~/Downloads
 ```bash
 python -m etl.selftest
 node tools/parity_check.mjs
+python tools/doc_numbers.py           # この文書の数値が配信データと合っているか
 python -m etl.build --live --report        # 上位・相関・VIF・主成分・到達不可
 python -m etl.build --live --sensitivity   # 重みと、重み以外の固定値 76 個
 ```
@@ -542,8 +544,8 @@ python -m etl.build --live
    **限界として画面と文書に明記する方針を採った**（`issues.md` A4 の「対処方針」）。
    **需要側から外してスコアに入れない**のが構造的な解だが、いま動かすと提言が
    また全部入れ替わるので**提出後の宿題**。
-2. **残りの未着手**: UI 側の B1（徒歩圏の需要に含まれる区外の施設の件数）、
-   A5・D4（供給側の点検）、A6（騒音の欠測補完）。
+2. **残りの未着手**: A5・D4（供給側の点検）、A6（騒音の欠測補完）。
+   どちらも順位を動かさないと実測済み。
 3. **2 分プレゼン動画** — 素材は揃っている。
    「需要のみ→負荷のみ→設置優先度」の切り替えが掛け算モデルの実演になり、
    第 1 位の根拠カードで実数が出る。

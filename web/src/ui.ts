@@ -190,9 +190,15 @@ export function factsOf(row: MeshProps): { label: string; value: string }[] {
 
   if (g("f_welfare_n")) {
     const cap = g("f_welfare_cap");
+    // 徒歩圏は区界で切っていない（エッジ効果を避けるため入力を区界の外側
+    // 2km まで拾う設計）。**その事実をカードに出す**——外周のメッシュは
+    // 「隣の市の事業所」で需要が決まっていることがある（docs/issues.md B1）。
+    const outside = g("f_welfare_outside_n") ?? 0;
     f.push({
       label: "徒歩圏の障害福祉サービス事業所",
-      value: `${num(g("f_welfare_n")!)}件${cap ? `（定員 ${num(cap)}人）` : ""}`,
+      value:
+        `${num(g("f_welfare_n")!)}件${cap ? `（定員 ${num(cap)}人）` : ""}` +
+        (outside ? ` ※うち対象23区の外 ${num(outside)}件` : ""),
     });
   }
   if (g("f_school_n")) {
@@ -262,8 +268,17 @@ function narrate(
   const wn = row.f_welfare_n as number | undefined;
   const wc = row.f_welfare_cap as number | undefined;
   if (wn) {
+    // 区外の件数は、多いときだけ書く。0 件や 1〜2 件で毎回添えると
+    // 提言文が読みにくくなるだけで、判断は変わらない。
+    // 2 割を超えると「この区画の需要は隣の自治体の施設で決まっている」と
+    // 読むべき水準になる（docs/issues.md B1）。
+    const outside = (row.f_welfare_outside_n as number) ?? 0;
     demandBits.push(
-      `徒歩圏に障害福祉サービス事業所${num(wn)}件` + (wc ? `（定員計${num(wc)}人）` : ""),
+      `徒歩圏に障害福祉サービス事業所${num(wn)}件` +
+        (wc ? `（定員計${num(wc)}人）` : "") +
+        (outside / wn >= 0.2
+          ? `——ただし${num(outside)}件は対象23区の外にあり、この区画の需要は隣接自治体の施設に依存している`
+          : ""),
     );
   }
   if (row.f_school_n) demandBits.push(`特別支援学校${num(row.f_school_n as number)}校`);
@@ -321,24 +336,40 @@ const shortLabel = (c: ComponentDef) => c.label.split("（")[0];
 /* ------------------------------------------------------------------ 見出し数値 */
 
 /**
- * 「殺し文句」となる 1 数値。
- * 上位メッシュのうち、既存の公共施設では届かないものの割合。
- * これはヒートマップを眺めても出てこない、集計して初めて言える事実。
+ * 見出しの 1 数値。
+ *
+ * **順位ではなく到達不可を出す。** 順位は特別支援学校というレイヤー 1 枚に
+ * 強く依存していて（外すと上位 10 件が全部入れ替わる。docs/issues.md A4）、
+ * 見出しに据えられるほど頑健ではない。一方この数字は
+ * **重みもスコアも帯域も通っておらず**、最寄りの公共施設までの距離だけで決まる。
+ * スライダーをどう動かしても変わらない、というのがそのまま長所になる。
+ *
+ * かつては「優先度上位 50 区画のうち到達不可」を見出しにしていたが、
+ * 供給側を 23 区分そろえた結果この値は 0 になり、見出しが空振りしていた。
+ * その数字は現在の重みで動くので、副次の行として残す。
  */
 export function renderStat(state: AppState): void {
   const { rows, score, meta } = state;
   const N = Math.min(50, rows.length);
   const top = score.order.slice(0, N);
-  const uncovered = top.filter((i) => !rows[i].host).length;
+  const uncoveredTop = top.filter((i) => !rows[i].host).length;
 
   const valueEl = document.getElementById("stat-value")!;
   const labelEl = document.getElementById("stat-label")!;
+  const u = meta.unreachable;
 
-  valueEl.innerHTML = `${uncovered}<small> / ${N} メッシュ</small>`;
-  labelEl.textContent =
-    `優先度上位${N}メッシュのうち、半径${meta.host_max_distance_m}m 以内に` +
-    "区の公共施設が 1 件も無い区画。既存ストックの徒歩圏から外れており、" +
-    "新規整備か民間施設との連携が要る。";
+  valueEl.innerHTML =
+    `${u.count.toLocaleString("ja-JP")}<small> 区画 / ${Math.round(u.ratio * 1000) / 10}%</small>`;
+
+  labelEl.innerHTML =
+    `半径 ${meta.host_max_distance_m}m 以内に区の公共施設が 1 件も無い区画。` +
+    "既存ストックの徒歩圏から外れており、新規整備か民間施設との連携が要る。" +
+    "<b>この数字は重みにもスコアにも依存しません</b>（スライダーを動かしても変わりません）。" +
+    `<br><br>うち<b>区内で優先度が中位以上</b>のものが ${u.mid_or_above} 区画。` +
+    "<b>区ごとの到達不可率を並べてはいけません</b>——皇居・羽田空港・埋立地・" +
+    "河川敷を含む区で高く出るだけで、非市街地の面積比でほぼ決まります。" +
+    "区をまたいで比べるならこちらを使ってください。" +
+    `<br><br>現在の重みでの上位 ${N} 区画のうち到達不可は ${uncoveredTop} 件。`;
 }
 
 /* ------------------------------------------------------------------ スライダー */

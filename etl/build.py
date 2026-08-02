@@ -213,6 +213,20 @@ def _attach_facts(mesh_gdf: gpd.GeoDataFrame, layers: dict) -> None:
         mesh_gdf, layers["clinics"], walk
     ).to_numpy()
 
+    # 徒歩圏の事業所のうち、対象 23 区の外にあるものの件数。
+    #
+    # 入力は区界の外側 2km まで拾う設計で（config.CLIP_BUFFER_M）、これは
+    # エッジ効果を避けるために正しい。**問題は、その事実が根拠カードに
+    # 出ていなかったこと**（docs/issues.md B1）。障害福祉事業所は
+    # 14,118 件のうち 5,195 件（36.8%）が区外——WAM NET が都全域の届出を
+    # 含み、多摩地域の事業所がバッファに入るため。外周のメッシュは
+    # 「隣の市の事業所」で需要が決まっていることがあり得るのに、
+    # カードは徒歩圏の総数しか出していなかった。
+    outside = _outside_target_wards(layers["welfare"], layers.get("area"))
+    mesh_gdf["f_welfare_outside_n"] = aggregate.count_within(
+        mesh_gdf, layers["welfare"][outside], walk
+    ).to_numpy()
+
     # 供給側の実数。**これが供給側について言える唯一のこと**——徒歩圏に
     # 屋内の公共空間が幾つ在るか。どれが適するかは測っていない。
     # 数えているのは施設一覧の行数であって建物の数ではない（100m 以内に
@@ -272,6 +286,7 @@ def _feature_properties(row: pd.Series) -> dict:
     for key, cast in (
         ("f_welfare_n", int),
         ("f_welfare_cap", int),
+        ("f_welfare_outside_n", int),
         ("f_school_n", int),
         ("f_clinic_n", int),
         ("f_station_riders", int),
@@ -288,6 +303,45 @@ def _feature_properties(row: pd.Series) -> dict:
         if v is not None and pd.notna(v):
             props[key] = str(v)
     return props
+
+
+def _outside_target_wards(points: gpd.GeoDataFrame, area) -> np.ndarray:
+    """対象区の外にある点を True で返す。
+
+    行政界が無いとき（模擬モードで area も模擬のとき）は全て False を返す。
+    **「区外は 0 件」と表示されるが、それは事実**——模擬データは対象矩形の
+    中だけに生成されるので、区外の施設という概念が無い。
+    """
+    if area is None or not len(area) or points is None or not len(points):
+        return np.zeros(len(points) if points is not None else 0, dtype=bool)
+    inside = gpd.sjoin(
+        points[["geometry"]].to_crs(CRS_GEOGRAPHIC),
+        area[["geometry"]].to_crs(CRS_GEOGRAPHIC),
+        how="left",
+        predicate="within",
+    )
+    # sjoin は 1 点が複数ポリゴンに当たると行が増える。点の index で畳む。
+    hit = inside.groupby(level=0)["index_right"].apply(lambda s: s.notna().any())
+    return ~hit.reindex(points.index, fill_value=False).to_numpy()
+
+
+def _unreachable_summary(scored: pd.DataFrame) -> dict:
+    """到達不可の要約。画面の見出し数値になる。
+
+    **区ごとの内訳は配信しない。** 到達不可率は非市街地の面積比でほぼ決まり
+    （江東区 38.7% は埋立地、大田区 38.2% は羽田空港、千代田区 28.2% は皇居）、
+    区の間で並べてよい数字ではない。配信すると必ず並べられる。
+    区をまたいで比べてよいのは mid_or_above の側だけ（`hosts.reach_report`）。
+    """
+    reach = hostlib.reach_report(scored)
+    n = int((scored["f_host_n"].fillna(0).astype(float) == 0).sum())
+    return {
+        "count": n,
+        "ratio": round(n / len(scored), 4) if len(scored) else 0.0,
+        "mid_or_above": int(reach["中位以上"].sum()),
+        "note": "区内で優先度が中位以上のもの。既定重みでの値で、"
+        "区をまたいで並べてよいのはこちら。",
+    }
 
 
 def write_outputs(
@@ -358,6 +412,14 @@ def write_outputs(
         "mesh_level": level,
         "mesh_label": meshlib.LEVEL_LABEL[level],
         "mesh_count": len(scored),
+        # 「既存施設では到達不可」。**この作品でいちばん頑健な出力**なので
+        # 画面の見出しに使う。重みもスコアも帯域も通っておらず、
+        # 最寄りの公共施設までの距離だけで決まる（docs/issues.md A4 の対処方針）。
+        #
+        # mid_or_above は区内の優先度の中央値で切った件数で、既定重みでの値。
+        # **画面で計算し直さない**——しきい値の取り方（区ごと・母数は区内の
+        # 全メッシュ）を TypeScript にもう 1 つ書くと、静かに食い違う。
+        "unreachable": _unreachable_summary(scored),
         "priority_alpha": PRIORITY_ALPHA,
         "priority_beta": PRIORITY_BETA,
         "host_max_distance_m": HOST_MAX_DISTANCE_M,
