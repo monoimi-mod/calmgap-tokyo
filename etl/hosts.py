@@ -494,3 +494,52 @@ def reach_report(scored: pd.DataFrame) -> pd.DataFrame:
     cols = ["区", "メッシュ", "到達不可", "到達不可率", "中位以上", "うち中位以上"]
     out = pd.DataFrame(rows, columns=cols)
     return out.sort_values(["中位以上", "到達不可"], ascending=False, ignore_index=True)
+
+
+def proximity_report(
+    host_gdf: gpd.GeoDataFrame, radius_m: float = 100.0
+) -> dict[str, int | float]:
+    """ホストの件数を「施設の数」として読めないことを、数で示す。
+
+    **`docs/issues.md` の独立項目（同じ建物が複数のホストとして数えられている）
+    が引用してきた「595 組 / 別種別 440 組」は、算出コードがリポジトリに
+    残っていなかった。** 配信データからどう数えても再現できず（100m で 459 組、
+    150m で 546 組、200m で 641 組）、名寄せで 63 組を落とす前の値と辻褄が合う。
+    **数字だけ直しても同じことが起きる**ので、ここで数えて `--report` に出す。
+
+    数え方は 1 組 = 半径以内にある 2 点の組合せ（重複なし、自己組を除く）。
+    「同じ建物か」は判定できないので**近いこと以上は主張しない**——
+    別種別（「中町児童館」と「中町図書館」）は同じ建物である疑いが濃く、
+    同一種別は表記違いの取りこぼしである疑いが濃い、という読み方までにとどめる。
+    """
+    pts = host_gdf.to_crs(CRS_PROJECTED)
+    kinds = (
+        pts["host_kind"].fillna("").astype(str).to_numpy()
+        if "host_kind" in pts.columns
+        else np.full(len(pts), "")
+    )
+    x = pts.geometry.x.to_numpy()
+    y = pts.geometry.y.to_numpy()
+
+    # x でソートして帯状に走査する。全対全（1,541² = 237 万組）でも回るが、
+    # 半径を広げて確かめる使い方をするので素直に線形にしておく。
+    order = np.argsort(x)
+    x, y, kinds = x[order], y[order], kinds[order]
+
+    pairs = same = 0
+    n = len(x)
+    for i in range(n):
+        j = i + 1
+        while j < n and x[j] - x[i] <= radius_m:
+            if (x[j] - x[i]) ** 2 + (y[j] - y[i]) ** 2 <= radius_m**2:
+                pairs += 1
+                same += kinds[i] == kinds[j]
+            j += 1
+
+    return {
+        "半径m": radius_m,
+        "ホスト": n,
+        "組": pairs,
+        "同一種別": int(same),
+        "別種別": pairs - int(same),
+    }

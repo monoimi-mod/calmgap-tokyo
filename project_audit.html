@@ -1,1229 +1,511 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="ja">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>calmgap-tokyo — プロジェクト総合レビュー兼設計監査レポート</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>calmgap-tokyo — 凍結検証レポート</title>
 <style>
-:root{
-  --bg:#fbfaf7; --surface:#fff; --surface-2:#f4f3ee; --line:#e2e0d8;
-  --ink:#1b1a17; --ink-2:#54524c; --ink-3:#84817a;
-  --accent:#256abf; --accent-soft:#e8f0fb;
-  --ok:#1b8a5a; --ok-soft:#e6f4ec;
-  --warn:#b7791f; --warn-soft:#fdf3e1;
-  --bad:#c0392b; --bad-soft:#fbeae8;
-  --info:#5b5f97; --info-soft:#eeeef7;
-  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Noto Sans Mono",monospace;
-  --sans:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP","Yu Gothic",sans-serif;
-  --radius:10px;
+:root {
+  --bg: #fbfaf8; --fg: #24211d; --muted: #6b6459; --line: #e2ddd4;
+  --accent: #8a5a2b; --code-bg: #f2efe9; --warn-bg: #fdf6ec;
 }
-@media (prefers-color-scheme:dark){
-  :root{
-    --bg:#161513; --surface:#1e1d1a; --surface-2:#26241f; --line:#35332d;
-    --ink:#f0eee8; --ink-2:#b9b6ad; --ink-3:#8b877e;
-    --accent:#6da7ec; --accent-soft:#1c2a3d;
-    --ok:#5ec894; --ok-soft:#16281f;
-    --warn:#e0ad5a; --warn-soft:#2c2416;
-    --bad:#ee8072; --bad-soft:#2e1a17;
-    --info:#a3a6d8; --info-soft:#1f1f2c;
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #171614; --fg: #e6e1d8; --muted: #9a9287; --line: #322e29;
+    --accent: #d9a066; --code-bg: #221f1b; --warn-bg: #241d13;
   }
 }
-*{box-sizing:border-box}
-html{scroll-behavior:smooth}
-body{
-  margin:0; padding:0; background:var(--bg); color:var(--ink);
-  font-family:var(--sans); font-size:15px; line-height:1.85;
-  -webkit-font-smoothing:antialiased;
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP", sans-serif;
+  line-height: 1.85; font-size: 15px;
 }
-.wrap{max-width:1080px; margin:0 auto; padding:36px 22px 96px}
-
-/* ---------- header ---------- */
-header.doc{
-  border-bottom:2px solid var(--ink); padding-bottom:20px; margin-bottom:28px;
+.layout { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 40px;
+  max-width: 1180px; margin: 0 auto; padding: 32px 24px 96px; }
+nav { position: sticky; top: 24px; align-self: start; max-height: calc(100vh - 48px);
+  overflow-y: auto; font-size: 12.5px; line-height: 1.55; border-right: 1px solid var(--line);
+  padding-right: 16px; }
+nav a { display: block; color: var(--muted); text-decoration: none; padding: 3px 0; }
+nav a:hover { color: var(--accent); }
+nav a.lv3 { padding-left: 12px; font-size: 12px; }
+main { min-width: 0; }
+h1 { font-size: 26px; line-height: 1.4; margin: 0 0 24px; }
+h2 { font-size: 20px; margin: 48px 0 16px; padding-bottom: 8px; border-bottom: 2px solid var(--line); }
+h3 { font-size: 16.5px; margin: 32px 0 12px; color: var(--accent); }
+h4 { font-size: 15px; margin: 24px 0 8px; }
+p { margin: 12px 0; }
+a { color: var(--accent); }
+hr { border: 0; border-top: 1px solid var(--line); margin: 40px 0; }
+code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.88em; }
+pre { background: var(--code-bg); padding: 14px 16px; border-radius: 6px; overflow-x: auto;
+  border: 1px solid var(--line); }
+pre code { background: none; padding: 0; font-size: 12.5px; line-height: 1.65; }
+blockquote { margin: 20px 0; padding: 4px 18px; border-left: 3px solid var(--accent);
+  background: var(--warn-bg); border-radius: 0 4px 4px 0; }
+blockquote p:first-child { margin-top: 12px; }
+ul, ol { padding-left: 24px; }
+li { margin: 6px 0; }
+.scroll { overflow-x: auto; margin: 18px 0; }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+th, td { border: 1px solid var(--line); padding: 7px 11px; text-align: left;
+  vertical-align: top; line-height: 1.65; }
+th { background: var(--code-bg); font-weight: 600; white-space: nowrap; }
+tbody tr:nth-child(even) { background: color-mix(in srgb, var(--code-bg) 45%, transparent); }
+table.headless td:first-child { background: var(--code-bg); font-weight: 600; white-space: nowrap; }
+@media (max-width: 900px) {
+  .layout { grid-template-columns: 1fr; gap: 0; }
+  nav { position: static; max-height: none; border-right: 0; border-bottom: 1px solid var(--line);
+    padding: 0 0 16px; margin-bottom: 24px; }
 }
-header.doc h1{font-size:27px; line-height:1.4; margin:0 0 6px; letter-spacing:-.01em}
-header.doc .sub{color:var(--ink-2); font-size:14px; margin:0 0 18px}
-.meta-grid{
-  display:grid; grid-template-columns:repeat(auto-fit,minmax(228px,1fr)); gap:10px;
-}
-.meta-item{
-  background:var(--surface); border:1px solid var(--line); border-radius:var(--radius);
-  padding:10px 13px;
-}
-.meta-item dt{font-size:11px; letter-spacing:.08em; color:var(--ink-3); text-transform:uppercase; margin:0 0 3px}
-.meta-item dd{margin:0; font-size:13.5px; font-weight:600; word-break:break-all}
-
-/* ---------- toc ---------- */
-nav.toc{
-  background:var(--surface); border:1px solid var(--line); border-radius:var(--radius);
-  padding:16px 20px; margin:0 0 34px;
-}
-nav.toc h2{font-size:13px; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-3); margin:0 0 10px}
-nav.toc ol{margin:0; padding:0; list-style:none; columns:2; column-gap:34px}
-@media (max-width:640px){nav.toc ol{columns:1}}
-nav.toc li{margin:2px 0; break-inside:avoid; display:flex; gap:.5em}
-nav.toc li .tn{color:var(--accent); font-variant-numeric:tabular-nums; font-weight:700; min-width:2.2em; text-align:right}
-nav.toc a{color:var(--ink); text-decoration:none; border-bottom:1px solid transparent}
-nav.toc a:hover{border-bottom-color:var(--accent); color:var(--accent)}
-
-/* ---------- sections ---------- */
-section{margin:0 0 40px; scroll-margin-top:16px}
-h2.sec{
-  font-size:21px; margin:44px 0 14px; padding-bottom:8px;
-  border-bottom:1px solid var(--line); letter-spacing:-.01em;
-}
-h2.sec .n{color:var(--accent); font-variant-numeric:tabular-nums; margin-right:.5em}
-h3{font-size:16.5px; margin:26px 0 8px}
-h4{font-size:14.5px; margin:20px 0 6px; color:var(--ink-2)}
-p{margin:9px 0}
-ul,ol{margin:9px 0; padding-left:1.5em}
-li{margin:4px 0}
-strong{font-weight:700}
-code{
-  font-family:var(--mono); font-size:.88em; background:var(--surface-2);
-  padding:1px 5px; border-radius:4px; border:1px solid var(--line);
-}
-pre{
-  background:var(--surface-2); border:1px solid var(--line); border-radius:var(--radius);
-  padding:14px 16px; overflow-x:auto; font-family:var(--mono); font-size:12.5px;
-  line-height:1.65; margin:12px 0;
-}
-pre code{background:none; border:none; padding:0}
-blockquote{
-  margin:12px 0; padding:10px 16px; border-left:3px solid var(--accent);
-  background:var(--accent-soft); border-radius:0 var(--radius) var(--radius) 0;
-}
-
-/* ---------- tables ---------- */
-.tablewrap{overflow-x:auto; margin:14px 0; border:1px solid var(--line); border-radius:var(--radius)}
-table{border-collapse:collapse; width:100%; font-size:13.5px; background:var(--surface)}
-th,td{padding:8px 11px; text-align:left; border-bottom:1px solid var(--line); vertical-align:top}
-thead th{
-  background:var(--surface-2); font-size:12px; letter-spacing:.03em;
-  color:var(--ink-2); font-weight:700; white-space:nowrap; position:sticky; top:0;
-}
-tbody tr:last-child td{border-bottom:none}
-td.num,th.num{text-align:right; font-variant-numeric:tabular-nums}
-table.compact td,table.compact th{padding:6px 9px; font-size:13px}
-
-/* ---------- cards ---------- */
-.cards{display:grid; grid-template-columns:repeat(auto-fit,minmax(268px,1fr)); gap:13px; margin:16px 0}
-.card{
-  background:var(--surface); border:1px solid var(--line); border-radius:var(--radius);
-  padding:14px 16px; break-inside:avoid;
-}
-.card h4{margin:0 0 6px; font-size:14px; color:var(--ink)}
-.card p{margin:4px 0; font-size:13.5px; color:var(--ink-2)}
-.card .big{font-size:30px; font-weight:800; line-height:1.15; letter-spacing:-.02em}
-.card .big small{font-size:14px; font-weight:600; color:var(--ink-3); margin-left:4px}
-.card.is-bad{border-left:4px solid var(--bad)}
-.card.is-warn{border-left:4px solid var(--warn)}
-.card.is-ok{border-left:4px solid var(--ok)}
-.card.is-info{border-left:4px solid var(--info)}
-
-/* ---------- badges ---------- */
-.badge{
-  display:inline-block; font-size:11.5px; font-weight:700; padding:1px 8px;
-  border-radius:999px; white-space:nowrap; line-height:1.7;
-}
-.b-ok{background:var(--ok-soft); color:var(--ok)}
-.b-warn{background:var(--warn-soft); color:var(--warn)}
-.b-bad{background:var(--bad-soft); color:var(--bad)}
-.b-info{background:var(--info-soft); color:var(--info)}
-.b-mute{background:var(--surface-2); color:var(--ink-3)}
-
-/* ---------- progress ---------- */
-.bars{margin:16px 0}
-.bar-row{display:grid; grid-template-columns:1fr 128px 52px; gap:12px; align-items:center; margin:7px 0; font-size:13.5px}
-@media (max-width:560px){.bar-row{grid-template-columns:1fr 78px 46px}}
-.bar{height:9px; background:var(--surface-2); border-radius:999px; overflow:hidden; border:1px solid var(--line)}
-.bar i{display:block; height:100%; background:var(--accent); border-radius:999px}
-.bar i.warn{background:var(--warn)}
-.bar i.bad{background:var(--bad)}
-.bar i.ok{background:var(--ok)}
-.bar-val{text-align:right; font-variant-numeric:tabular-nums; font-weight:700; font-size:13px}
-.bar-total{border-top:1px dashed var(--line); margin-top:10px; padding-top:10px}
-.bar-total .bar{height:13px}
-
-/* ---------- details ---------- */
-details{
-  background:var(--surface); border:1px solid var(--line); border-radius:var(--radius);
-  padding:0; margin:12px 0; overflow:hidden;
-}
-details>summary{
-  cursor:pointer; padding:11px 16px; font-weight:700; font-size:14px;
-  background:var(--surface-2); list-style:none; user-select:none;
-}
-details>summary::-webkit-details-marker{display:none}
-details>summary::before{content:"▸ "; color:var(--accent); font-weight:900}
-details[open]>summary::before{content:"▾ "}
-details>summary:hover{color:var(--accent)}
-.details-body{padding:4px 16px 14px}
-.details-body>*:first-child{margin-top:8px}
-
-/* ---------- diagram (CSS only, no JS) ---------- */
-.flow{margin:18px 0; font-size:13px}
-.flow-stage{
-  background:var(--surface); border:1px solid var(--line); border-radius:var(--radius);
-  padding:11px 14px; margin:0;
-}
-.flow-stage .t{font-weight:700; font-size:13.5px}
-.flow-stage .d{color:var(--ink-2); font-size:12.5px; margin-top:2px}
-.flow-arrow{text-align:center; color:var(--ink-3); font-size:16px; line-height:1.2; margin:4px 0}
-.flow-group{
-  border:1px dashed var(--line); border-radius:var(--radius); padding:11px;
-  margin:0; background:var(--surface-2);
-}
-.flow-group>.g-label{
-  font-size:11px; letter-spacing:.09em; text-transform:uppercase;
-  color:var(--ink-3); font-weight:700; margin-bottom:8px;
-}
-.flow-group .flow-stage{margin-bottom:0}
-.side-note{
-  border-left:3px solid var(--info); background:var(--info-soft);
-  padding:8px 13px; border-radius:0 var(--radius) var(--radius) 0;
-  font-size:12.5px; color:var(--ink-2); margin:10px 0;
-}
-
-/* ---------- misc ---------- */
-.stars{color:var(--accent); letter-spacing:.08em; font-size:14px; white-space:nowrap}
-.kicker{
-  font-size:11.5px; letter-spacing:.1em; text-transform:uppercase;
-  color:var(--ink-3); font-weight:700; margin:0 0 4px;
-}
-hr{border:none; border-top:1px solid var(--line); margin:34px 0}
-footer.doc{
-  margin-top:56px; padding-top:18px; border-top:1px solid var(--line);
-  color:var(--ink-3); font-size:12.5px;
-}
-.legend-inline{font-size:12.5px; color:var(--ink-2); margin:6px 0 0}
-
-/* ---------- print ---------- */
-@media print{
-  :root{
-    --bg:#fff; --surface:#fff; --surface-2:#f5f5f2; --line:#ccc;
-    --ink:#000; --ink-2:#333; --ink-3:#666;
-    --accent:#14508f; --accent-soft:#eef4fb;
-    --ok:#146b46; --warn:#8a5c12; --bad:#96271b; --info:#3f4374;
-  }
-  body{font-size:10.2pt; line-height:1.6}
-  .wrap{max-width:none; padding:0}
-  nav.toc{break-after:page; columns:1}
-  nav.toc ol{columns:2}
-  h2.sec{break-after:avoid; break-inside:avoid; margin-top:22px}
-  h3,h4{break-after:avoid}
-  table,.card,.tablewrap,pre,.flow-stage,.bars,.bar-row{break-inside:avoid}
-  thead{display:table-header-group}
-  thead th{position:static}
-  details{border:1px solid #ccc}
-  details>summary{background:#f2f2ef}
-  details:not([open])>.details-body{display:block}   /* 印刷では中身も出す */
-  details>summary::before{content:"■ "}
-  a{color:inherit; text-decoration:none}
-  .no-print{display:none}
-  @page{margin:14mm}
+@media print {
+  nav { display: none; }
+  .layout { display: block; max-width: none; padding: 0; }
+  body { font-size: 10.5pt; background: #fff; color: #000; }
+  h2 { page-break-after: avoid; } table, pre, blockquote { page-break-inside: avoid; }
 }
 </style>
 </head>
 <body>
-<div class="wrap">
-
-<header class="doc">
-  <p class="kicker">Project Audit Report</p>
-  <h1>calmgap-tokyo — プロジェクト総合レビュー兼設計監査レポート</h1>
-  <p class="sub">東京都のカームダウン・クールダウンスペース設置優先度を、オープンデータから算出して根拠つきで提言するツール／都知事杯オープンデータ・ハッカソン提出作品</p>
-  <div class="meta-grid">
-    <dl class="meta-item"><dt>監査日</dt><dd>2026-07-31</dd></dl>
-    <dl class="meta-item"><dt>ブランチ</dt><dd>claude/continue-session-vsfetr</dd></dl>
-    <dl class="meta-item"><dt>最終コミット</dt><dd>0a9dfc5（2026-07-27）</dd></dl>
-    <dl class="meta-item"><dt>作業ツリー</dt><dd style="color:var(--bad)">36 変更 + 7 未追跡（+28,744 行）が未コミット</dd></dl>
-    <dl class="meta-item"><dt>公開先</dt><dd>calmgap-tokyo.hiroaki-kuwabara.workers.dev（稼働確認済み）</dd></dl>
-    <dl class="meta-item"><dt>監査者</dt><dd>Claude Opus 5（Claude Code）</dd></dl>
-  </div>
-</header>
-
-<p>この文書は、<strong>このリポジトリを初めて見る人（人間・他の AI を問わず）</strong>が設計と現況を理解し、レビューできるように書いてある。推測ではなく、コード・文書・生成物・実行結果を根拠にしている。原典より新しい実測値を採った箇所は明示した。</p>
-
-<nav class="toc">
-  <h2>目次</h2>
-  <ol>
-    <li><span class="tn">0.</span><a href="#s0">監査の方法と、その場で確認した事実</a></li>
-    <li><span class="tn">1.</span><a href="#s1">プロジェクト概要</a></li>
-    <li><span class="tn">2.</span><a href="#s2">MVP の定義</a></li>
-    <li><span class="tn">3.</span><a href="#s3">全体アーキテクチャ</a></li>
-    <li><span class="tn">4.</span><a href="#s4">採用しているアプローチ</a></li>
-    <li><span class="tn">5.</span><a href="#s5">データ設計レビュー</a></li>
-    <li><span class="tn">6.</span><a href="#s6">スコアリング設計レビュー</a></li>
-    <li><span class="tn">7.</span><a href="#s7">実装状況レビュー</a></li>
-    <li><span class="tn">8.</span><a href="#s8">技術レビュー</a></li>
-    <li><span class="tn">9.</span><a href="#s9">ハッカソン視点レビュー</a></li>
-    <li><span class="tn">10.</span><a href="#s10">リスク分析</a></li>
-    <li><span class="tn">11.</span><a href="#s11">課題一覧</a></li>
-    <li><span class="tn">12.</span><a href="#s12">今後のロードマップ</a></li>
-    <li><span class="tn">13.</span><a href="#s13">総合評価</a></li>
-    <li><span class="tn">14.</span><a href="#s14">テックリードならどう進めるか</a></li>
-    <li><span class="tn">A.</span><a href="#sa">付録 監査の再現手順</a></li>
-    <li><span class="tn">B.</span><a href="#sb">付録 主要な指標</a></li>
-  </ol>
-</nav>
-
-<!-- ============================================ 0 -->
-<section id="s0">
-<h2 class="sec"><span class="n">0.</span>監査の方法と、その場で確認した事実</h2>
-
-<h3>0.1 実際に走らせたもの</h3>
-<div class="tablewrap"><table>
-<thead><tr><th>コマンド</th><th>結果</th><th>備考</th></tr></thead>
-<tbody>
-<tr><td><code>python -m etl.selftest</code></td><td><span class="badge b-ok">✅ 50 件すべて通過</span></td><td>文書は 45 件と書いており実数と食い違う（F-3）</td></tr>
-<tr><td><code>node tools/parity_check.mjs</code></td><td><span class="badge b-ok">✅ 全 9,507 メッシュで乖離 0.000e+0</span></td><td>Python↔TypeScript のスコア一致</td></tr>
-<tr><td><code>npx tsc --noEmit</code>（web/）</td><td><span class="badge b-ok">✅ 型エラー 0</span></td><td></td></tr>
-<tr><td>公開 URL の実表示</td><td><span class="badge b-ok">✅ 正常</span></td><td>コロプレス描画・提言リスト・凡例・統計値。コンソールエラーなし</td></tr>
-<tr><td><code>curl .../data/meta.json</code></td><td><span class="badge b-ok">✅ 一致</span></td><td><code>generated_at</code> がローカル生成物と同一。デプロイは最新</td></tr>
+<div class="layout">
+<nav><a class="lv2" href="#s1">0. この監査の目的と合格条件</a>
+<a class="lv2" href="#s2">1. 実際に走らせたもの</a>
+<a class="lv3" href="#s3">1.1 検証コマンド</a>
+<a class="lv3" href="#s4">1.2 配信データからの独立検算</a>
+<a class="lv3" href="#s5">1.3 再ビルドの再現性</a>
+<a class="lv2" href="#s6">2. 凍結を妨げる所見</a>
+<a class="lv3" href="#s7">B-1. 公開サイトが 2 日前のビルドのまま</a>
+<a class="lv3" href="#s8">B-2. 「渋谷駅前」として検査・引用しているメッシュが、渋谷駅前ではない</a>
+<a class="lv2" href="#s9">3. 文書と配信データの不一致</a>
+<a class="lv3" href="#s10">D-1〜D-4. 感度分析（<code>sensitivity.json</code> と文書）</a>
+<a class="lv3" href="#s11">D-5〜D-8. その他</a>
+<a class="lv2" href="#s12">4. 前回（2026-07-31）指摘の帰趨</a>
+<a class="lv2" href="#s13">5. 凍結してよい値（確定値）</a>
+<a class="lv3" href="#s14">5.1 規模</a>
+<a class="lv3" href="#s15">5.2 結果</a>
+<a class="lv3" href="#s16">5.3 検証の到達点</a>
+<a class="lv2" href="#s17">6. 設計の要点が、現ビルドで成り立っているか</a>
+<a class="lv2" href="#s18">7. データ出典と、残る弱さ</a>
+<a class="lv2" href="#s19">8. 提出後の宿題（いま触らない）</a>
+<a class="lv2" href="#s20">9. 推奨する凍結手順</a>
+<a class="lv3" href="#s21">このレポートが同じ罠に落ちないために</a>
+<a class="lv2" href="#s22">10. 是正の記録（2026-08-03・監査と同日）</a>
+<a class="lv3" href="#s23">直したもの</a>
+<a class="lv3" href="#s24">仕組みを直したもの（同じことが起きないように）</a>
+<a class="lv3" href="#s25">是正後の検証</a>
+<a class="lv3" href="#s26">B-1 も同日に解消した</a>
+<a class="lv2" href="#s27">付録 A. この監査の再現手順</a>
+<a class="lv2" href="#s28">付録 B. 確定値（2026-08-02T06:00:47Z ビルド）</a></nav>
+<main>
+<h1>calmgap-tokyo — 凍結検証レポート（提出前）</h1>
+<div class="scroll"><table class="headless"><tbody>
+<tr><td>監査日</td><td><strong>2026-08-03</strong></td></tr>
+<tr><td>前回監査</td><td>2026-07-31（同じファイルを全面改訂。帰趨は 4 章）</td></tr>
+<tr><td>対象</td><td><code>/Users/hiroaki/Dev/calmgap-tokyo</code>（ブランチ <code>claude/continue-session-vsfetr</code>）</td></tr>
+<tr><td>最終コミット</td><td><code>501caed 現況まとめを 08-02 時点に更新し、直近 3 日の変更を要約する</code></td></tr>
+<tr><td>作業ツリー</td><td>クリーン（未コミットなし）</td></tr>
+<tr><td><strong>凍結対象ビルド</strong></td><td><code>generated_at</code> = <strong>2026-08-02T06:00:47+00:00</strong>（<code>web/public/data/meta.json</code>）</td></tr>
+<tr><td>公開先</td><td><a href="https://calmgap-tokyo.hiroaki-kuwabara.workers.dev">https://calmgap-tokyo.hiroaki-kuwabara.workers.dev</a> （監査時は <strong>2026-07-31 のビルドのまま</strong>。2 章 B-1 → <strong>同日に反映済み。10 章</strong>）</td></tr>
+<tr><td>監査者</td><td>Claude Opus 5（Claude Code）</td></tr>
 </tbody></table></div>
-
-<h3>0.2 生成物から独立に検算した数値</h3>
-<p><code>web/public/data/mesh.geojson</code>（実データ 10/10、生成 2026-07-31T02:31:13Z）を直接集計した。</p>
-<div class="tablewrap"><table>
-<thead><tr><th>項目</th><th>実測</th><th>文書の記載</th><th>判定</th></tr></thead>
-<tbody>
-<tr><td>メッシュ数</td><td class="num">9,507</td><td class="num">9,507</td><td><span class="badge b-ok">一致</span></td></tr>
-<tr><td>到達不可メッシュ</td><td class="num"><strong>1,058（11.13%）</strong></td><td class="num">1,057（11.1%）</td><td><span class="badge b-warn">1 件ズレ</span></td></tr>
-<tr><td>上位 50 のうち到達不可</td><td class="num">2</td><td class="num">2（画面表示）</td><td><span class="badge b-ok">一致</span></td></tr>
-<tr><td>上位 20 の区内訳</td><td><strong>千代田 8 / 豊島 7 / 文京 4 / 新宿 1</strong></td><td>千代田 9 / 豊島 7 / 文京 3 / 新宿 1</td><td><span class="badge b-warn">1 件ズレ</span></td></tr>
-<tr><td>渋谷駅前（5339358633）の順位</td><td class="num">519 / 9,507</td><td class="num">519</td><td><span class="badge b-ok">一致</span></td></tr>
-<tr><td>ホスト施設</td><td class="num">1,541</td><td class="num">1,541</td><td><span class="badge b-ok">一致</span></td></tr>
-<tr><td>配信サイズ</td><td>mesh 6.4MB（brotli 812KB）/ demand_points 4.3MB</td><td>—</td><td><span class="badge b-mute">実測</span></td></tr>
-</tbody></table></div>
-<p><strong>1 件ズレの原因は既知の <code>issues.md</code> B4（用途地域の面積加重平均が GEOS のバージョン差で 4 桁目から変わる）とみられる。</strong> 提言の中身は動いていないが、<strong>文書の数値と生成物の数値が一致していることを検査する仕組みが無い</strong>ことは、この監査での新規指摘である（F-3）。</p>
-
-<h3>0.3 公開サイトの実表示</h3>
-<p>3 カラム（操作パネル／地図／提言リスト）が成立し、国土地理院淡色地図の上に 9,507 区画のコロプレスが描かれ、提言リストの第 1 位「豊島区 池袋・北池袋周辺」が実数入りの根拠文（事業所 49 件・定員計 403 人・池袋駅 2,364,011 人/日・商業地域・推定騒音 72.8dB・緑被覆なし・徒歩圏の公共施設 5 件）を表示している。<strong>デモとして成立している。</strong></p>
-
-<h3>0.4 この監査で新たに見つかった不整合（<code>issues.md</code> に無い項目）</h3>
-<div class="cards">
-  <div class="card is-bad">
-    <h4>F-1 <span class="badge b-bad">Critical</span></h4>
-    <p><strong>23 区化以降の全作業（+28,744 行）が未コミット。</strong> 最終コミットは 2 区時点（07-27）。A9・A10 の是正、<code>etl/geocode.py</code>、<code>web/src/area.ts</code>、<code>web/wrangler.jsonc</code>、<code>docs/handoff-hosts.md</code>、<code>docs/operation-idea.md</code> がすべて作業ツリーにしか無い。<code>web/public/data/</code> は追跡対象なので <code>git checkout -- web/public/data/</code> を実行すると<strong>現在の公開データが 2 区時点へ巻き戻る</strong>。</p>
-  </div>
-  <div class="card is-warn">
-    <h4>F-2 <span class="badge b-warn">High</span></h4>
-    <p><strong>画面の説明文が正規化方式を誤って説明している。</strong> <code>ui.ts</code> の <code>renderMethodology()</code> が「各レイヤーは対象地域内のパーセンタイル順位で 0〜1 に正規化しています」と断言するが、騒音と用途地域は絶対尺度。<code>issues.md</code> B2 は「画面はまだこの区別を出していない」と書くが、実際は<strong>区別が無いのではなく逆のことを書いている</strong>。</p>
-  </div>
-  <div class="card is-warn">
-    <h4>F-3 <span class="badge b-warn">High</span></h4>
-    <p><strong>文書中の数値が生成物と自動照合されていない。</strong> 到達不可 1,057/1,058、上位 20 の区内訳、<code>selftest</code> 45/50 件、<code>handoff-hosts.md</code> の「公開中（未反映）」（実際は反映済み）。「過去の数字を引用しないこと」を CLAUDE.md が強く戒めているのに、<strong>その戒めを機械的に守る仕組みが無い</strong>。</p>
-  </div>
-  <div class="card is-info">
-    <h4>F-4 <span class="badge b-info">Medium</span></h4>
-    <p><strong><code>sensitivity.json</code> にビルドとの整合性の担保が無い。</strong> <code>--sensitivity</code> を付けたときだけ書かれるため、現物は <code>mesh.geojson</code> より 1 時間半前の別ビルド。JSON 内に <code>generated_at</code> が無く、画面は無言で古い感度分析を出す。</p>
-  </div>
-  <div class="card is-info">
-    <h4>F-5 <span class="badge b-info">Medium</span></h4>
-    <p><strong><code>proposals.json</code>（6 件）と画面の提言リスト（最大 12 件）で母数が違う。</strong> 静的書き出しは上位 20 区画（<code>TOP_N_CARDS</code>）から、画面は上位 40 区画から束ねている。CLAUDE.md の「提言 8 件」は後者。</p>
-  </div>
-  <div class="card is-info">
-    <h4>F-6 <span class="badge b-mute">Low</span> / F-7 <span class="badge b-info">Medium</span></h4>
-    <p><strong>F-6</strong>: <code>meta.json</code> が未使用の出典（ODPT・不動産情報ライブラリ・鉄道騒音・手帳・既存カームダウン）を含む 15 件を配信しているが、<code>sources</code> は画面に描画されていない。<br><strong>F-7</strong>: <strong>CI が無い</strong>（<code>.github/</code> 無し）。「変更したら必ず通す」が機械的に強制されていない。</p>
-  </div>
-</div>
-</section>
-
-<!-- ============================================ 1 -->
-<section id="s1">
-<h2 class="sec"><span class="n">1.</span>プロジェクト概要</h2>
-
-<h3>1.1 何を作ろうとしているのか</h3>
-<p><strong>東京都は次にカームダウン・クールダウンスペースをどこに設置すべきか</strong>を、オープンデータだけから算出し、根拠つきで提言する<strong>行政・事業者向けの分析ツール</strong>。出力は 3 つ。</p>
+<hr>
+<h2 id="s1">0. この監査の目的と合格条件</h2>
+<p>前回（07-31）の監査は「設計に穴はないか」を初見の人向けに洗うものだった。 その指摘の多くは既に閉じている（4 章）。<strong>今回の目的は違う。</strong></p>
+<p>提出直前のいま必要なのは、改善案ではなく<strong>凍結検証</strong>である。合格条件を 3 つに置いた。</p>
 <ol>
-<li>東京 23 区・250m メッシュ 9,507 区画の<strong>設置優先度コロプレス</strong></li>
-<li>上位区画を隣接単位で束ねた<strong>地区ごとの提言リスト</strong>（「豊島区 池袋・北池袋周辺」）</li>
-<li>そのまま予算会議に出せる<strong>実数入りの根拠カード</strong></li>
+<li><strong>コード・配信データ・文書・公開サイトが 1 つのビルドで整合している</strong>こと</li>
+<li><strong>配信データから独立に検算した値が、文書の記載と一致する</strong>こと</li>
+<li><strong>質疑で崩れる箇所が無い</strong>こと—<wbr>—取り下げた数字が残っていないか、 不利な数字が正しく不利なまま書かれているか</li>
 </ol>
-
-<h3>1.2 誰のどんな課題か</h3>
-<div class="tablewrap"><table class="compact">
-<tbody>
-<tr><th style="width:180px">エンドの受益者</th><td>感覚過敏（発達障害・精神障害・PTSD 等）のある人。都市の音・光・匂い・混雑で過負荷になり、一時退避できる場所を必要とする</td></tr>
-<tr><th>本ツールの利用者</th><td><strong>配置を決める行政・鉄道事業者・施設運営者</strong>（当事者本人ではない）</td></tr>
-<tr><th>使う瞬間</th><td>「次の一箇所をどこに作るか決めるとき」</td></tr>
-<tr><th>課題</th><td>整備が施設単位の個別事例として進んでおり、都全体で需給を俯瞰して配置優先度を分析した公開資料が確認できない。つまり<strong>どこから手を付けるべきかを示す材料が無い</strong></td></tr>
+<p>改善案は「提出後の宿題」（8 章）へ分離した。いまモデルを触ると提言が全部 入れ替わるためで、これは <code>docs/issues.md</code> A4 で既に決めてある方針に従っている。</p>
+<p><strong>結論を先に書く。</strong></p>
+<div class="scroll"><table><thead><tr><th>合格条件</th><th>監査時点</th><th><strong>是正後</strong>（10 章）</th></tr></thead><tbody>
+<tr><td>1. 1 つのビルドで整合</td><td>❌ <strong>公開サイトだけ 2 日古い</strong>（B-1）</td><td>✅ <strong>解消</strong>—<wbr>—<code>npm run deploy</code> 実行、公開 <code>meta.json</code> が手元と完全一致</td></tr>
+<tr><td>2. 独立検算が文書と一致</td><td>❌ <strong>12 項目が不一致</strong>（3 章）。うち 1 件は検査スクリプトが誤りを固定している（B-2）</td><td>✅ <strong>全 18 項目が一致</strong>（検査を 10 → 18 項目へ拡張）</td></tr>
+<tr><td>3. 質疑で崩れない</td><td>⚠️ <strong>「渋谷駅前は 3,469 位」は崩れる</strong>（B-2）。他は不利な数字も含めて正しく書かれている</td><td>✅ <strong>792 位へ是正</strong>。誤ったメッシュを見ていた検査も直した</td></tr>
 </tbody></table></div>
-
-<h3>1.3 社会的背景</h3>
-<ul>
-<li>障害者差別解消法の改正（2024 年 4 月〜）で、民間事業者にも合理的配慮の提供が義務化</li>
-<li>港区役所・都立中央図書館・一部の駅などで個別の設置事例が公表されている</li>
-<li>しかし整備順序の根拠は示されていない</li>
+<p><strong>ただし配信データそのものは健全である。</strong> 再ビルドしてバイト単位で一致し （1.3 節）、<code>meta.json</code> の主要指標は独立検算とすべて一致した（1.2 節）。 <strong>不一致は「文書側」と「公開側」に閉じている。</strong> つまり<strong>このビルドは凍結してよく、直すのは文書と公開だけで足りる。</strong></p>
+<hr>
+<h2 id="s2">1. 実際に走らせたもの</h2>
+<h3 id="s3">1.1 検証コマンド</h3>
+<div class="scroll"><table><thead><tr><th>コマンド</th><th>結果</th></tr></thead><tbody>
+<tr><td><code>python -m etl.selftest</code></td><td>✅ <strong>63 件すべて通過</strong></td></tr>
+<tr><td><code>node tools/parity_check.mjs</code></td><td>✅ 全 <strong>9,507</strong> メッシュで最大乖離 <strong>0.000e+0</strong></td></tr>
+<tr><td><code>npx tsc --noEmit</code>（<code>web/</code>）</td><td>✅ 型エラー 0</td></tr>
+<tr><td><code>python tools/doc_numbers.py</code></td><td>✅ 10 項目すべて一致（<strong>ただし 1 項目が誤ったメッシュを見ている。B-2</strong>）</td></tr>
+<tr><td><code>python -m etl.build --live --report</code></td><td>✅ 正常終了</td></tr>
+<tr><td>公開 URL の <code>meta.json</code></td><td>❌ <strong><code>generated_at</code> が 2026-07-31T02:31:13Z</strong>（手元は 08-02T06:00:47Z）</td></tr>
+</tbody></table></div>
+<h3 id="s4">1.2 配信データからの独立検算</h3>
+<p><code>etl</code> の関数を通さず、<code>web/public/data/*.json</code> を直接集計して照合した （手順は付録 A）。</p>
+<div class="scroll"><table><thead><tr><th>項目</th><th>独立検算</th><th><code>meta.json</code> / 文書</th><th>判定</th></tr></thead><tbody>
+<tr><td>メッシュ数</td><td>9,507</td><td>9,507</td><td>一致</td></tr>
+<tr><td>到達不可</td><td><strong>1,058 件（11.13%）</strong></td><td>1,058（11.1%）</td><td>一致</td></tr>
+<tr><td>うち区内で優先度が中位以上</td><td><strong>151 件</strong></td><td>151</td><td>一致（区ごとの中央値を再計算して確認）</td></tr>
+<tr><td>上位 10 の区内訳</td><td><strong>文京 4 / 豊島 3 / 千代田 2 / 江東 1</strong></td><td>同</td><td>一致</td></tr>
+<tr><td>上位 20 の区内訳</td><td><strong>豊島 6 / 千代田 6 / 文京 4 / 板橋 2 / 江東 1 / 新宿 1</strong></td><td>同</td><td>一致</td></tr>
+<tr><td>上位 50 のうち到達不可</td><td><strong>0 件</strong></td><td>（前回監査は 2 件）</td><td>ビルドで変化。現行文書に記載なし</td></tr>
+<tr><td>提言</td><td><strong>11 件</strong>（顔ぶれ・区画数とも一致）</td><td>11 件</td><td>一致</td></tr>
+<tr><td>ホスト内訳</td><td>区民センター 530 / 児童館 501 / 図書館 247 / 出張所 160 / 文化施設 76 / 公園管理施設 27 = <strong>1,541</strong></td><td>1,541</td><td>一致</td></tr>
+<tr><td>構成要素間の最大相関</td><td><strong>0.804</strong>（駅 × 精神科）</td><td>0.804</td><td>一致</td></tr>
+<tr><td>VIF 最大</td><td><strong>3.36</strong>（精神科）</td><td>3.36</td><td>一致</td></tr>
+<tr><td>第 1 主成分の寄与率</td><td><strong>34.5%</strong></td><td>34.5%</td><td>一致</td></tr>
+<tr><td>騒音の観測圏外</td><td><strong>1,095 セル</strong></td><td>1,095</td><td>一致</td></tr>
+<tr><td>特別支援学校の実在籍者数</td><td><strong>42 / 45 校・計 9,926 人</strong></td><td>同</td><td>一致</td></tr>
+<tr><td>同 規模の範囲</td><td><strong>22〜654 人（29.7 倍）</strong></td><td>「29〜654 人と 22 倍」</td><td>❌ <strong>私立の愛育学園 22 人を落として都立の最小を最小としていた</strong>（3 章 D-6）</td></tr>
+<tr><td>区別の到達不可率</td><td>江東 <strong>38.7%</strong> / 大田 <strong>38.2%</strong></td><td>江東 38.8% / 大田 38.1%</td><td>❌ <strong>入れ替わっている</strong>（D-5）</td></tr>
+<tr><td>定員が実測の事業所</td><td><strong>4,370 / 14,118 = 31.0%</strong></td><td>28.7%</td><td>❌ <strong>2 区時点の値</strong>（D-7）</td></tr>
+<tr><td>ホスト 100m 以内の組</td><td><strong>459 組</strong>（別種別 381）</td><td>595 組（別種別 440）</td><td>❌ <strong>再現できない</strong>（D-8）</td></tr>
+</tbody></table></div>
+<h3 id="s5">1.3 再ビルドの再現性 — 凍結の前提として最も重要</h3>
+<p><code>data/processed/</code> から <code>python -m etl.build --live --report</code> を実行し、 配信データと <strong>バイト単位で比較</strong>した。</p>
+<div class="scroll"><table><thead><tr><th>ファイル</th><th>結果</th></tr></thead><tbody>
+<tr><td><code>mesh.geojson</code>（6,679,930 B）</td><td><strong>完全一致</strong></td></tr>
+<tr><td><code>proposals.json</code></td><td><strong>完全一致</strong></td></tr>
+<tr><td><code>cards.json</code></td><td><strong>完全一致</strong></td></tr>
+<tr><td><code>hosts.geojson</code></td><td><strong>完全一致</strong></td></tr>
+<tr><td><code>demand_points.geojson</code></td><td><strong>完全一致</strong></td></tr>
+<tr><td><code>meta.json</code></td><td><code>generated_at</code> のみ差分（同じ 10,967 B）</td></tr>
+</tbody></table></div>
+<p><strong>同一環境なら、凍結したビルドは何度でも作り直せる。</strong> <code>docs/issues.md</code> B4（GEOS のバージョン差で 4 桁目がズレる）は<strong>別環境での</strong>話で、 この環境での再現性は確認できた。プレゼン中に手元で再ビルドしても数値は動かない。</p>
+<p>（検証後、<code>git checkout -- web/public/data/</code> で凍結時のバイト列へ戻してある。）</p>
+<hr>
+<h2 id="s6">2. 凍結を妨げる所見</h2>
+<h3 id="s7">B-1. 公開サイトが 2 日前のビルドのまま —<wbr>— 主張の起点が公開画面に無い</h3>
+<div class="scroll"><table><thead><tr><th></th><th>公開サイト</th><th>手元（凍結対象）</th></tr></thead><tbody>
+<tr><td><code>generated_at</code></td><td><strong>2026-07-31T02:31:13Z</strong></td><td>2026-08-02T06:00:47Z</td></tr>
+<tr><td><code>meta.unreachable</code></td><td><strong>無い</strong>（<code>null</code>）</td><td><code>{count: 1058, ratio: 0.1113, mid_or_above: 151}</code></td></tr>
+<tr><td><code>meta.proposal_top_n</code> / <code>proposal_limit</code></td><td><strong>無い</strong></td><td>40 / 12</td></tr>
+<tr><td>提言</td><td><strong>6 件</strong></td><td><strong>11 件</strong></td></tr>
+<tr><td>提言の顔ぶれ</td><td>豊島区 池袋・北池袋 / 豊島区 大塚 / 豊島区 池袋・東池袋 / 千代田区ほか 神保町・水道橋 / 文京区 御茶ノ水 / 新宿区 都庁前</td><td>豊島区 大塚・北池袋 / 文京区ほか 水道橋・飯田橋 / 江東区 亀戸 / 板橋区 板橋・新板橋 / 豊島区 東池袋・都電雑司ヶ谷 / 千代田区ほか 岩本町・秋葉原 / 墨田区 錦糸町 / 豊島区 巣鴨 / 文京区 本郷三丁目 / 中央区 新日本橋 / 新宿区 新宿三丁目</td></tr>
+<tr><td>特別支援学校の帯域</td><td>1,200m</td><td>800m</td></tr>
+</tbody></table></div>
+<p>深刻度 <strong>Critical</strong>。理由は件数の差ではない。</p>
+<p><strong><code>docs/status.md</code> は「主張の起点は到達不可にする」と決め、<code>web/src/ui.ts</code> は 見出しを到達不可へ差し替えた（コミット <code>0c5ad1f</code>）。その <code>unreachable</code> が 公開版の <code>meta.json</code> に無い。</strong> つまり<strong>この作品でいちばん頑健だと結論した出力が、 公開画面には載っていない。</strong> 審査員が URL を開くと、07-31 の別の結論 （提言 6 件・神保町・都庁前）を見ることになる。</p>
+<p><code>docs/handoff-hosts.md:9</code> は公開先を「<strong>未反映</strong>」と書いている。前回監査では この記載が古く（当時は反映済み）誤りだと指摘したが、<strong>現在は結果的に正しい。</strong> ただし「何が未反映か」は書かれていない。</p>
+<p><strong>対処</strong>: <code>web/</code> で <code>npm run deploy</code>。ビルドは再現できる（1.3）ので、 配信データを作り直す必要はない。</p>
+<h3 id="s8">B-2. 「渋谷駅前」として検査・引用しているメッシュが、渋谷駅前ではない</h3>
+<p><code>tools/doc_numbers.py:74</code> は渋谷駅前のメッシュコードを <strong><code>5339358611</code></strong> と 決め打ちしている。このメッシュを配信データで引くと:</p>
+<div class="scroll"><table><thead><tr><th></th><th><code>5339358611</code>（検査が見ている）</th><th><code>5339358633</code>（渋谷駅を含む）</th></tr></thead><tbody>
+<tr><td>範囲</td><td>35.6500〜35.6521 N</td><td><strong>35.6563〜35.6583 N</strong></td></tr>
+<tr><td>渋谷駅（35.6580, 139.7016）を含むか</td><td><strong>含まない</strong>（約 700m 南）</td><td><strong>含む</strong></td></tr>
+<tr><td><code>f_station_name</code></td><td><strong>代官山</strong></td><td><strong>渋谷</strong></td></tr>
+<tr><td><code>f_station_riders</code></td><td>28,772 人/日</td><td><strong>2,897,703 人/日</strong></td></tr>
+<tr><td><code>f_zoning_name</code></td><td><strong>第二種低層住居専用地域</strong></td><td><strong>商業地域</strong></td></tr>
+<tr><td>需要 / 負荷</td><td>0.767 / 0.415</td><td>0.726 / 0.995</td></tr>
+<tr><td>優先度（順位）</td><td>0.629（<strong>3,469 位</strong>）</td><td><strong>0.915（792 位）</strong></td></tr>
+</tbody></table></div>
+<p><strong>渋谷駅前の現在の順位は 3,469 位ではなく 792 位 / 9,507 件（上位 8.3%）である。</strong></p>
+<p>深刻度 <strong>High</strong>。三つの理由から。</p>
+<ol>
+<li><strong>検査が誤りを固定している。</strong> このメッシュコードはコミット <code>0c5ad1f</code>—<wbr>— 「過去の数字を引用しない」を機械的に守らせるために <code>doc_numbers.py</code> を 足したまさにそのコミット—<wbr>—で入った。以後 <code>docs/status.md</code>・<code>CLAUDE.md</code>・ <code>docs/methodology.md</code> の本文が検査の出力（3,469 位）に合わせて書き換えられ、 <strong>CI は今後もずっと緑になる。</strong></li>
+<li><strong>主張の強さが変わる。</strong> 「上位は渋谷駅前ではない」は 792 位でも言える （提言は上位 40 区画から作るので入らない）。だが <strong>3,469 位＝中位という 説明は成り立たない。</strong> 上位 8.3% は「相対的には高い。ただし最上位ではない」である。</li>
+<li><strong>その場で確かめられてしまう。</strong> 公開画面で渋谷駅をクリックすれば 優先度 0.915 と出る。掴みに使う数字ほど検証されやすい。</li>
+</ol>
+<p><strong>文書内でも矛盾している。</strong> <code>docs/methodology.md</code> の比較表（397 行）は <strong>正しいメッシュ <code>5339358633</code></strong> を使っているが、値は 1,200m 時点のもの（642 位）。 その 2 行上（395 行）の本文だけが 3,469 位に差し替わっている。 <strong>前回監査（07-31）の再現手順（付録 A）も <code>5339358633</code> を使っており、 当時の 519 位はこのメッシュの値だった。</strong> 途中でコードだけがすり替わっている。</p>
+<p><strong>対処</strong>: <code>tools/doc_numbers.py:74</code> を <code>5339358633</code> に直し、 <code>docs/status.md:21,360</code>・<code>CLAUDE.md:300</code>・<code>docs/methodology.md:395,404,1210</code> を <strong>792 位 / 優先度 0.915</strong> で書き直す。<code>methodology.md</code> の比較表は 現在値（下表）へ差し替える。</p>
+<div class="scroll"><table><thead><tr><th></th><th>渋谷駅前 <code>5339358633</code></th><th>上位 1 位 <code>5339457833</code>（豊島区 大塚）</th></tr></thead><tbody>
+<tr><td>駅乗降規模</td><td>1.00</td><td>0.76</td></tr>
+<tr><td>用途地域</td><td>1.00</td><td>0.89</td></tr>
+<tr><td>障害福祉サービス事業所</td><td><strong>0.35</strong></td><td><strong>0.96</strong></td></tr>
+<tr><td>特別支援学校</td><td><strong>0.00</strong></td><td><strong>0.69</strong></td></tr>
+<tr><td>需要 / 負荷</td><td>0.726 / 0.995</td><td>0.995 / 0.995</td></tr>
+<tr><td>優先度（順位）</td><td>0.915（<strong>792 位</strong>）</td><td>1.000（1 位）</td></tr>
+</tbody></table></div>
+<p><strong>「負荷は最大でも需要側が中位」という説明そのものは、値を差し替えても成り立つ</strong> （事業所 0.35 対 0.96、特別支援学校 0.00 対 0.69）。むしろ帯域 800m で 特別支援学校が <strong>0.00</strong> になったことが効いており、A4 の依存を説明する例としては 以前より鮮明である。</p>
+<hr>
+<h2 id="s9">3. 文書と配信データの不一致</h2>
+<p><strong>性格が 1 つに揃っている。</strong> 12 件すべてが「<strong>測り直したあと、一部の文書だけ 更新した</strong>」形である。とくに <strong>2026-08-02 の帯域 800m 化で感度分析を全部 測り直したのに、<code>issues.md</code> A4 の比較表と <code>status.md</code> の一部しか追随していない。</strong></p>
+<p><code>tools/doc_numbers.py</code> が見るのは <code>meta.json</code> 由来の 10 個のスカラーだけで、 <strong><code>sensitivity.json</code> の値は 1 つも検査されていない。</strong> 変化がいちばん大きく、 かつ「不利な結果」として最も引用される数値群が、検査の外にある。</p>
+<h3 id="s10">D-1〜D-4. 感度分析（<code>sensitivity.json</code> と文書）</h3>
+<div class="scroll"><table><thead><tr><th>#</th><th>項目</th><th>文書の記載</th><th><strong>配信データの実測</strong></th><th>記載場所</th></tr></thead><tbody>
+<tr><td>D-1</td><td>仮定員 9,748 行を全部落とす（上位10）</td><td>90%</td><td><strong>80%</strong></td><td><code>CLAUDE.md:281</code> / <code>status.md:454</code> / <code>issues.md:628</code></td></tr>
+<tr><td>D-2</td><td>帯域群のうち特別支援学校 単独 ±30%</td><td>71%</td><td><strong>75%</strong></td><td><code>CLAUDE.md:285</code> / <code>status.md:391</code> / <code>issues.md:981</code></td></tr>
+<tr><td>D-2</td><td>同 他 3 層</td><td>87〜92%</td><td><strong>86〜91%</strong></td><td>同上</td></tr>
+<tr><td>D-3</td><td>Leave-one-out「事業所・駅・用途地域・騒音も 40%」</td><td>40%</td><td><strong>事業所 70 / 駅 80 / 用途地域 10 / 騒音 80</strong></td><td><code>status.md:404</code></td></tr>
+<tr><td>D-3</td><td>騒音を外すと上位 10 の 60% が入れ替わる</td><td>LOO 40%</td><td><strong>LOO 80%</strong>（入れ替わるのは 20%）</td><td><code>status.md:328,424</code></td></tr>
+<tr><td>D-4</td><td>D1 の群別表 全体</td><td>種別重み 96/90・仮定員 99/90・帯域 76/30・用途地域 88/40・IDW 86/70・α/β 96/90・全部 60/10</td><td><strong>88.5/80・92.3/80・65/30・75.2/10・83.7/70・85.8/60・62.5/10</strong></td><td><code>issues.md:965〜971</code></td></tr>
+</tbody></table></div>
+<p><strong>D-4 は表ごと 1,200m 時点のもの</strong>で、その直後の段落だけが 800m の値 （65%・最悪 30%）に更新されている。同じ節の中で世代が混在している。</p>
+<p><strong>D-3 は含意が変わる。</strong> 現ビルドで上位 10 件への影響が 2 番目に大きい層は <strong>用途地域（LOO 10%）</strong> であり、騒音（80%）ではない。 <code>status.md</code> は騒音を重い層として書き、用途地域を挙げていない。 <code>issues.md:747</code> の A4 比較表には正しく「用途地域 40% → <strong>10%</strong> 悪化」と 書いてあるので、<strong>issues.md の中でも節によって世代が違う。</strong></p>
+<blockquote><p><strong>A4 の言い方に影響する。</strong> <code>CLAUDE.md</code> は「上位の顔ぶれは<strong>特別支援学校 1 層</strong>で ほぼ決まる」と書いている。LOO は特別支援学校 0%・<strong>用途地域 10%</strong> で、 「1 層」ではなく <strong>2 層</strong>が握っている。用途地域を全部同じ値に潰す シナリオでも上位 10 の重なりは <strong>10%</strong>・順位変動の中央値 36 位である。 ただし用途地域は建築基準法別表第二から導いた絶対尺度で、<code>AbsoluteScale</code> の <code>basis</code> を持つ—<wbr>—<strong>根拠の質は帯域より高い。</strong>「依存はしているが、 依存先の根拠は外部の法令にある」と書けば、不利にならずに正確になる。</p></blockquote>
+<h3 id="s11">D-5〜D-8. その他</h3>
+<div class="scroll"><table><thead><tr><th>#</th><th>項目</th><th>文書の記載</th><th><strong>実測</strong></th><th>備考</th></tr></thead><tbody>
+<tr><td>D-5</td><td>区別の到達不可率</td><td>江東 <strong>38.8%</strong> / 大田 <strong>38.1%</strong></td><td>江東 <strong>38.7%</strong>（259/670）/ 大田 <strong>38.2%</strong>（362/947）</td><td><code>--report</code> の出力・独立検算の両方で一致。<strong>値が入れ替わっている</strong></td></tr>
+<tr><td>D-6</td><td>特別支援学校の規模の幅</td><td>「<strong>29〜654 人</strong>と <strong>22 倍</strong>開く」</td><td><strong>22〜654 人</strong>（愛育学園 22 / 都立王子 654）で <strong>29.7 倍</strong></td><td>最小として挙げていた 29 人（都立葛飾盲学校）は<strong>都立の中の最小</strong>で、<strong>私立の愛育学園 22 人を見落としている</strong>。倍率 22 はその 29 から導いたもので、内部では自己整合しているため気付けない。<strong>「公立だけの調査で全件を賄おうとしない」という <code>CLAUDE.md</code> の戒めが、文書の側で破れていた</strong></td></tr>
+<tr><td>D-7</td><td>定員が実測の事業所</td><td><strong>28.7%</strong></td><td><strong>31.0%</strong>（4,370 / 14,118）</td><td>28.7% は 2 区時点（3,704 事業所）の値。<code>status.md:218</code> の経過記述としては正しく、<code>status.md:450</code>・<code>CLAUDE.md:278</code> の現況記述としては古い</td></tr>
+<tr><td>D-8</td><td>ホスト 100m 以内の組</td><td><strong>595 組</strong>（別種別 <strong>440 組</strong>）</td><td><strong>459 組</strong>（別種別 <strong>381 組</strong>）</td><td>算出コードがリポジトリに無く、<strong>再現できない</strong>。半径を 100〜200m で振っても 595 は出ない（150m で 546・200m で 641）。<strong>63 組の名寄せ是正（重複行を落とす前）の値と辻褄が合う</strong>—<wbr>—推測だが、459 + 63 組ぶんの近傍対 ≒ 585〜595</td></tr>
+</tbody></table></div>
+<p>D-5・D-6 は<strong>桁も向きも変わらない</strong>ので結論に影響しない。だが 「江東 38.8 / 大田 38.1」のような<strong>入れ替わり</strong>は、この作品が <code>CLAUDE.md</code> で繰り返し戒めている壊れ方（値の取り違え）そのものである。</p>
+<p>D-8 は自己批判の数字なので、<strong>多い側に間違えている</strong>（実際より供給の 重複を大きく見積もっている）。結論を有利にする誤りではない。 ただし<strong>再現できない数字を 5 つの文書に載せている</strong>ことは残る。</p>
+<hr>
+<h2 id="s12">4. 前回（2026-07-31）指摘の帰趨</h2>
+<div class="scroll"><table><thead><tr><th>ID</th><th>前回の指摘</th><th>現況</th></tr></thead><tbody>
+<tr><td><strong>F-1</strong></td><td>23 区化以降の全作業（+28,744 行）が未コミット</td><td>✅ <strong>解消</strong>（<code>d64f180</code> 以降でコミット済み・作業ツリーはクリーン）</td></tr>
+<tr><td><strong>F-2</strong></td><td>画面が「各レイヤーはパーセンタイル順位で正規化」と誤記（騒音・用途地域は絶対尺度）</td><td>✅ <strong>解消</strong>。<code>web/src/ui.ts:979〜1043</code> に層ごとの「絶対尺度」札と <code>basis</code> のツールチップ</td></tr>
+<tr><td><strong>F-3</strong></td><td>文書の数値が生成物と自動照合されていない</td><td>⚠️ <strong>仕組みは入ったが穴がある</strong>。<code>tools/doc_numbers.py</code> ＋ CI で 10 項目を照合。ただし <strong><code>sensitivity.json</code> を 1 つも見ておらず</strong>（3 章）、<strong>渋谷駅前は誤ったメッシュを固定している</strong>（B-2）</td></tr>
+<tr><td><strong>F-5</strong></td><td><code>proposals.json</code>（6 件）と画面の提言リスト（最大 12 件）で母数が違う</td><td>✅ <strong>解消</strong>。<code>PROPOSAL_TOP_N=40</code> / <code>PROPOSAL_LIMIT=12</code> を <code>config.py</code> 単一の出所にし、両方 11 件で一致</td></tr>
+<tr><td><strong>F-7</strong></td><td>CI が無い</td><td>✅ <strong>解消</strong>。<code>.github/workflows/ci.yml</code> で selftest・tsc・parity（<strong>実データと模擬データの両方</strong>）・doc_numbers</td></tr>
+<tr><td><strong>H2</strong></td><td>需要寄与の 68.9% が仮定員なのに感度分析が固定値を揺すっていない</td><td>✅ <strong>解消</strong>。固定値 <strong>76 個</strong>へ拡張。さらに<strong>「68.9%」自体が取り違えで、正しくは 25.1%</strong> と判明（<code>d0ac05a</code>）</td></tr>
+<tr><td><strong>H5</strong></td><td>同じ数値が 6 文書に重複記載され自動照合が無い</td><td>⚠️ F-3 と同じ。<strong>重複記載は減っていない</strong>（3 章の 12 件はすべて重複記載箇所の片側だけが更新されたもの）</td></tr>
+<tr><td><strong>M9</strong></td><td>「区内で優先度が中位以上の到達不可」が画面に出ていない</td><td>✅ 実装済み（<code>ui.ts:341〜372</code>）。<strong>ただし未デプロイ</strong>（B-1）</td></tr>
+</tbody></table></div>
+<p><strong>前回の High 指摘は 1 つを除いて閉じている。</strong> 残る 1 つ（F-3 / H5＝ 文書の数値の重複と照合漏れ）が、今回見つかった 12 件の不一致と B-2 の 両方の原因になっている。<strong>「規約は仕組みにする」は正しかったが、 仕組みの網が狭かった。</strong></p>
+<hr>
+<h2 id="s13">5. 凍結してよい値（確定値）</h2>
+<p>以下は 2026-08-02T06:00:47Z のビルドから直接読み、独立検算で確認した。 <strong>動画・発表資料はここから引くこと。</strong></p>
+<h3 id="s14">5.1 規模</h3>
+<div class="scroll"><table><thead><tr><th>項目</th><th>値</th></tr></thead><tbody>
+<tr><td>対象</td><td>東京 23 区 / JIS X 0410 5 次メッシュ（250m）<strong>9,507 区画</strong></td></tr>
+<tr><td>1 セルの実寸</td><td>約 232m × 283m</td></tr>
+<tr><td>実データ</td><td><strong>10 / 10 レイヤー</strong>（模擬なし）</td></tr>
+<tr><td>需要側</td><td>障害福祉事業所 <strong>14,118</strong> / 駅 <strong>617</strong> / 特別支援学校 <strong>45</strong> / 精神科・心療内科 <strong>1,548</strong></td></tr>
+<tr><td>負荷側</td><td>用途地域 <strong>7,002</strong> / 騒音測定点 <strong>428</strong>（23 区内 383）/ 都市公園 <strong>3,835</strong> / 混雑メッシュ <strong>4,221</strong></td></tr>
+<tr><td>供給側</td><td>ホスト <strong>1,541 件</strong>（区民センター 530・児童館 501・図書館 247・出張所 160・文化施設 76・公園管理施設 27）</td></tr>
+<tr><td>配信</td><td><code>mesh.geojson</code> 6,679,930 B（brotli -q11 で <strong>486,112 B</strong>）/ <code>demand_points.geojson</code> 4,552,957 B</td></tr>
+<tr><td>コード</td><td>Python <strong>9,761 行</strong>（うち <code>selftest.py</code> 1,512）/ TypeScript <strong>2,177 行</strong> / CSS 690 行 / 文書 <strong>4,197 行</strong></td></tr>
+</tbody></table></div>
+<h3 id="s15">5.2 結果</h3>
+<div class="scroll"><table><thead><tr><th>項目</th><th>値</th></tr></thead><tbody>
+<tr><td><strong>到達不可</strong></td><td><strong>1,058 区画（11.13%）</strong>。うち区内で優先度が中位以上 <strong>151 件</strong></td></tr>
+<tr><td>提言</td><td><strong>11 件</strong>（上位 40 区画を隣接で束ねた地区）</td></tr>
+<tr><td>上位 10 の区内訳</td><td><strong>文京 4 / 豊島 3 / 千代田 2 / 江東 1</strong></td></tr>
+<tr><td>上位 20 の区内訳</td><td>豊島 6 / 千代田 6 / 文京 4 / 板橋 2 / 江東 1 / 新宿 1</td></tr>
+<tr><td>第 1 位</td><td><strong>豊島区 大塚・北池袋周辺</strong>（6 区画）。最上位の区画 <code>5339457833</code> は 事業所 <strong>60 件</strong> / 定員計 <strong>524 人</strong> / 大塚駅 108,702 人・137m / 商業地域 / 推定騒音 71.8dB / 緑被覆なし / 徒歩圏の公共施設 4 件・最寄り 巣鴨図書館 <strong>658m</strong></td></tr>
+<tr><td>渋谷駅前（<code>5339358633</code>）</td><td><strong>792 位 / 9,507</strong>（優先度 0.915）※ B-2</td></tr>
+<tr><td>上位 50 のうち到達不可</td><td><strong>0 件</strong></td></tr>
+</tbody></table></div>
+<p><strong>到達不可は半径で単調に動く</strong>（<code>sensitivity.json</code> の <code>host_distance</code>）。 「700m」という置き方に結論が張り付いていないことを示せる:</p>
+<div class="scroll"><table><thead><tr><th>徒歩圏の半径</th><th>到達不可</th><th>うち区内で中位以上</th></tr></thead><tbody>
+<tr><td>500m</td><td>2,350（24.7%）</td><td>723</td></tr>
+<tr><td>600m</td><td>1,481（15.6%）</td><td>323</td></tr>
+<tr><td><strong>700m（採用）</strong></td><td><strong>1,058（11.1%）</strong></td><td><strong>151</strong></td></tr>
+<tr><td>800m</td><td>830（8.7%）</td><td>83</td></tr>
+<tr><td>1,000m</td><td>637（6.7%）</td><td>51</td></tr>
+</tbody></table></div>
+<h3 id="s16">5.3 検証の到達点</h3>
+<div class="scroll"><table><thead><tr><th>項目</th><th>値</th></tr></thead><tbody>
+<tr><td>不変条件テスト</td><td><strong>63 件通過</strong></td></tr>
+<tr><td>Python ↔ TypeScript</td><td>全 9,507 メッシュで<strong>乖離 0</strong>（模擬データモードでも一致）</td></tr>
+<tr><td>構成要素間の最大相関</td><td><strong>0.804</strong>（駅 × 精神科）—<wbr>—0.9 未満で二重計上なし</td></tr>
+<tr><td>VIF 最大</td><td><strong>3.36</strong>（精神科）—<wbr>—目安 5 を下回る</td></tr>
+<tr><td>主成分</td><td>PC1 寄与率 <strong>34.5%</strong>（駅 −0.53 / 精神科 −0.52 / 混雑 −0.51 が同符号＝「ターミナル性」）</td></tr>
+<tr><td>重み ±30%（500 試行）</td><td>上位10 <strong>73.3%</strong>（最悪 10%）/ 上位20 79.7% / 上位50 <strong>86.6%</strong>。順位変動 中央値 6 位・90%点 22 位</td></tr>
+<tr><td>固定値 76 個 ±30%（60 試行）</td><td>上位10 <strong>62.5%</strong>（最悪 10%）・順位変動 中央値 11 位</td></tr>
+<tr><td>4 プリセット共通の上位 20</td><td><strong>0 件（0%）</strong></td></tr>
+</tbody></table></div>
+<p><strong>Leave-one-out（その層を外したとき、上位 10 件のうち何件が残るか）</strong></p>
+<div class="scroll"><table><thead><tr><th>層</th><th>残存</th><th></th></tr></thead><tbody>
+<tr><td><strong>特別支援学校（規模重み）</strong></td><td><strong>0%</strong></td><td>全部入れ替わる</td></tr>
+<tr><td><strong>用途地域（法的な騒がしさ上限）</strong></td><td><strong>10%</strong></td><td>3 章 D-3 の注記</td></tr>
+<tr><td>緑・公園被覆（減点）</td><td>50%</td><td></td></tr>
+<tr><td>障害福祉サービス事業所</td><td>70%</td><td></td></tr>
+<tr><td>混雑（従業者数）</td><td>70%</td><td></td></tr>
+<tr><td>駅乗降規模</td><td>80%</td><td></td></tr>
+<tr><td>精神科・心療内科</td><td>80%</td><td></td></tr>
+<tr><td>自動車騒音</td><td>80%</td><td></td></tr>
+</tbody></table></div>
+<p><strong>固定値の群別（±30%・上位 10 件の重なり）</strong></p>
+<div class="scroll"><table><thead><tr><th>群</th><th>個数</th><th>平均</th><th>最悪</th><th>順位変動（中央値）</th></tr></thead><tbody>
+<tr><td>定員の無い種別に当てている仮定員</td><td>25</td><td>92.3%</td><td>80%</td><td>0.0 位</td></tr>
+<tr><td>障害福祉サービスの種別重み</td><td>30</td><td>88.5%</td><td>80%</td><td>1.0 位</td></tr>
+<tr><td>騒音の内挿（平滑化 50m・打ち切り 1500m）</td><td>2</td><td>83.7%</td><td>70%</td><td>1.0 位</td></tr>
+<tr><td>合成指数 α・β</td><td>2</td><td>85.8%</td><td>60%</td><td>3.0 位</td></tr>
+<tr><td>用途地域 → 負荷の写像</td><td>13</td><td>75.2%</td><td><strong>10%</strong></td><td>2.2 位</td></tr>
+<tr><td><strong>徒歩圏の帯域</strong></td><td>4</td><td><strong>65.0%</strong></td><td><strong>30%</strong></td><td>11.5 位</td></tr>
+<tr><td><strong>上の全部を同時に</strong></td><td><strong>76</strong></td><td><strong>62.5%</strong></td><td><strong>10%</strong></td><td>11.0 位</td></tr>
+</tbody></table></div>
+<p><strong>帯域を層ごとに単独で揺らすと</strong>、特別支援学校 <strong>75.3%</strong> に対し 障害福祉事業所 86.3% / 精神科 90.5% / 駅 90.8%。 <strong>帯域群の重さはこの 1 層から来ている。</strong></p>
+<p><strong>仮定を除去したとき（<code>fixed_values.scenarios</code>）</strong></p>
+<div class="scroll"><table><thead><tr><th>シナリオ</th><th>上位10</th><th>上位20</th><th>上位50</th></tr></thead><tbody>
+<tr><td>仮定員の 9,748 件を需要から全部落とす</td><td><strong>80%</strong></td><td>90%</td><td>92%</td></tr>
+<tr><td>定員を使わず件数だけで需要を作る</td><td>80%</td><td>95%</td><td>86%</td></tr>
+<tr><td>サービス種別を区別しない（全種別 0.50）</td><td>80%</td><td>100%</td><td>88%</td></tr>
+<tr><td><strong>用途地域を区別しない（13 値を全て 0.30）</strong></td><td><strong>10%</strong></td><td>35%</td><td>46%</td></tr>
+</tbody></table></div>
+<hr>
+<h2 id="s17">6. 設計の要点が、現ビルドで成り立っているか</h2>
+<p><strong>再導出はしない</strong>（<code>docs/methodology.md</code> にある）。凍結検証として、 <strong>設計上の主張が現ビルドの数値で裏付けられているか</strong>だけを見た。</p>
+<div class="scroll"><table><thead><tr><th>主張</th><th>検証</th><th>判定</th></tr></thead><tbody>
+<tr><td><strong>掛け算モデル</strong>（優先度 = 需要 × 負荷）。片側だけ極端な場所を上位に入れない</td><td>上位 10 は需要 0.970〜1.000・負荷 0.969〜0.998 で<strong>両側が同時に高い</strong>。渋谷駅前は負荷 0.995 でも需要 0.726 で 792 位</td><td>✅ 成立</td></tr>
+<tr><td>需要 0 の区画は優先度が厳密に 0</td><td><code>selftest</code> が検査（<code>zero_is_absence</code>）。配信データでも需要 0 の区画は優先度 0</td><td>✅ 成立</td></tr>
+<tr><td>需要側と負荷側が<strong>独立に</strong>同じ場所を指す（駅レイヤー単独の結果ではない）</td><td>相関 最大 0.804・VIF 最大 3.36。駅を外しても上位 10 の 80% が残る</td><td>✅ 成立</td></tr>
+<tr><td><strong>絶対尺度</strong>（騒音・用途地域）は対象地域を変えても値が変わらない</td><td><code>selftest</code> が「他メッシュに依存しないこと」を検査。<code>meta.components</code> に <code>absolute.basis</code>（環境基準・要請限度 / 建築基準法別表第二）</td><td>✅ 成立</td></tr>
+<tr><td><strong>この道具は区画について述べ、施設については述べない</strong></td><td>提言 11 件の見出しはすべて「区名＋最寄り駅名」。施設名は根拠文の中で「最寄り」としてのみ登場</td><td>✅ 成立</td></tr>
+<tr><td>提言の束ね方は<strong>メッシュの隣接</strong>（<code>grid_index</code>）</td><td>11 件の <code>mesh_codes</code> が隣接集合として整合。Python と TypeScript で同じ地区名</td><td>✅ 成立</td></tr>
+<tr><td><strong>プリセットと重みの定義は <code>config.py</code> が唯一の出所</strong></td><td><code>meta.json</code> 経由で配信。TypeScript 側に重複定義なし</td><td>✅ 成立</td></tr>
+<tr><td>順位は最も頑健な出力<strong>ではない</strong>。到達不可のほうが頑健</td><td>到達不可は重み・スコア・帯域のいずれも通らない。半径を 500〜1,000m で振っても単調（5.2）</td><td>✅ 成立</td></tr>
+<tr><td>「上位は渋谷駅前ではない」</td><td>792 位 / 9,507（上位 8.3%）。提言（上位 40）には入らない</td><td>⚠️ <strong>成立するが、3,469 位という説明では成立しない</strong>（B-2）</td></tr>
+<tr><td>「上位の顔ぶれは<strong>特別支援学校 1 層</strong>でほぼ決まる」</td><td>特別支援学校 LOO 0%。<strong>ただし用途地域も 10%</strong></td><td>⚠️ <strong>「1 層」ではなく 2 層</strong>（D-3 の注記）</td></tr>
+</tbody></table></div>
+<hr>
+<h2 id="s18">7. データ出典と、残る弱さ</h2>
+<p><code>docs/status.md</code>「まだ本物でないもの」と重複するが、<strong>凍結する数値の すぐ隣に置いておくべき</strong>なので再掲する。件数は現ビルドで確認した （3 章で直した値を反映してある）。ただし<strong>「予約制の無人貸室 103 件」と 「地域活動支援センター 17 件」は配信データから直接は数えられない</strong>—<wbr>— 前者は <code>区民センター</code> に、後者は投入前に落とされていて残らないため、 <code>docs/issues.md</code> の記載による。</p>
+<div class="scroll"><table><thead><tr><th>レイヤー</th><th>出典</th><th>年次</th><th>残る弱さ</th></tr></thead><tbody>
+<tr><td>障害福祉事業所 14,118</td><td>WAM NET 情報公表システム</td><td>2026-03</td><td><strong>定員が実測なのは 31.0%</strong>（訪問系・相談系・共同生活援助は制度上定員が無い）。<strong>地域活動支援センター 17 件は対象外で落ちている</strong>（過小計上）</td></tr>
+<tr><td>特別支援学校 45</td><td>国土数値情報 P29（位置）＋ 都教委 学校別在籍者数（規模）</td><td>2023 / 2025</td><td><strong>42 校が実数（22〜654 人・計 9,926 人）、国立 3 校は非公表で既定値 150 人。</strong> 基準日が層の内部でずれる</td></tr>
+<tr><td>駅 617</td><td>国土数値情報 S12</td><td>2024</td><td>—</td></tr>
+<tr><td>精神科・心療内科 1,548</td><td>国土数値情報 P04</td><td>2020</td><td>標榜科目ベース</td></tr>
+<tr><td>用途地域 7,002</td><td>国土数値情報 A29</td><td>2019</td><td><strong>LOO 10%</strong>—<wbr>—結論への影響は特別支援学校に次ぐ</td></tr>
+<tr><td>騒音 428 点</td><td>東京都環境局 自動車交通騒音調査</td><td><strong>2013</strong></td><td><strong>幹線道路の道路端しか測っていない。</strong>23 区内 383 点が区ごとに 5〜31 点と偏る。<strong>観測圏外 1,095 セルを中央値で補完</strong>（<code>issues.md</code> A6・未解決）</td></tr>
+<tr><td>都市公園 3,835</td><td>国土数値情報 P13</td><td><strong>2011</strong></td><td>—</td></tr>
+<tr><td>混雑 4,221 メッシュ</td><td>e-Stat 経済センサス（従業者数）</td><td>2021</td><td><strong>昼間人口ではない。</strong>買い物客・通学者を含まない</td></tr>
+<tr><td>ホスト 1,541</td><td>P14 児童館 ＋ 23 区の公共施設一覧</td><td>2022 / 2025</td><td><strong>都・国・民間は入っていない。北区だけ中身が薄い</strong>（22 件中 20 件が児童館・図書館 0 件）。<strong>100m 以内に別の行が並ぶ組が 459 組</strong>（D-8）。<strong>予約制の無人貸室 103 件を図書館と同格に数えている</strong></td></tr>
+</tbody></table></div>
+<p><strong>年次がそろっていない</strong>（事業所 2026 / 駅 2024 / 混雑 2021 / 用途地域 2019 / 騒音 2013 / 公園 2011）。<strong>当事者による検証を経ていない。</strong></p>
+<hr>
+<h2 id="s19">8. 提出後の宿題（いま触らない）</h2>
+<p>いずれも<strong>モデルか結論を動かす</strong>ため、凍結の外に置く。 判断の経緯は <code>docs/issues.md</code> に残っている。</p>
+<div class="scroll"><table><thead><tr><th></th><th>内容</th><th>いま触らない理由</th></tr></thead><tbody>
+<tr><td><strong>A4</strong></td><td>特別支援学校を需要側から外す（点が 45 校と疎で、帯域がそのままゲートになる）</td><td>提言が全部入れ替わる。<code>issues.md</code> A4「対処方針」で <strong>2026-08-01 に「直さず明記する」と決定済み</strong></td></tr>
+<tr><td><strong>A6</strong></td><td>騒音の観測圏外 1,095 セルの補完（中央値 → 別の方法）</td><td>順位を動かさないと実測済み</td></tr>
+<tr><td><strong>A5 / D4</strong></td><td>供給側の点検（同じ建物の別種別 459 組、予約制の無人貸室 103 件）</td><td>到達可否を動かさない</td></tr>
+<tr><td><strong>新規</strong></td><td><code>HOST_PREFERENCE</code> の撤去（A10 以降、順位に効いていない）</td><td>死んだ設定だが、消すと生成物が変わる可能性がある</td></tr>
+</tbody></table></div>
+<hr>
+<h2 id="s20">9. 推奨する凍結手順</h2>
+<p><strong>上から順に。1〜2 を終えるまで資料の数値を確定しないこと。</strong> <strong>4 項目とも監査と同日に実施済み</strong>（10 章）。</p>
+<ol>
+<li><strong>B-2 を直す</strong>（順序が重要—<wbr>—文書を先に直すと誤った値で固定される）<ul>
+<li><code>tools/doc_numbers.py:74</code> の <code>5339358611</code> → <code>5339358633</code></li>
+<li><code>python tools/doc_numbers.py</code> が <strong>792 位</strong>を要求することを確認</li>
+<li><code>docs/status.md:21,360</code> / <code>CLAUDE.md:300</code> / <code>docs/methodology.md:395,404,1210</code> を</li>
 </ul>
-
-<h3>1.4 理念（コードと文書から読み取れるもの）</h3>
-<p>このプロジェクトの理念は、README よりも <strong><code>CLAUDE.md</code> と <code>docs/issues.md</code> に濃く現れている</strong>。</p>
-<ol>
-<li><strong>もっともらしく見えることが、そのまま発見を妨げる。</strong> A29 用途地域で列名の推測が外れ、全件 NaN のまま既定値が全メッシュに乗り、<strong>ビルドもテストも成功と表示された</strong>。この失敗が設計思想そのものになっている</li>
-<li><strong>取りこぼしても混入させない。</strong> 判断できないデータは落とし、過小計上であることを明記する</li>
-<li><strong>不利な結果を隠さない。</strong> 「特別支援学校を外すと上位 10 件が 0% しか残らない」という自作品に不利な数値を、README・methodology・issues の 3 箇所に書いている</li>
-<li><strong>モデルが計算していないことを主張しない。</strong> かつて提言の見出しを施設名にしていたが、「施設の適性を測る構成要素が一つも無い」ことを理由に地区名へ差し替えた（A10）</li>
-</ol>
-
-<h3>1.5 提供価値</h3>
-<div class="tablewrap"><table class="compact">
-<thead><tr><th style="width:140px">価値</th><th>具体</th></tr></thead>
-<tbody>
-<tr><td><strong>絞り込み</strong></td><td>9,507 区画 → 人が話し合う価値のある十数地区へ</td></tr>
-<tr><td><strong>説明可能性</strong></td><td>順位ではなく実数で語る根拠カード（「徒歩圏に事業所 49 件・定員計 403 人」）</td></tr>
-<tr><td><strong>反証可能性</strong></td><td>重みスライダー・4 プリセット・表示モード切替（需要のみ／負荷のみ／掛け算）・感度分析</td></tr>
-<tr><td><strong>発見</strong></td><td>「既存施設では到達不可」1,058 区画（11.1%）。地図を眺めても出てこず、集計して初めて言える</td></tr>
-<tr><td><strong>再現性</strong></td><td>全 ETL がコード化され、出典・取得コマンドまで文書化されている</td></tr>
-</tbody></table></div>
-
-<h3>1.6 既存サービスとの差別化・独自の強み</h3>
-<div class="tablewrap"><table>
-<thead><tr><th>観点</th><th>一般的な「バリアフリーマップ」等</th><th>本作</th></tr></thead>
-<tbody>
-<tr><td>主体</td><td>当事者が「今どこへ行くか」を探す</td><td>行政が「次にどこへ作るか」を決める</td></tr>
-<tr><td>データ</td><td>ユーザー投稿・施設側の申告</td><td>オープンデータのみ（コールドスタート問題が無い）</td></tr>
-<tr><td>単位</td><td>施設</td><td><strong>250m 区画</strong></td></tr>
-<tr><td>需要の定義</td><td>居住地・人口</td><td><strong>「通わざるを得なくて、かつ過負荷になりやすい場所」</strong></td></tr>
-<tr><td>恣意性への対処</td><td>文章で弁明</td><td><strong>審査員が動かせるスライダー＋感度分析の数値</strong></td></tr>
-</tbody></table></div>
-<p><strong>独自性の中心は 2 つ。</strong></p>
-<ol>
-<li><strong>用途地域を感覚負荷の予測器に転用したこと。</strong> 用途地域は都市計画の規制情報であって騒音データではないが、「その土地が法的にどこまで騒がしくなり得るか」の上限を定めている。実測点が疎な感覚負荷を<strong>面として</strong>推定できる。建築基準法別表第二の用途制限から 0.05（第一種低層）〜1.00（商業）の序列を導いている</li>
-<li><strong>需要を「住んでいる場所」ではなく「通わざるを得ない場所」で定義し直したこと。</strong> カームダウンスペースは寝る場所ではなく overwhelm される場所に置くもの、という前提を「定員 × 種別重み」（訪問系 0.10 / 放課後等デイ 1.00）として実装している</li>
-</ol>
-</section>
-
-<!-- ============================================ 2 -->
-<section id="s2">
-<h2 class="sec"><span class="n">2.</span>MVP の定義</h2>
-<blockquote><strong>⚠️ MVP の完成条件（Definition of Done）はリポジトリに明文化されていない。</strong> README に「作るもの / 作らないもの」があり、<code>docs/status.md</code> に残作業があるが、「これが揃えば MVP 完成」という宣言は無い。以下は文書とコードから<strong>再構成したもの</strong>。</blockquote>
-
-<div class="cards">
-  <div class="card is-ok">
-    <h4>✅ やること</h4>
-    <p>オープンデータから算出する<strong>設置優先度スコアの地図</strong></p>
-    <p>上位地区ごとの<strong>「なぜここか」根拠カード</strong>（そのまま予算会議に出せる資料）</p>
-  </div>
-  <div class="card is-bad">
-    <h4>🚫 やらないこと</h4>
-    <p>口コミ／ディスカバリーアプリ</p>
-    <p>リアルタイム経路案内</p>
-    <p>ユーザー投稿機能</p>
-    <p><strong>特定の施設への設置提言</strong>（A10 で明示的に撤回）</p>
-  </div>
-</div>
-
-<h3>2.1 将来的な拡張（Phase 2）</h3>
-<div class="tablewrap"><table class="compact">
-<thead><tr><th>項目</th><th>状態</th><th>出所</th></tr></thead>
-<tbody>
-<tr><td>既存カームダウンスペースとの照合</td><td>中央集約されたオープンデータが無く手作業の名寄せが要る</td><td>methodology 8.3</td></tr>
-<tr><td>PLATEAU 3D 建物・夜間光による「圧迫感・眩しさ」</td><td>未着手</td><td>methodology 9-11</td></tr>
-<tr><td>人流データ（ODPT）</td><td>特定利用条件の確認が要るため未組み込み</td><td>README</td></tr>
-<tr><td>手帳所持率による区単位補正</td><td><strong><code>ward_coefficient</code> の受け口だけ実装、既定 1.0</strong></td><td>methodology 9-7</td></tr>
-<tr><td>鉄道騒音の追加</td><td>未着手</td><td>issues A1</td></tr>
-</tbody></table></div>
-
-<h3>2.2 MVP スコープの評価</h3>
-<p><strong>結論：スコープの切り方は適切。ただし「完成の定義」が無いことが実務上の弱点。</strong></p>
-<div class="tablewrap"><table>
-<tbody>
-<tr><td style="width:70px"><span class="badge b-ok">良い</span></td><td><strong>「作らないもの」が具体的で、しかも実際に守られている。</strong> 特に A10 で、一度実装した「施設への設置提言」を撤回している。スコープの縮小を自ら実行できているプロジェクトは珍しい</td></tr>
-<tr><td><span class="badge b-ok">良い</span></td><td><strong>利用者を当事者本人ではなく行政に定めたこと。</strong> 当事者向けディスカバリーアプリは投稿データが要り、コールドスタート問題に直撃する。オープンデータのみで完結する設計はここから導かれている</td></tr>
-<tr><td><span class="badge b-warn">弱い</span></td><td><strong>完成条件が無いため「あと何をすれば終わりか」が判断できない。</strong> <code>status.md</code> の残作業 3 点は MVP の要件ではなく<strong>品質改善の待ち行列</strong>であり、両者が混ざっている</td></tr>
-<tr><td><span class="badge b-warn">弱い</span></td><td><strong>ハッカソン提出物（デモ動画・発表資料）が MVP に含まれていない。</strong> 未着手</td></tr>
-</tbody></table></div>
-</section>
-
-<!-- ============================================ 3 -->
-<section id="s3">
-<h2 class="sec"><span class="n">3.</span>全体アーキテクチャ</h2>
-
-<h3>3.1 データフロー</h3>
-<div class="flow">
-  <div class="flow-stage"><div class="t">オープンデータ（点・線・面・統計表）</div><div class="d">10 出典 / 手動ダウンロード（<code>data/raw/</code>・非追跡）</div></div>
-  <div class="flow-arrow">▼</div>
-  <div class="flow-group">
-    <div class="g-label">ETL — Python 約 8,000 行</div>
-    <div class="flow-stage"><div class="t">etl/fetch.py — 取得・列の自動判定・共通スキーマへ正規化</div><div class="d">2,763 行。<code>require_column</code> / <code>detect_column</code> / <code>resolve_column</code> / <code>require_nonempty</code></div></div>
-    <div class="flow-arrow">▼</div>
-    <div class="flow-stage"><div class="t">data/processed/*.geojson（正規化済み・追跡対象）</div><div class="d">生データが無くても再ビルドできる</div></div>
-    <div class="flow-arrow">▼</div>
-    <div class="flow-stage"><div class="t">etl/aggregate.py — 標準地域メッシュへ集計</div><div class="d">距離減衰（ガウシアン）/ IDW / 面積加重 / 被覆率 / メッシュコード直結合</div></div>
-    <div class="flow-arrow">▼</div>
-    <div class="flow-stage"><div class="t">etl/score.py — 正規化（順位 or 絶対尺度）→ 需要 × 負荷</div><div class="d">配信精度への丸めも JS と同一規則（<code>publish_round</code>）</div></div>
-    <div class="flow-arrow">▼</div>
-    <div class="flow-stage"><div class="t">etl/hosts.py — 供給側の到達可否・根拠カード・地区提言</div><div class="d">隣接クラスタリング（<code>grid_index</code> の整数座標）</div></div>
-    <div class="flow-arrow">▼</div>
-    <div class="flow-stage"><div class="t">etl/build.py — オーケストレータ / 配信 JSON 書き出し</div><div class="d">+ etl/sensitivity.py（感度分析 3 手法）</div></div>
-  </div>
-  <div class="flow-arrow">▼</div>
-  <div class="flow-stage"><div class="t">web/public/data/</div><div class="d">mesh.geojson / cards.json / proposals.json / hosts.geojson / demand_points.geojson / meta.json / sensitivity.json</div></div>
-  <div class="flow-arrow">▼</div>
-  <div class="flow-group">
-    <div class="g-label">フロントエンド — TypeScript 約 1,800 行</div>
-    <div class="flow-stage"><div class="t">web/src/score.ts ★ score.py と同一の式</div><div class="d">重みの掛け合わせはブラウザ側で行う（本作の設計上の中核）</div></div>
-    <div class="flow-arrow">▼</div>
-    <div class="flow-stage"><div class="t">map.ts（MapLibre GL + 国土地理院 淡色地図） / ui.ts + area.ts</div><div class="d">スライダー・プリセット・表示モード・提言リスト・根拠カード・表</div></div>
-  </div>
-  <div class="flow-arrow">▼</div>
-  <div class="flow-stage"><div class="t">Cloudflare Workers（静的アセット配信）</div><div class="d"><code>wrangler.jsonc</code> に <code>main</code> は無く <code>assets</code> のみ = <strong>API サーバは存在しない</strong></div></div>
-  <div class="side-note"><strong>検証の位置</strong>：<code>etl/selftest.py</code>（50 件）が ETL 全体の不変条件を、<code>tools/parity_check.mjs</code> が <code>score.py</code> ↔ <code>score.ts</code> の一致を検査する。<strong><code>area.ts</code> ↔ <code>hosts.py</code> の地区束ねは検証対象外。</strong></div>
-</div>
-
-<details>
-<summary>同じ図の Mermaid ソース（GitHub / Mermaid 対応ビューアで描画するため）</summary>
-<div class="details-body">
-<p>この HTML は JavaScript を一切使わない方針のため、Mermaid ランタイムを読み込んでいない（上の図は CSS のみで描いている）。Mermaid で描画したい場合は以下を貼り付ける。<code>project_audit.md</code> には同じ内容が <code>```mermaid</code> ブロックとして入っている。</p>
-<pre><code>flowchart TD
-  A["オープンデータ&lt;br/&gt;点・線・面・統計表&lt;br/&gt;（10 出典 / 手動ダウンロード）"] --&gt; B
-
-  subgraph ETL["ETL（Python / 約 8,000 行）"]
-    B["etl/fetch.py&lt;br/&gt;取得・列の自動判定・共通スキーマへ正規化&lt;br/&gt;2,763 行"] --&gt; C["data/processed/*.geojson&lt;br/&gt;（正規化済み・追跡対象）"]
-    C --&gt; D["etl/aggregate.py&lt;br/&gt;標準地域メッシュへ集計&lt;br/&gt;距離減衰 / IDW / 面積加重 / コード直結合"]
-    D --&gt; E["etl/score.py&lt;br/&gt;正規化（順位 or 絶対尺度）&lt;br/&gt;需要 × 負荷"]
-    E --&gt; F["etl/hosts.py&lt;br/&gt;供給側の到達可否・根拠カード・地区提言"]
-    F --&gt; G["etl/build.py&lt;br/&gt;オーケストレータ / 配信 JSON 書き出し"]
-  end
-
-  G --&gt; H["web/public/data/&lt;br/&gt;mesh.geojson / cards.json / proposals.json&lt;br/&gt;hosts.geojson / demand_points.geojson&lt;br/&gt;meta.json / sensitivity.json"]
-
-  subgraph WEB["フロントエンド（TypeScript / 約 1,800 行）"]
-    H --&gt; I["web/src/score.ts&lt;br/&gt;★ score.py と同一の式&lt;br/&gt;重みをブラウザで再計算"]
-    I --&gt; J["web/src/map.ts&lt;br/&gt;MapLibre GL + 国土地理院 淡色地図"]
-    I --&gt; K["web/src/ui.ts + area.ts&lt;br/&gt;スライダー / 提言リスト / 根拠カード / 表"]
-  end
-
-  J --&gt; L["Cloudflare Workers（静的アセット配信）"]
-  K --&gt; L
-
-  M["etl/selftest.py（50 件）"] -.検証.-&gt; ETL
-  N["tools/parity_check.mjs"] -.検証.-&gt; I
-  N -.検証.-&gt; E</code></pre>
-</div>
-</details>
-
-<h3>3.2 各レイヤーの責務</h3>
-<div class="tablewrap"><table>
-<thead><tr><th>レイヤー</th><th>ファイル</th><th>責務</th><th class="num">行数</th></tr></thead>
-<tbody>
-<tr><td>設定</td><td><code>etl/config.py</code></td><td>対象区・座標系・メッシュ次数・<strong>スコア構成要素の定義と既定重み</strong>・プリセット・出典レジストリ。<strong>単一の情報源</strong></td><td class="num">582</td></tr>
-<tr><td>取得・正規化</td><td><code>etl/fetch.py</code></td><td>ダウンロード、列の自動判定、共通スキーマ化、重複排除、出典マージ</td><td class="num">2,763</td></tr>
-<tr><td>対応表</td><td><code>etl/schema.py</code></td><td>用途地域→負荷、事業所種別→需要重み、ホスト種別判定、除外パターン</td><td class="num">737</td></tr>
-<tr><td>メッシュ</td><td><code>etl/mesh.py</code></td><td>JIS X 0410 の符号化・復号・格子座標・隣接判定</td><td class="num">241</td></tr>
-<tr><td>集計</td><td><code>etl/aggregate.py</code></td><td>点→メッシュ（ガウシアン／IDW）、面→メッシュ（面積加重／被覆率）、コード直結合</td><td class="num">408</td></tr>
-<tr><td>スコア</td><td><code>etl/score.py</code></td><td>パーセンタイル正規化・絶対尺度正規化・<code>compose()</code>・配信丸め</td><td class="num">251</td></tr>
-<tr><td>供給側・提言</td><td><code>etl/hosts.py</code></td><td>到達可否判定、根拠カード、隣接クラスタリング、地区見出し</td><td class="num">421</td></tr>
-<tr><td>感度分析</td><td><code>etl/sensitivity.py</code></td><td>ランダム摂動 / Leave-one-out / プリセット比較</td><td class="num">231</td></tr>
-<tr><td>模擬データ</td><td><code>etl/fixtures.py</code></td><td>オフライン開発用の空間的に一貫した生成データ</td><td class="num">472</td></tr>
-<tr><td>ジオコーディング</td><td><code>etl/geocode.py</code></td><td>国土交通省 位置参照情報による住所→座標（<strong>外部 API を呼ばない</strong>）</td><td class="num">178</td></tr>
-<tr><td>統括</td><td><code>etl/build.py</code></td><td>パイプライン実行と配信 JSON 書き出し</td><td class="num">543</td></tr>
-<tr><td>検証</td><td><code>etl/selftest.py</code></td><td>不変条件 50 件</td><td class="num">1,157</td></tr>
-<tr><td>フロント</td><td><code>web/src/*.ts</code></td><td>重み再計算・地図・UI・地区束ね</td><td class="num">1,819</td></tr>
-<tr><td>整合検証</td><td><code>tools/parity_check.mjs</code></td><td>Python↔TypeScript のスコア一致</td><td class="num">101</td></tr>
-</tbody></table></div>
-
-<h3>3.3 この構成の設計判断</h3>
-<p><strong>重みの掛け合わせを意図的にブラウザ側へ残している。</strong> ETL が配信するのは「正規化済みの各構成要素（<code>n_*</code>）」までで、最終スコアはユーザーがスライダーを動かした結果として決まる。「その重みは恣意的では?」という批判を、<strong>審査員自身が動かせるスライダーへ転化する</strong>ための構成。その代償として<strong>同じ数式が Python と TypeScript に 2 つ存在する</strong>（parity_check で管理、現在乖離 0）。</p>
-</section>
-
-<!-- ============================================ 4 -->
-<section id="s4">
-<h2 class="sec"><span class="n">4.</span>採用しているアプローチ</h2>
-
-<details open>
-<summary>4.1 なぜ 250m メッシュ（JIS X 0410 5 次メッシュ）か　<span class="badge b-ok">妥当</span></summary>
-<div class="details-body">
-<div class="tablewrap"><table class="compact"><tbody>
-<tr><th style="width:120px">採用理由</th><td>e-Stat の地域メッシュ統計がメッシュコードをキーに持つため、<strong>空間補間なしで直接結合できる</strong>。独自格子にすると最も信頼できる人口統計を最初に歪めることになる</td></tr>
-<tr><th>メリット</th><td>統計との無損失結合／全国どこでも同じコードで再現可能／整数格子なので隣接判定が厳密（Python と TS でズレない）／250m は「歩いて行ける範囲」の粒度と合う</td></tr>
-<tr><th>デメリット</th><td>250m 区画は<strong>行政の意思決定単位（施設・街区）と一致しない</strong>／「この区画のどこに置くか」は答えられない／9,507 区画で mesh.geojson が 6.4MB</td></tr>
-<tr><th>他案との比較</th><td><strong>町丁目</strong>：行政単位と一致するが面積が不均一。<strong>H3/S2 六角格子</strong>：距離計算は均質だが e-Stat と結合できず本作の中核が消える。<strong>500m</strong>：動くが徒歩圏 800m に対して粗い</td></tr>
-</tbody></table></div>
-</div>
-</details>
-
-<details open>
-<summary>4.2 なぜ「需要 × 負荷」の掛け算か　<span class="badge b-ok">モデルの核として妥当</span>　<span class="badge b-warn">α・β が感度分析の対象外</span></summary>
-<div class="details-body">
-<div class="tablewrap"><table class="compact"><tbody>
-<tr><th style="width:120px">採用理由</th><td>人がいて <strong>かつ</strong> 過負荷、の両方が揃った場所だけを立てるため。静かな住宅地に当事者が住んでいても公共の退避場所は要らないし、うるさくても誰も通らない場所にも要らない</td></tr>
-<tr><th>メリット</th><td>片側だけ極端な場所が上位に紛れ込まない／<code>zero_is_absence=True</code> と組み合わせて「事業所が 1 件も無い区画の優先度は厳密に 0」が保証される（<code>selftest</code> が検査）／<strong>表示モード切替がそのままモデルの実演になる</strong></td></tr>
-<tr><th>デメリット</th><td>掛け算は<strong>片側の欠測に極端に弱い</strong>／α=β=1.0 の根拠が無く、しかも<strong>感度分析が指数を揺すっていない</strong>（D1）／2 段のパーセンタイル正規化を挟むため最終値は「順位の積の順位」で解釈が難しい</td></tr>
-<tr><th>他案との比較</th><td><strong>加重和</strong>：解釈は容易だが片側極端が混入（設計意図に反する）。<strong>幾何平均</strong>：単調変換で順位は同一。<strong>min(D,L)</strong>：より厳しいが微小差に敏感。<strong>CES 型</strong>：加算と乗算を連続的に繋げ、ρ を感度分析に載せられる。<strong>将来の改善候補として最有力</strong></td></tr>
-</tbody></table></div>
-</div>
-</details>
-
-<details open>
-<summary>4.3 なぜ「ホスト施設」方式（供給側 700m 到達判定）か　<span class="badge b-ok">役割の限定が正しい</span></summary>
-<div class="details-body">
-<div class="tablewrap"><table class="compact"><tbody>
-<tr><th style="width:120px">採用理由</th><td>「優先度が高い」だけでは提言にならない。<strong>既存の公共施設で届いているか</strong>が新規整備の要否を分ける</td></tr>
-<tr><th>メリット</th><td>「700m 以内にホスト施設が無い」1,058 区画（11.1%）は<strong>ヒートマップを眺めても出てこない、集計して初めて言える事実</strong>／殺し文句として画面上部に出せる／到達可否は座標だけで決まるので表記ゆれに影響されない</td></tr>
-<tr><th>デメリット</th><td>①<strong>到達不可率が非市街地の面積比でほぼ決まる</strong>（江東 38.8% は埋立地、大田 38.1% は羽田空港）。回避策の「区内で優先度が中位以上」127 件は画面に出ていない。②<strong>ホスト 1,541 件は「施設の数」ではない</strong>（100m 以内の重複 595 組）。③<strong>予約制で無人の貸室 103 件を図書館と同格に数えている</strong>。④都・国・民間が入っていない。⑤北区は 22 件中 20 件が児童館・図書館 0 件</td></tr>
-<tr><th>他案との比較</th><td><strong>供給側を持たない</strong>：最も強い出力が消える。<strong>施設ごとの適性評価</strong>：一度実装して A10 で撤回済み。<strong>都・国・民間まで含める</strong>：網羅性は上がるが粒度差が開く</td></tr>
-</tbody></table></div>
-<p>「設置候補地」から「徒歩圏に屋内の公共空間が在るかの代理指標」へ言い換えた判断は、この作品で最も知的に誠実な一手。</p>
-</div>
-</details>
-
-<details>
-<summary>4.4 なぜ「行政向け分析ツール」か（当事者向けアプリではなく）　<span class="badge b-ok">妥当</span></summary>
-<div class="details-body">
-<div class="tablewrap"><table class="compact"><tbody>
-<tr><th style="width:120px">採用理由</th><td>当事者向けディスカバリーアプリは施設データベースが要るが、それは中央集約されたオープンデータとして存在しない（<code>existing_calmdown</code> が <code>kind="manual"</code> である理由）。<strong>コールドスタート問題に直撃する</strong></td></tr>
-<tr><th>メリット</th><td>オープンデータだけで完結／ユーザー獲得が不要／明確な意思決定に紐づく／個人情報を扱わない</td></tr>
-<tr><th>デメリット</th><td><strong>エンドユーザーの声がフィードバックとして入らない</strong>（当事者検証が未実施であることの構造的な理由）／利用者数では価値を示せない／行政が実際に使うかは未検証</td></tr>
-</tbody></table></div>
-</div>
-</details>
-
-<details>
-<summary>4.5 なぜオープンデータ中心か　<span class="badge b-ok">前提として妥当（弱点はデータ側）</span></summary>
-<div class="details-body">
-<div class="tablewrap"><table class="compact"><tbody>
-<tr><th style="width:120px">採用理由</th><td>ハッカソン提出作品であること、および再現性</td></tr>
-<tr><th>メリット</th><td>全 ETL がコード化され誰でも再現できる／出典表示で説明責任を果たせる／<strong>配信サーバへの接続がネットワークポリシーで遮断されていたため模擬データ構成が生まれ、結果として「実データ 0 でも動く」堅牢性を得た</strong></td></tr>
-<tr><th>デメリット</th><td><strong>年次が 15 年ぶん開く</strong>（事業所 2026・駅 2024・混雑 2021・用途地域 2019・騒音 2013・公園 2011）／目的に合う測定が存在しない（騒音は道路端のみ、昼間人口のメッシュ統計は不存在）／区ごとに様式が違い供給側だけで 30 本近いファイル</td></tr>
-</tbody></table></div>
-</div>
-</details>
-
-<details>
-<summary>4.6 なぜ「重みをブラウザで再計算」させるか　<span class="badge b-ok">この作品の一番の勝ち筋</span></summary>
-<div class="details-body">
-<div class="tablewrap"><table class="compact"><tbody>
-<tr><th style="width:120px">採用理由</th><td>「その重み付けは恣意的では?」への回答を、文章ではなく操作で返すため</td></tr>
-<tr><th>メリット</th><td>審査で最も効く反論封じ／プリセットで立場の違いを可視化／表示モード切替が掛け算モデルの実演になる</td></tr>
-<tr><th>デメリット</th><td><strong>同じ数式が 2 言語に存在する</strong>／<code>area.ts</code> と <code>hosts.py</code> の地区束ねも 2 つあるが<strong>こちらは parity_check の対象外</strong>／9,507 区画の再計算を毎フレーム行う</td></tr>
-</tbody></table></div>
-</div>
-</details>
-</section>
-
-<!-- ============================================ 5 -->
-<section id="s5">
-<h2 class="sec"><span class="n">5.</span>データ設計レビュー</h2>
-
-<h3>5.1 使用データ一覧（10 レイヤー・すべて実データ）</h3>
-<div class="tablewrap"><table>
-<thead><tr><th>#</th><th>データ名 / 出典</th><th>用途</th><th>実/仮</th><th class="num">件数</th><th>年次</th><th>信頼性</th><th>更新</th><th>問題点</th></tr></thead>
-<tbody>
-<tr><td>1</td><td>障害福祉サービス等事業所<br><small>WAM NET</small></td><td>需要</td><td><span class="badge b-ok">実</span></td><td class="num">14,118</td><td>2026-03</td><td>高</td><td>月次相当</td><td><strong>実定員は 28.7% のみ。需要寄与の 68.9% が仮定員由来</strong>（A3）。地域活動支援センター 17 件は対象外</td></tr>
-<tr><td>2</td><td>特別支援学校<br><small>国土数値情報 P29</small></td><td>需要</td><td><span class="badge b-warn">実／規模は仮</span></td><td class="num">45</td><td>2023</td><td>位置=高<br>規模=無</td><td>数年</td><td><strong>児童生徒数が無く 45 校すべて 150 人扱い</strong>。ラベルは「規模重み」のまま（A4）。<strong>外すと上位 10 件が 0%</strong></td></tr>
-<tr><td>3</td><td>駅別乗降客数<br><small>国土数値情報 S12</small></td><td>需要</td><td><span class="badge b-ok">実</span></td><td class="num">617</td><td>2024</td><td>高</td><td>年次</td><td>1 行=「駅×事業者×路線」（対処済み）。ZIP に文字コード違いの同一データ 2 部（対処済み）</td></tr>
-<tr><td>4</td><td>精神科・心療内科<br><small>国土数値情報 P04</small></td><td>需要</td><td><span class="badge b-ok">実</span></td><td class="num">1,548</td><td>2020</td><td>中</td><td>数年</td><td>診療科目欄に略称と正式名称が混在（対処済み）。6 年前</td></tr>
-<tr><td>5</td><td>用途地域<br><small>国土数値情報 A29</small></td><td>負荷（主軸）</td><td><span class="badge b-ok">実</span></td><td class="num">7,002</td><td>2019</td><td>高</td><td>数年</td><td>県全体版と市区町村別版が同梱（対処済み）。<strong>列名が年度で変わる</strong>（自動判定）</td></tr>
-<tr><td>6</td><td>自動車交通騒音<br><small>東京都環境局</small></td><td>負荷</td><td><span class="badge b-ok">実</span></td><td class="num">428<br><small>23 区内 383</small></td><td><strong>2013</strong></td><td><span class="badge b-bad">低</span></td><td><strong>停止</strong></td><td><strong>幹線道路の道路端しか測らず繁華街の雑踏を測らない。測定点数が区で 5〜31 と 6 倍開く</strong>（A1）。<strong>1,095 セル（11.5%）が中央値補完</strong>（A6・未解決）</td></tr>
-<tr><td>7</td><td>混雑（従業者数）<br><small>e-Stat 経済センサス</small></td><td>負荷</td><td><span class="badge b-warn">実（代替指標）</span></td><td class="num">4,221</td><td>2021</td><td>中</td><td>5 年</td><td><strong>昼間人口ではない</strong>（メッシュ統計が不存在）。買い物客・通学者を含まない。コロナ期</td></tr>
-<tr><td>8</td><td>都市公園<br><small>国土数値情報 P13</small></td><td>負荷（減点）</td><td><span class="badge b-ok">実</span></td><td class="num">3,835</td><td><strong>2011</strong></td><td>中</td><td>停止気味</td><td><strong>点＋面積で配布</strong>のため同面積の円で近似。児童遊園・公開空地を含まない（C2）。<strong>15 年前</strong></td></tr>
-<tr><td>9</td><td>公共施設一覧（供給側）<br><small>23 区が個別公開 + P14 児童館</small></td><td>到達可否</td><td><span class="badge b-warn">実（粒度は不均一）</span></td><td class="num">1,541</td><td>2022/25</td><td><span class="badge b-warn">区で差</span></td><td>区次第</td><td><strong>区ごとに様式が違う</strong>（統合一覧なし 3 区・KML 1 区・xlsx 2 区）。<strong>北区は 22 件中 20 件が児童館・図書館 0 件</strong>。100m 以内の重複 595 組。予約制の無人貸室 103 件を含む</td></tr>
-<tr><td>10</td><td>行政区域<br><small>国土数値情報 N03</small></td><td>研究領域の導出</td><td><span class="badge b-ok">実</span></td><td class="num">23</td><td>2024</td><td>高</td><td>年次</td><td>—</td></tr>
-</tbody></table></div>
-
-<h3>5.2 データ欠損</h3>
-<div class="tablewrap"><table>
-<thead><tr><th>欠損</th><th>規模</th><th>現在の扱い</th><th>評価</th></tr></thead>
-<tbody>
-<tr><td>騒音の観測圏外</td><td><strong>1,095 セル（11.5%）</strong></td><td>全体の中央値 68.28dB を代入</td><td><span class="badge b-bad">🔴 未解決（A6）</span> 大田 417・江戸川 241・江東 200 に偏り、「測定点が 1500m 以内に無い」を「平均的にうるさい」へ変換。<strong>絶対尺度化で「環境基準に照らして 0.66」という具体的主張になったぶん、むしろ悪化</strong></td></tr>
-<tr><td>特別支援学校の児童生徒数</td><td><strong>45 校すべて</strong></td><td>既定値 150 人（<code>--assume-missing</code> 必須）</td><td><span class="badge b-bad">🔴 最も依存の大きい層が実質フラグ 1 枚（A4）</span></td></tr>
-<tr><td>WAM NET の定員</td><td>71.3%</td><td>種別ごとの仮定員（訪問・相談 5 人、居住 10 人）</td><td><span class="badge b-warn">🟡</span> 制度上定員が無い種別なので欠測ではないが、需要寄与の 68.9% を占め感度分析の対象外（A3）</td></tr>
-<tr><td>供給側（北区）</td><td>図書館 0 件</td><td>そのまま</td><td><span class="badge b-warn">🟡</span> 区が一覧を公開していない。明記済み</td></tr>
-<tr><td>手帳所持率補正</td><td>全区</td><td><code>ward_coefficient</code> 既定 1.0</td><td><span class="badge b-mute">⚪ 設計のみ・影響なし</span></td></tr>
-</tbody></table></div>
-
-<h3>5.3 品質　<span class="badge b-ok">強い（本作で最も評価すべき部分）</span></h3>
-<p>「列名の決め打ちをやめる」という方針が<strong>全レイヤーで実装され、しかも検査されている</strong>。</p>
-<ol>
-<li>列名で見つかっても<strong>中身が合わなければ採らない</strong>（<code>resolve_column</code>）</li>
-<li>列名で見つからなければ<strong>列の中身</strong>から探す（<code>detect_column</code>）。何を選んだか表示する</li>
-<li>それでも特定できなければ<strong>各列の実際の値を添えて例外で止まる</strong>（<code>require_column</code>）</li>
-<li>絞り込み結果が 0 件でも止まる（<code>require_nonempty</code>）</li>
-<li>逃げ道は <code>--assume-missing</code>（P29 生徒数・WAM NET 定員のみ）。既定では開かない</li>
-</ol>
-<p>さらに <code>selftest</code> が「間違いが黙って通らないこと」を検査している。<strong>「正しく動くこと」ではなく「壊れ方が見えること」をテストしている</strong>のは設計として珍しく、正しい。</p>
-<p><span class="badge b-warn">⚠️ 残るリスク</span> この仕組みは列の取り違えを止めるが、<strong>出典そのものの妥当性（騒音の測定設計、従業者数≠昼間人口）は止められない</strong>。</p>
-
-<h3>5.4 名寄せ</h3>
-<div class="tablewrap"><table class="compact">
-<thead><tr><th>対象</th><th>方式</th><th>状態</th></tr></thead>
-<tbody>
-<tr><td>施設の重複除去</td><td>同名かつ 100m 以内。<strong>区名の接頭辞と「（複合施設）」を外してから比較</strong></td><td><span class="badge b-ok">✅ 是正済み（63 組）</span></td></tr>
-<tr><td>多機能型事業所</td><td>名称 + <strong>サービス種別</strong></td><td><span class="badge b-ok">✅ 是正済み</span></td></tr>
-<tr><td>括弧の扱い</td><td>「（複合施設）」だけ除去。「（本館）／（西館）」は別建物</td><td><span class="badge b-ok">✅ 妥当</span></td></tr>
-<tr><td>同じ建物の別種別</td><td><strong>440 組が未処理</strong></td><td><span class="badge b-warn">🟡 未着手</span></td></tr>
-<tr><td>親施設と館内の一機能</td><td><strong>17 組が未処理</strong></td><td><span class="badge b-warn">🟡 未着手</span></td></tr>
-<tr><td>駅（S12）</td><td>グループコードで束ねて合算</td><td><span class="badge b-ok">✅ 対処済み</span></td></tr>
-</tbody></table></div>
-
-<h3>5.5 ライセンス</h3>
-<div class="tablewrap"><table class="compact">
-<thead><tr><th>出典</th><th>ライセンス</th><th>出典表示</th></tr></thead>
-<tbody>
-<tr><td>国土数値情報（P04/P13/P14/P29/A29/S12/N03）</td><td>利用約款（出典表示）</td><td><span class="badge b-ok">✅</span> <code>meta.json</code> と各構成要素の <code>source</code></td></tr>
-<tr><td>WAM NET</td><td>二次利用可（出典表示）</td><td><span class="badge b-ok">✅</span></td></tr>
-<tr><td>e-Stat</td><td>政府統計 利用規約</td><td><span class="badge b-ok">✅</span></td></tr>
-<tr><td>東京都オープンデータカタログ（騒音）</td><td>CC BY 4.0</td><td><span class="badge b-ok">✅</span></td></tr>
-<tr><td>各区の公共施設一覧</td><td>概ね CC BY 相当</td><td><span class="badge b-warn">⚠️</span> <strong>区ごとの個別ライセンスを列挙していない</strong>（30 本近いファイルを 1 出典にまとめている）</td></tr>
-<tr><td>国土地理院 淡色地図</td><td>タイル利用規約</td><td><span class="badge b-ok">✅</span> 地図上に attribution</td></tr>
-<tr><td>位置参照情報（geocode）</td><td>国土数値情報</td><td><span class="badge b-warn">⚠️</span> <strong><code>SOURCES</code> に登録されていない</strong></td></tr>
-</tbody></table></div>
-<p><span class="badge b-warn">⚠️</span> <strong>画面にライセンス条文が出ていない。</strong> <code>meta.json</code> の <code>sources</code>（ライセンス欄を持つ）がどこにも描画されていない（F-6）。<strong>CC BY の出典表示義務を満たすには、この配線を繋ぐのが最短。</strong></p>
-
-<h3>5.6 保守性</h3>
-<div class="tablewrap"><table class="compact"><tbody>
-<tr><td style="width:60px"><span class="badge b-ok">✅</span></td><td>データ取得手順が <code>status.md</code> / <code>handoff-hosts.md</code> に<strong>実行可能な <code>curl</code> コマンドとして</strong>残っている</td></tr>
-<tr><td><span class="badge b-ok">✅</span></td><td><code>data/processed/</code> を追跡対象にしているので、生データが無くても再ビルドできる</td></tr>
-<tr><td><span class="badge b-ok">✅</span></td><td>出典が複数ある layer で、既存が消える場合は書かずに止まる（<code>--append</code>/<code>--replace</code> の明示が要る）</td></tr>
-<tr><td><span class="badge b-warn">⚠️</span></td><td><strong>供給側は 23 区分 30 本近いファイルを毎回すべて並べて渡す必要がある。</strong> 1 本忘れると他区が静かに消える。スクリプト化されていない</td></tr>
-<tr><td><span class="badge b-warn">⚠️</span></td><td><strong>年度で列名が変わる前提の設計だが、更新の定期実行手段が無い</strong>（<code>fetch.py</code> の download は実サーバ未検証）</td></tr>
-<tr><td><span class="badge b-bad">🔴</span></td><td><strong><code>data/processed/</code> と <code>web/public/data/</code> の 12 ファイルが未コミット</strong>（F-1）</td></tr>
-</tbody></table></div>
-</section>
-
-<!-- ============================================ 6 -->
-<section id="s6">
-<h2 class="sec"><span class="n">6.</span>スコアリング設計レビュー</h2>
-
-<h3>6.1 数式</h3>
-<pre><code>① 各構成要素の正規化
-   n_i = percentile_normalize(raw_i, zero_is_absence)     … 6 層
-   n_i = absolute_normalize(raw_i, AbsoluteScale)         … 騒音・用途地域
-
-② 配信精度へ丸める（4 桁、JavaScript の Math.round と同じ規則）
-
-③ 片側ごとの重み付き和
-   D_raw = Σ w_i × sign_i × n_i    over 需要 4 層
-   L_raw = Σ w_j × sign_j × n_j    over 負荷 4 層
-
-④ 和をもう一度パーセンタイル正規化
-   demand = percentile(D_raw, zero_is_absence=True)    … 不在なら厳密に 0
-   load   = percentile(L_raw, zero_is_absence=False)   … 減点で負値を取り得る連続量
-
-⑤ demand *= ward_coefficient（既定 1.0）
-
-⑥ priority_raw = demand^α × load^β        （α = β = 1.0）
-⑦ priority     = percentile(priority_raw, zero_is_absence=True)</code></pre>
-
-<h3>6.2 各要素と重み</h3>
-<div class="tablewrap"><table>
-<thead><tr><th>側</th><th>レイヤー</th><th class="num">既定重み</th><th>正規化</th><th>帯域</th><th>根拠</th></tr></thead>
-<tbody>
-<tr><td>需要</td><td>障害福祉サービス事業所（定員重み）</td><td class="num"><strong>1.0</strong></td><td>順位</td><td>800m</td><td>徒歩圏を日常的に往復せざるを得ない当事者の実数に最も近い代理変数</td></tr>
-<tr><td>需要</td><td>駅乗降規模</td><td class="num">0.9</td><td>順位</td><td>600m</td><td>その地点を通過せざるを得ない人の総量。雑踏は駅前で急減衰</td></tr>
-<tr><td>需要</td><td>特別支援学校（規模重み）</td><td class="num">0.8</td><td>順位</td><td>1,200m</td><td>通学は選択の余地がない移動。広域通学と送迎車両</td></tr>
-<tr><td>需要</td><td>精神科・心療内科</td><td class="num">0.5</td><td>順位</td><td>800m</td><td>受診当日は体調が不安定。点数が少なく代表性が弱いため低め</td></tr>
-<tr><td>負荷</td><td>用途地域</td><td class="num"><strong>1.0</strong></td><td><strong>絶対</strong>（0.05〜1.00）</td><td>面積加重</td><td>建築基準法別表第二の用途制限</td></tr>
-<tr><td>負荷</td><td>自動車・鉄道騒音</td><td class="num">0.9</td><td><strong>絶対</strong>（55dB→0 / 75dB→1）</td><td>IDW 1,500m</td><td>環境基準（一般地域 A 類型・昼間）と騒音規制法の要請限度</td></tr>
-<tr><td>負荷</td><td>混雑（従業者数）</td><td class="num">0.8</td><td>順位</td><td>メッシュ直結合</td><td>人的密度が生む多重刺激</td></tr>
-<tr><td>負荷</td><td>緑・公園被覆</td><td class="num">0.6 <strong>（減点）</strong></td><td>順位</td><td>被覆率</td><td>既に安らげる空間がある場所は優先度を下げてよい</td></tr>
-</tbody></table></div>
-<p><strong>事業所の需要は「定員 × 種別重み」</strong>。種別重みは「定員 1 人あたり、どれだけの過負荷な外出を生むか」で決める（放課後等デイ・児童発達支援 1.00 / 就労移行 0.95 / 就労継続 A・B・生活介護 0.85–0.90 / 短期入所 0.35 / GH・施設入所 0.15–0.25 / 訪問系 0.10）。</p>
-
-<h3>6.3 正規化 — この作品の技術的な核</h3>
-<blockquote><strong>「順位化は分布の広さを捨てる」</strong>という発見が、本作で最も価値ある技術的知見。パーセンタイル正規化は、その層が対象地域内でどれだけ狭い範囲に収まっていても必ず 0〜1 いっぱいに引き伸ばす。<strong>識別力の無い層ほど差が誇張され、測定の偏りがあればそれごと増幅される。</strong></blockquote>
-<div class="tablewrap"><table>
-<thead><tr><th>層</th><th class="num">実測の広がり</th><th class="num">順位化後</th><th class="num">絶対尺度後</th></tr></thead>
-<tbody>
-<tr><td>騒音（区平均の差）</td><td class="num"><strong>2.5 dB</strong></td><td class="num">0.34</td><td class="num"><strong>0.12</strong></td></tr>
-<tr><td>第一種低層住居専用（設計値 0.05）</td><td class="num">—</td><td class="num">0.285（<strong>約 6 倍</strong>）</td><td class="num"><strong>0.127</strong></td></tr>
-<tr><td>第一種中高層（設計値 0.20）</td><td class="num">—</td><td class="num">0.550</td><td class="num"><strong>0.240</strong></td></tr>
-</tbody></table></div>
-<p><strong>重みは触っていない。</strong> 「不利な層だから軽くした」という批判が成り立たないよう、正規化の物差しだけを変えている。<strong>この判断は極めて正しい。</strong> <code>AbsoluteScale</code> には <code>basis</code>（どの法令・告示から lo/hi を取ったか）が必須で、書けない層には使ってはいけないと明記され、<code>selftest</code> が検査している。</p>
-
-<h3>6.4 妥当性の検証状況</h3>
-<div class="tablewrap"><table>
-<thead><tr><th>検証</th><th>結果</th><th>評価</th></tr></thead>
-<tbody>
-<tr><td>サニティチェック</td><td>上位 10 は 豊島 7・千代田 2・文京 1。需要 0.986〜0.998 / 負荷 0.986〜1.000 で<strong>両側が同時に高い</strong></td><td><span class="badge b-ok">✅ 通過</span> ただし外部との突き合わせが無い（D3）</td></tr>
-<tr><td>構成要素間の相関</td><td>最大 0.804（駅 × 精神科）</td><td><span class="badge b-warn">⚠️</span> <strong>2 変数間しか見ておらず、閾値 0.9 に根拠が無い</strong>（A2/D2）</td></tr>
-<tr><td>ランダム摂動（±30%・500 回）</td><td>上位 10 の <strong>81.2%</strong> 残存。最悪 <strong>40.0%</strong>。順位変動 中央値 5 位</td><td><span class="badge b-ok">✅</span> <strong>最悪ケースを README にも書いている</strong>のは誠実</td></tr>
-<tr><td>Leave-one-out</td><td>特別支援学校 <strong>0%</strong> / 用途地域・騒音 40% / 事業所・緑 50% / 駅 70% / 精神科 80% / 混雑 90%</td><td><span class="badge b-bad">🔴 特別支援学校 0% は深刻</span></td></tr>
-<tr><td>プリセット比較</td><td>4 プリセット全てで上位 20 に入るのは <strong>3 件（15%）</strong></td><td><span class="badge b-ok">✅ 実施済み</span></td></tr>
-<tr><td>Python↔TS 一致</td><td>全 9,507 メッシュで乖離 0</td><td><span class="badge b-ok">✅ 監査で再確認</span></td></tr>
-<tr><td>不変条件</td><td>50 件通過</td><td><span class="badge b-ok">✅ 監査で再確認</span></td></tr>
-</tbody></table></div>
-
-<h3>6.5 バイアス</h3>
-<div class="tablewrap"><table class="compact">
-<thead><tr><th>バイアス</th><th>向き</th><th>状態</th></tr></thead>
-<tbody>
-<tr><td>騒音の測定点が区に依存</td><td>空間パターンが測定設計に従う（世田谷ダミー相関 +0.234）</td><td><span class="badge b-warn">🟡 振幅は是正、パターンは不変</span></td></tr>
-<tr><td>騒音の欠測補完</td><td>非市街地の多い区に「平均的にうるさい」を代入</td><td><span class="badge b-bad">🔴 未解決（A6）</span></td></tr>
-<tr><td>特別支援学校のフラグ化</td><td>大規模校と小規模校が同じ重さ</td><td><span class="badge b-bad">🔴 未解決（A4）</span></td></tr>
-<tr><td>仮定員</td><td>需要寄与の 68.9%</td><td><span class="badge b-bad">🔴 感度分析の対象外（A3）</span></td></tr>
-<tr><td>ターミナル性の多重計上</td><td>駅・精神科・混雑・用途地域が同符号で第 1 主成分に乗る（寄与率 40.6%）</td><td><span class="badge b-warn">🟡 3 層外すと上位 50 の 40% が入れ替わる（A2）</span></td></tr>
-<tr><td>エッジ効果</td><td>23 区化で周縁へ押しやった</td><td><span class="badge b-ok">✅ 是正済み（A8）</span></td></tr>
-<tr><td>供給側の網羅性</td><td>23 区すべて投入済み。残差は非市街地の面積比</td><td><span class="badge b-ok">✅ 是正済み（A9）</span></td></tr>
-<tr><td>予約制の無人貸室</td><td>供給側の過大計上</td><td><span class="badge b-warn">🟡 ユーザー判断で採用・明記済み</span></td></tr>
-</tbody></table></div>
-
-<h3>6.6 説明可能性</h3>
-<div class="tablewrap"><table>
-<thead><tr><th>✅ 強い</th><th>⚠️ 弱い</th></tr></thead>
-<tbody>
-<tr><td>根拠カードが正規化値ではなく<strong>実数</strong>を並べる</td><td><strong>カード文面に「9,507 区画中」の但し書きが無い</strong>（B2）</td></tr>
-<tr><td>各構成要素に <code>rationale</code> と <code>source</code> が付き UI のツールチップに出る</td><td><strong>画面の説明文が「全レイヤーはパーセンタイル順位」と誤記</strong>（F-2）</td></tr>
-<tr><td>表示モード切替が掛け算モデルの実演になる</td><td><strong>絶対尺度の 2 層に但し書きが要らない、という有利な事実を画面で使えていない</strong></td></tr>
-<tr><td>感度分析の数値が画面に出る</td><td><strong><code>sensitivity.json</code> が古いビルドでも無言で表示される</strong>（F-4）</td></tr>
-<tr><td>「施設ではなく区画について述べる」と提言リスト冒頭に明記</td><td><strong>徒歩圏の需要に区外（バッファ 2km 内）の施設が含まれる比率が出ていない</strong>（B1）</td></tr>
-</tbody></table></div>
-
-<h3>6.7 改善案（優先度順）</h3>
-<ol>
-<li><strong>騒音の欠測を「補完しない」方向へ</strong>（A6）。<code>zero_is_absence</code> で落とすか、用途地域からの推定に替える。<strong>中央値代入は絶対尺度化後に「環境基準に照らして 0.66」という具体的主張になっており、代入としては最も強い主張をしている</strong></li>
-<li><strong>特別支援学校のラベルを実態に合わせる</strong>（A4）。児童生徒数の突き合わせが本筋だが、間に合わなければ「特別支援学校の近接」へ改名するだけでも説明の誠実さは回復する</li>
-<li><strong>感度分析の対象を固定値まで広げる</strong>（A3/D1）。種別重み 30・仮定員 25・帯域 3・<code>ZONING_LOAD</code> 13・α/β・700m。<strong>同じ仕組みに VIF か主成分を載せれば A2 も同時に閉じられる</strong></li>
-<li><strong>カード文面に母数と絶対尺度の区別を出す</strong>（B2 / F-2）。実装コストは小さく、効果は大きい</li>
-<li><strong>合成関数を CES 型にして ρ を感度分析に載せる</strong>（中期）</li>
-</ol>
-</section>
-
-<!-- ============================================ 7 -->
-<section id="s7">
-<h2 class="sec"><span class="n">7.</span>実装状況レビュー</h2>
-<p class="legend-inline">凡例：<span class="badge b-ok">✅ 実装済み</span> <span class="badge b-warn">⚠️ 仮実装</span> <span class="badge b-info">📐 設計のみ</span> <span class="badge b-bad">🚫 未実装</span></p>
-<div class="tablewrap"><table>
-<thead><tr><th>機能</th><th>状態</th><th class="num">完成度</th><th>コメント</th></tr></thead>
-<tbody>
-<tr><td>ETL 基盤（列自動判定・例外停止）</td><td><span class="badge b-ok">✅</span></td><td class="num">95%</td><td>全レイヤーに適用。<code>selftest</code> が「間違いが黙って通らないこと」を検査</td></tr>
-<tr><td>データ取得（ダウンロード）</td><td><span class="badge b-warn">⚠️ 仮実装</span></td><td class="num">30%</td><td><code>download()</code>/<code>check_reachability()</code> は書かれているが<strong>実サーバ未検証</strong>。実運用は手作業の <code>curl</code></td></tr>
-<tr><td>データ正規化（10 レイヤー）</td><td><span class="badge b-ok">✅</span></td><td class="num">100%</td><td>10/10 実データ。模擬データ 0</td></tr>
-<tr><td>ジオコーディング</td><td><span class="badge b-ok">✅</span></td><td class="num">90%</td><td>位置参照情報のみ・外部 API を呼ばない。2,245 行の 98.9% を座標化</td></tr>
-<tr><td>メッシュ集計</td><td><span class="badge b-ok">✅</span></td><td class="num">100%</td><td>点（ガウシアン／IDW）・面（面積加重／被覆率）・コード直結合</td></tr>
-<tr><td>スコアリング</td><td><span class="badge b-ok">✅</span></td><td class="num">95%</td><td>順位＋絶対尺度の 2 系統。丸め規則を JS と統一済み。α/β は固定</td></tr>
-<tr><td>供給側・到達判定</td><td><span class="badge b-ok">✅</span></td><td class="num">90%</td><td>1,541 件・700m 判定。同一建物の重複 440 組が未処理</td></tr>
-<tr><td>提言生成（地区単位）</td><td><span class="badge b-ok">✅</span></td><td class="num">90%</td><td>隣接クラスタリング + 区名 + 最寄り駅名。静的 JSON と画面で母数が違う（F-5）</td></tr>
-<tr><td>根拠カード</td><td><span class="badge b-ok">✅</span></td><td class="num">85%</td><td>実数入りの日本語文。母数の但し書きが無い</td></tr>
-<tr><td>感度分析</td><td><span class="badge b-ok">✅</span></td><td class="num">70%</td><td>3 手法。<strong>レイヤー重みしか揺すっていない</strong>（D1）。staleness 検知なし（F-4）</td></tr>
-<tr><td>地図表示</td><td><span class="badge b-ok">✅</span></td><td class="num">95%</td><td>MapLibre + 国土地理院淡色。スタイル定義に主題レイヤーを内包して起動失敗を根治済み</td></tr>
-<tr><td>重み変更 UI</td><td><span class="badge b-ok">✅</span></td><td class="num">100%</td><td>8 スライダー + 4 プリセット + リセット</td></tr>
-<tr><td>表示モード切替</td><td><span class="badge b-ok">✅</span></td><td class="num">100%</td><td>優先度／需要のみ／負荷のみ</td></tr>
-<tr><td>提言リスト UI</td><td><span class="badge b-ok">✅</span></td><td class="num">95%</td><td>スライダー値から毎回組み直す</td></tr>
-<tr><td>表形式（アクセシビリティ経路）</td><td><span class="badge b-ok">✅</span></td><td class="num">90%</td><td>上位 60 件。色に頼らず読める</td></tr>
-<tr><td>模擬データモード</td><td><span class="badge b-ok">✅</span></td><td class="num">100%</td><td>空間的に一貫した生成。警告バナー連動</td></tr>
-<tr><td>不変条件テスト</td><td><span class="badge b-ok">✅</span></td><td class="num">90%</td><td><strong>50 件</strong>。ETL 側のみ</td></tr>
-<tr><td>Python↔TS 整合検証</td><td><span class="badge b-ok">✅</span></td><td class="num">80%</td><td>スコアは全メッシュ照合。<strong>地区束ねは対象外</strong></td></tr>
-<tr><td>デプロイ</td><td><span class="badge b-ok">✅</span></td><td class="num">90%</td><td>Cloudflare Workers 静的配信。<code>wrangler.jsonc</code> は<strong>未コミット</strong></td></tr>
-<tr><td>CI</td><td><span class="badge b-bad">🚫 未実装</span></td><td class="num">0%</td><td><code>.github/</code> 無し</td></tr>
-<tr><td>API</td><td><span class="badge b-mute">意図的に不採用</span></td><td class="num">—</td><td>静的 JSON 配信で足りる設計</td></tr>
-<tr><td>手帳所持率補正</td><td><span class="badge b-info">📐 設計のみ</span></td><td class="num">10%</td><td><code>ward_coefficient</code> の受け口だけ。既定 1.0</td></tr>
-<tr><td>既存カームダウンスペース照合</td><td><span class="badge b-info">📐 設計のみ</span></td><td class="num">5%</td><td>出典レジストリに <code>kind="manual"</code> として登録のみ</td></tr>
-<tr><td>人流データ / PLATEAU・夜間光</td><td><span class="badge b-bad">🚫 未着手</span></td><td class="num">0%</td><td>Phase 2</td></tr>
-<tr><td>プレゼン動画</td><td><span class="badge b-bad">🚫 未着手</span></td><td class="num">0%</td><td><strong>提出物として必要</strong></td></tr>
-<tr><td>当事者検証</td><td><span class="badge b-bad">🚫 未実施</span></td><td class="num">0%</td><td>全文書が繰り返し明記</td></tr>
-</tbody></table></div>
-
-<h3>7.2 MVP 全体の完成度</h3>
-<div class="bars">
-  <div class="bar-row"><span>分析エンジン（ETL・スコアリング・検証）</span><span class="bar"><i class="ok" style="width:95%"></i></span><span class="bar-val">95%</span></div>
-  <div class="bar-row"><span>フロントエンド（地図・UI・提言）</span><span class="bar"><i class="ok" style="width:93%"></i></span><span class="bar-val">93%</span></div>
-  <div class="bar-row"><span>データ投入（10 レイヤー）</span><span class="bar"><i class="ok" style="width:98%"></i></span><span class="bar-val">98%</span></div>
-  <div class="bar-row"><span>妥当性の担保（バイアス是正・検証）</span><span class="bar"><i class="warn" style="width:60%"></i></span><span class="bar-val">60%</span></div>
-  <div class="bar-row"><span>提出物（動画・発表資料）</span><span class="bar"><i class="bad" style="width:2%"></i></span><span class="bar-val">0%</span></div>
-  <div class="bar-row"><span>運用・保守（CI・自動更新・コミット）</span><span class="bar"><i class="bad" style="width:30%"></i></span><span class="bar-val">30%</span></div>
-  <div class="bar-row bar-total"><span><strong>MVP 全体（README の「作るもの」基準）</strong></span><span class="bar"><i style="width:85%"></i></span><span class="bar-val"><strong>85%</strong></span></div>
-</div>
-<p><strong>「作るもの」として定義された 2 つ（優先度マップ・根拠カード）は動いており、公開されている。残り 15% は機能ではなく、①提出物、②未解決バイアス（A3/A4/A6）、③運用（コミット・CI）である。</strong></p>
-</section>
-
-<!-- ============================================ 8 -->
-<section id="s8">
-<h2 class="sec"><span class="n">8.</span>技術レビュー</h2>
-
-<h3>8.1 保守性</h3>
-<div class="tablewrap"><table class="compact"><tbody>
-<tr><td style="width:60px"><span class="badge b-ok">✅</span></td><td><strong>単一の情報源</strong>：<code>etl/config.py</code> が対象区・重み・プリセット・出典を一元管理し、<code>meta.json</code> 経由で TS へ配信。TS 側に重複定義を置かない方針が守られている</td></tr>
-<tr><td><span class="badge b-ok">✅</span></td><td><strong>失敗の型が文書化されている</strong>：<code>CLAUDE.md</code> が実際に踏んだ 6 種類の罠（列名・ファイル名・フォルダ名・名称・欠測・文字コード重複）を列挙。新しい開発者が同じ穴に落ちない</td></tr>
-<tr><td><span class="badge b-ok">✅</span></td><td>コメントが「なぜ」を書いている（プロジェクト規約通り）</td></tr>
-<tr><td><span class="badge b-warn">⚠️</span></td><td><strong><code>etl/fetch.py</code> が 2,763 行</strong>：全レイヤーの正規化が 1 ファイルに同居。<code>fetch/</code> パッケージへの分割が自然</td></tr>
-<tr><td><span class="badge b-warn">⚠️</span></td><td><strong>二重実装が 2 系統</strong>：スコア（parity_check でカバー）と<strong>地区束ね（未カバー）</strong>。後者の <code>_area_label</code> は文字列処理であり、<strong>ズレる余地はある</strong></td></tr>
-<tr><td><span class="badge b-warn">⚠️</span></td><td><code>selftest.py</code> が 1,157 行の自作ハーネス。pytest 非依存の利点はあるが、並列・部分実行を持たない</td></tr>
-<tr><td><span class="badge b-bad">🔴</span></td><td>未コミット（F-1）</td></tr>
-</tbody></table></div>
-
-<h3>8.2 拡張性</h3>
-<div class="tablewrap"><table class="compact">
-<thead><tr><th>観点</th><th>評価</th></tr></thead>
-<tbody>
-<tr><td>レイヤー追加</td><td><span class="badge b-ok">✅ 容易</span> <code>Component</code> を <code>config.py</code> に足し、normalizer を書き、<code>build.py</code> で集計を 1 行。UI・感度分析・parity は自動追従</td></tr>
-<tr><td>対象地域の拡大</td><td><span class="badge b-ok">✅ 実証済み</span> 2 区 → 4 区 → 23 区を実際に通している</td></tr>
-<tr><td>メッシュ次数</td><td><span class="badge b-ok">✅</span> <code>--level 3/4/5</code></td></tr>
-<tr><td>他都市への展開</td><td><span class="badge b-warn">🟡</span> 需要・負荷の 9 レイヤーは全国データなので動く。<strong>供給側だけが自治体ごとの個別収集</strong></td></tr>
-<tr><td>配信規模</td><td><span class="badge b-warn">🟡</span> mesh.geojson 6.4MB（brotli 812KB）。<strong>都全域に広げるとベクタータイル化が要る</strong></td></tr>
-</tbody></table></div>
-
-<h3>8.3 テスト</h3>
-<div class="tablewrap"><table>
-<thead><tr><th>種類</th><th>有無</th><th>カバー範囲</th></tr></thead>
-<tbody>
-<tr><td>不変条件テスト（Python）</td><td><span class="badge b-ok">✅ 50 件</span></td><td>メッシュ符号化の往復、格子の抜け漏れ、正規化のゼロ扱い、<strong>絶対尺度が他メッシュに依存しないこと</strong>、<strong>狭い分布が引き伸ばされないこと</strong>、掛け算モデルの成立、人口按分の総量保存、<strong>列名取り違えでの停止</strong>、丸め規則の言語間一致、出典マージ、ホスト除外、地区束ね</td></tr>
-<tr><td>言語間整合</td><td><span class="badge b-ok">✅ 全 9,507</span></td><td>スコアのみ</td></tr>
-<tr><td>型検査（TS）</td><td><span class="badge b-ok">✅</span></td><td><code>tsc --noEmit</code></td></tr>
-<tr><td>フロントの単体テスト</td><td><span class="badge b-bad">🚫 無し</span></td><td><code>area.ts</code> の <code>gridIndex</code>/<code>clusterAdjacent</code>/<code>areaLabel</code>、<code>ui.ts</code> の <code>buildProposals</code>/<code>narrate</code> が<strong>一切テストされていない</strong></td></tr>
-<tr><td>E2E / スモーク</td><td><span class="badge b-bad">🚫 無し</span></td><td>起動失敗は過去に 2 回発生している（スタイル読み込み競合・コンテナ 0 サイズ）にもかかわらず</td></tr>
-<tr><td>CI</td><td><span class="badge b-bad">🚫 無し</span></td><td>F-7</td></tr>
-</tbody></table></div>
-<p><strong>テスト行数比</strong>：<code>selftest.py</code> 1,157 行 / ETL 本体 6,827 行 ≒ <strong>17%</strong>。検査の<strong>質</strong>は非常に高いが、<strong>フロント側にほぼ穴がある</strong>。</p>
-
-<h3>8.4 コード品質</h3>
-<div class="tablewrap"><table>
-<thead><tr><th>✅ 良い点</th><th>⚠️ 気になる点</th></tr></thead>
-<tbody>
-<tr><td>型注釈が全面的（<code>from __future__ import annotations</code>）</td><td><code>fetch.py</code> の 2,763 行</td></tr>
-<tr><td>純関数中心で副作用が <code>build.py</code>/<code>fetch.py</code> に集約</td><td><code>_feature_properties</code> が列名を文字列で列挙（<code>f_*</code> の増減に追従しにくい）</td></tr>
-<tr><td>numpy のブロック処理でメモリ上限を管理</td><td><code>assign_hosts</code> が 9,507 × 1,541 の距離行列を一括生成。現状は問題ないが都全域では危うい</td></tr>
-<tr><td>TS 側は <code>Float64Array</code> で 9,507 区画を毎フレーム再計算</td><td><code>MeshProps</code> のインデックスシグネチャで <code>n_*</code> の型安全が実質失われている</td></tr>
-<tr><td>linter 設定の痕跡（<code>.ruff_cache</code> を gitignore）</td><td><strong>linter/formatter の設定ファイルが無い</strong>。<code>requirements.txt</code> も無く、依存は README の <code>pip install</code> 1 行のみ</td></tr>
-</tbody></table></div>
-
-<h3>8.5 ドキュメント</h3>
-<p><strong>この規模の個人プロジェクトとしては突出して厚い</strong>（約 3,300 行 + README 348 行 + CLAUDE.md）。</p>
-<div class="tablewrap"><table class="compact">
-<thead><tr><th>文書</th><th>役割</th><th>評価</th></tr></thead>
-<tbody>
-<tr><td><code>CLAUDE.md</code></td><td>新規セッションへの引き継ぎ。判断の前提と失敗の型</td><td><span class="badge b-ok">✅ 秀逸</span> これ 1 枚で文脈ゼロから再開できる</td></tr>
-<tr><td><code>docs/status.md</code></td><td>現況・再開手順・残作業・入手元</td><td><span class="badge b-ok">✅ 起点として機能</span></td></tr>
-<tr><td><code>docs/issues.md</code></td><td><strong>未解決の偏りと不透明さ</strong>（A/B/C/D 分類・再現コマンド付き）</td><td><span class="badge b-ok">✅ この作品の中身そのもの</span></td></tr>
-<tr><td><code>docs/methodology.md</code></td><td>算出方法・重みの根拠・実データで判明した制約</td><td><span class="badge b-ok">✅ 1,101 行</span></td></tr>
-<tr><td><code>docs/handoff-hosts.md</code></td><td>供給側 23 区分の取得手順</td><td><span class="badge b-ok">✅ 実行可能</span> / <span class="badge b-warn">⚠️「未反映」が古い</span></td></tr>
-<tr><td><code>docs/operation-idea.md</code></td><td>運営案</td><td><span class="badge b-ok">✅</span> <strong>根拠の種類が違うことを冒頭で宣言して分離</strong>。この分離は正しい</td></tr>
-</tbody></table></div>
-<p><span class="badge b-warn">⚠️ 課題</span> <strong>数値の重複記載</strong>：同じ数値が README・status・issues・methodology・handoff・CLAUDE の 6 箇所に書かれ、<strong>再ビルドのたびに 6 箇所を直す必要がある</strong>。実際 F-3 のズレが発生している。<strong>分量</strong>：初見の読者には多く、本レポートのような要約が実際に必要になっている。</p>
-
-<h3>8.6 データ構造</h3>
-<div class="tablewrap"><table class="compact"><tbody>
-<tr><td style="width:60px"><span class="badge b-ok">✅</span></td><td><code>mesh.geojson</code> の properties を 1 文字キー（<code>c</code>/<code>w</code>/<code>v</code>）と添字（区名 → <code>target_wards</code> の index）で圧縮。0 と欠損は出力しない</td></tr>
-<tr><td><span class="badge b-ok">✅</span></td><td>座標を小数 6 桁（約 10cm）に丸めて配信</td></tr>
-<tr><td><span class="badge b-ok">✅</span></td><td>表示専用の実数列に <code>f_</code> 接頭辞を付け、スコア計算から明確に分離</td></tr>
-<tr><td><span class="badge b-warn">⚠️</span></td><td><code>MeshProps</code> に <code>v</code>（表示中の値）を実行時に書き込んでおり、型定義に現れない暗黙のフィールドになっている</td></tr>
-<tr><td><span class="badge b-warn">⚠️</span></td><td><code>demand_points.geojson</code> が 4.3MB。<strong>既定で非表示のレイヤーを起動時に必ずロードしている</strong></td></tr>
-</tbody></table></div>
-
-<h3>8.7 技術面の改善案</h3>
-<div class="tablewrap"><table>
-<thead><tr><th>優先</th><th>提案</th><th>効果</th></tr></thead>
-<tbody>
-<tr><td><span class="badge b-bad">高</span></td><td><strong>CI を入れる</strong>（GitHub Actions で <code>selftest</code> + <code>parity_check</code> + <code>tsc</code>）</td><td>F-7 を閉じる。「変更したら必ず通す」が機械的に強制される</td></tr>
-<tr><td><span class="badge b-bad">高</span></td><td><strong>数値の自動照合</strong>。生成物から主要指標を吐き、文書中のマーカー付き数値と突き合わせる</td><td>F-3 を閉じる。「過去の数字を引用しない」を機械化</td></tr>
-<tr><td><span class="badge b-bad">高</span></td><td><strong><code>area.ts</code> ↔ <code>hosts.py</code> の parity check を追加</strong></td><td>二重実装の穴を閉じる</td></tr>
-<tr><td><span class="badge b-warn">中</span></td><td><strong><code>demand_points.geojson</code> を遅延ロード</strong></td><td>初期ロードを 4.3MB 削減</td></tr>
-<tr><td><span class="badge b-warn">中</span></td><td><strong><code>fetch.py</code> をパッケージへ分割</strong></td><td>2,763 行の単一ファイルを解消</td></tr>
-<tr><td><span class="badge b-warn">中</span></td><td><strong><code>sensitivity.json</code> に <code>generated_at</code> を入れ、不一致なら表示しない</strong></td><td>F-4 を閉じる</td></tr>
-<tr><td><span class="badge b-mute">低</span></td><td><code>requirements.txt</code> / <code>pyproject.toml</code> / <code>ruff.toml</code></td><td>環境再現性（B4 の軽減にもなる）</td></tr>
-</tbody></table></div>
-</section>
-
-<!-- ============================================ 9 -->
-<section id="s9">
-<h2 class="sec"><span class="n">9.</span>ハッカソン視点レビュー</h2>
-<p class="legend-inline">都知事杯オープンデータ・ハッカソン 提出作品として評価する。</p>
-<div class="tablewrap"><table>
-<thead><tr><th>観点</th><th>評価</th><th>根拠</th></tr></thead>
-<tbody>
-<tr><td><strong>社会性</strong></td><td><span class="stars">★★★★★</span></td><td>障害者差別解消法改正（2024）という制度的追い風。受益者が明確。「都全体で需給を俯瞰した公開資料が確認できない」という空白を突いている。<strong>行政がそのまま使える形になっている</strong></td></tr>
-<tr><td><strong>独創性</strong></td><td><span class="stars">★★★★★</span></td><td>①<strong>用途地域を感覚負荷の予測器に転用</strong>、②<strong>需要を「通わざるを得ない場所」で定義</strong>、③<strong>「既存施設では到達不可」という出力の発明</strong></td></tr>
-<tr><td><strong>オープンデータ活用</strong></td><td><span class="stars">★★★★★</span></td><td><strong>10 出典・実データ 100%</strong>。国土数値情報 6 種、WAM NET、e-Stat、都環境局、<strong>23 区が個別公開する 30 本近い施設一覧</strong>。点・面・メッシュ・統計表を同一土俵に載せている</td></tr>
-<tr><td><strong>技術力</strong></td><td><span class="stars">★★★★☆</span></td><td>メッシュ集計 4 方式、IDW、絶対尺度正規化、2 言語の数式一致検証、列の自動判定と例外停止、感度分析 3 手法。<strong>ただし「難しいことをした」より「壊れ方を潰した」種類の技術力</strong>で、デモで見せにくい</td></tr>
-<tr><td><strong>実現可能性</strong></td><td><span class="stars">★★★★☆</span></td><td>静的配信のみで運用コストがほぼゼロ。<strong>懸念は更新</strong>——供給側 23 区分の手作業と、騒音（2013 で調査終了）・公園（2011）の更新見込みが無いこと</td></tr>
-<tr><td><strong>説明しやすさ</strong></td><td><span class="stars">★★★☆☆</span></td><td>「需要 × 負荷」「到達不可 11%」は 10 秒で伝わる。<strong>一方、本当の価値（バイアスを見つけて潰した過程）は 2 分では伝わらない</strong></td></tr>
-<tr><td><strong>デモ映え</strong></td><td><span class="stars">★★★★☆</span></td><td>表示モード切替（需要のみ→負荷のみ→掛け算）が<strong>掛け算モデルの実演として強い</strong>。<strong>ただし地図が青一色で、23 区全体では「都心が濃い」以上の情報が読み取りにくい</strong></td></tr>
-<tr><td><strong>インパクト</strong></td><td><span class="stars">★★★★☆</span></td><td>「上位は渋谷駅前ではない（519 位）」は反直感的で記憶に残る。「到達不可 1,058 区画」は行動に繋がる数字</td></tr>
-</tbody></table></div>
-
-<h3>率直に指摘する弱点</h3>
-<div class="cards">
-  <div class="card is-bad"><h4>🔴 最も依存の大きいレイヤーが最も弱い</h4><p>特別支援学校を外すと上位 10 件が <strong>0%</strong> しか残らないのに、45 校すべてが 150 人扱いの実質フラグ。<strong>審査員に指摘されたら、この 1 点で上位の信頼性が崩れる。</strong> 本人が README にも書いているが、<strong>書いてあることは直っていることではない。</strong></p></div>
-  <div class="card is-bad"><h4>🔴 提出物が無い</h4><p>プレゼン動画・発表資料が未着手。ハッカソンは「作ったもの」ではなく「伝わったもの」で評価される。<strong>今の完成度なら、追加開発より動画に時間を割くほうが期待値が高い。</strong></p></div>
-  <div class="card is-warn"><h4>🟡「実データ 10/10」が誤読を招く</h4><p>本人は「模擬が消えたことと数値が確からしいことは別」と繰り返し書いているが、画面上は警告バナーが消え 10/10 という数字だけが残る。<strong>画面が最も強く主張しているのは網羅性であって、確からしさではない。</strong></p></div>
-  <div class="card is-warn"><h4>🟡 デモの導線</h4><p>核心は提言リストと根拠カードなのに、画面の面積配分は地図が最大。3 カラムのうち右カラムが最も価値が高い。</p></div>
-  <div class="card is-warn"><h4>🟡 当事者検証が無い</h4><p>全文書が明記しているが、「感覚過敏の当事者に必要な場所」を当事者抜きで決めている構造は残る。<strong>審査で最も痛い質問はここに来る。</strong> ヒアリング 1 件でもあれば説得力が段違いになる。</p></div>
-  <div class="card is-warn"><h4>🟡 23 区に閉じている</h4><p>「東京都は次にどこへ」と言いながら多摩地域が入っていない。理由（供給側データの収集コスト）は正当だが、タイトルとのズレは指摘され得る。</p></div>
-</div>
-</section>
-
-<!-- ============================================ 10 -->
-<section id="s10">
-<h2 class="sec"><span class="n">10.</span>リスク分析</h2>
-<div class="tablewrap"><table>
-<thead><tr><th>#</th><th>リスク</th><th>内容</th><th>可能性</th><th>影響</th><th>優先度</th><th>対応</th></tr></thead>
-<tbody>
-<tr><td>R1</td><td><strong>作業消失</strong></td><td>23 区化以降の全成果（+28,744 行）が未コミット。<code>git checkout -- web/public/data/</code> が README の手順にあり、<strong>実行すると公開データが 2 区時点へ戻る</strong></td><td>中</td><td><strong>致命的</strong></td><td><span class="badge b-bad">最優先</span></td><td>即コミット</td></tr>
-<tr><td>R2</td><td><strong>精度への指摘で崩れる</strong></td><td>特別支援学校 0%（A4）、騒音欠測 11.5%（A6）、仮定員 68.9%（A3）</td><td><strong>高</strong></td><td>大</td><td><span class="badge b-bad">高</span></td><td>A4 のラベル修正だけでも先に</td></tr>
-<tr><td>R3</td><td><strong>提出物未完成</strong></td><td>動画・発表資料が 0%</td><td><strong>高</strong></td><td>大</td><td><span class="badge b-bad">高</span></td><td>開発を止めて着手</td></tr>
-<tr><td>R4</td><td>データ更新停止</td><td>騒音は都の調査が H25 で終了・区は座標付きで非公開。公園 2011</td><td><strong>確定済み</strong></td><td>中</td><td><span class="badge b-warn">中</span></td><td>代替出典の検討</td></tr>
-<tr><td>R5</td><td>説明の不整合</td><td>画面が正規化方式を誤記（F-2）、文書の数値が生成物とズレる（F-3）</td><td><strong>発生済み</strong></td><td>中</td><td><span class="badge b-warn">中</span></td><td>文言修正 + 自動照合</td></tr>
-<tr><td>R6</td><td>保守の属人性</td><td>供給側 23 区分 30 本の手作業。1 本忘れると他区が静かに消える</td><td>中</td><td>中</td><td><span class="badge b-warn">中</span></td><td>投入スクリプト化</td></tr>
-<tr><td>R7</td><td>ライセンス表示不足</td><td>各区の個別ライセンス未列挙。<code>meta.sources</code> が画面に出ていない</td><td>中</td><td>中</td><td><span class="badge b-warn">中</span></td><td>出典一覧の描画（実装 30 分）</td></tr>
-<tr><td>R8</td><td>再現性（環境差）</td><td>GEOS のバージョン差で 4 桁目が動く（B4）。実際に到達不可が 1,057/1,058 でズレている</td><td><strong>発生済み</strong></td><td>小</td><td><span class="badge b-mute">低</span></td><td>環境固定で軽減</td></tr>
-<tr><td>R9</td><td>到達不可率の誤読</td><td>区間比較してはいけない数字を、画面は区別せず出している</td><td>中</td><td>中</td><td><span class="badge b-warn">中</span></td><td>画面に注記</td></tr>
-<tr><td>R10</td><td>配信サイズ</td><td>mesh 812KB(br) + demand_points 4.3MB(raw)</td><td>低</td><td>小</td><td><span class="badge b-mute">低</span></td><td>遅延ロード</td></tr>
-<tr><td>R11</td><td>CI 不在</td><td>検証が人手依存</td><td>中</td><td>小</td><td><span class="badge b-warn">中</span></td><td>GitHub Actions</td></tr>
-<tr><td>R12</td><td>当事者検証の不在</td><td>モデル妥当性の外部検証が無い</td><td><strong>確定</strong></td><td>中</td><td><span class="badge b-warn">中</span></td><td>ヒアリング 1 件でも</td></tr>
-</tbody></table></div>
-</section>
-
-<!-- ============================================ 11 -->
-<section id="s11">
-<h2 class="sec"><span class="n">11.</span>課題一覧</h2>
-
-<h3><span class="badge b-bad">🔴 Critical</span></h3>
-<div class="tablewrap"><table>
-<thead><tr><th>ID</th><th>問題</th><th>原因</th><th>解決策</th><th class="num">優先</th></tr></thead>
-<tbody>
-<tr><td><strong>C1</strong></td><td><strong>23 区化以降の全作業が未コミット</strong>（36 変更 + 7 未追跡 / +28,744 行）。README 記載の <code>git checkout -- web/public/data/</code> で公開データが 2 区時点へ戻る</td><td>長期セッションでコミット境界を作らなかった</td><td>論理単位で分割コミット（①ETL の 23 区対応と geocode、②供給側データ、③フロント area.ts とデプロイ設定、④文書、⑤生成物）</td><td class="num">1</td></tr>
-<tr><td><strong>C2</strong></td><td><strong>特別支援学校レイヤーが「規模重み」を名乗りながら 45 校すべて 150 人</strong>。しかも <strong>Leave-one-out 0%</strong></td><td>P29 に児童生徒数が収録されていない</td><td>①都教委の公表資料から学校名で突き合わせ（本筋）②間に合わなければラベルを「特別支援学校の近接」に改名し、UI・カード・methodology の表記を揃える</td><td class="num">2</td></tr>
-</tbody></table></div>
-
-<h3><span class="badge b-warn">🟠 High</span></h3>
-<div class="tablewrap"><table>
-<thead><tr><th>ID</th><th>問題</th><th>原因</th><th>解決策</th><th class="num">優先</th></tr></thead>
-<tbody>
-<tr><td><strong>H1</strong></td><td><strong>騒音の観測圏外 1,095 セル（11.5%）に中央値 68.28dB を代入</strong>。大田 417・江戸川 241・江東 200 に偏る（A6）</td><td>IDW の打ち切り 1,500m 外を埋める必要があった</td><td>①欠測のまま落とす ②用途地域から推定 ③打ち切り距離の見直し。<strong>A1 の再現スクリプトで 3 案を実測して選ぶ</strong></td><td class="num">3</td></tr>
-<tr><td><strong>H2</strong></td><td><strong>需要寄与の 68.9% が仮定員由来なのに、感度分析が種別重み・仮定員を揺すっていない</strong>（A3/D1）</td><td>感度分析が 8 レイヤーの重みだけを対象に設計された</td><td><code>sensitivity.py</code> に固定値の摂動を追加（種別重み 30・仮定員 25・帯域 3・<code>ZONING_LOAD</code> 13・α/β・700m）</td><td class="num">4</td></tr>
-<tr><td><strong>H3</strong></td><td><strong>提出物（プレゼン動画・発表資料）が未着手</strong></td><td>開発が続いている</td><td>表示モード切替 → 提言 1 位の根拠カード、という 2 分の筋。<strong>数値は必ず最新ビルドから採り直す</strong></td><td class="num">5</td></tr>
-<tr><td><strong>H4</strong></td><td><strong>画面の説明文が「各レイヤーはパーセンタイル順位で正規化」と誤記</strong>（F-2）</td><td>絶対尺度の導入時に <code>renderMethodology</code> を更新し忘れた</td><td>文言修正 + <code>component.absolute</code> を使って層ごとに表示を分ける。<strong>「23 区へ広げても値が変わらない層が 2 つある」という有利な事実を使える</strong></td><td class="num">6</td></tr>
-<tr><td><strong>H5</strong></td><td><strong>文書の数値が生成物と自動照合されていない</strong>（F-3）</td><td>同じ数値が 6 文書に重複記載されている</td><td>生成物から主要指標を JSON で吐き、文書のマーカー箇所と突き合わせる検査を <code>selftest</code> か CI に追加</td><td class="num">7</td></tr>
-</tbody></table></div>
-
-<details>
-<summary><span class="badge b-info">🟡 Medium</span>　10 件</summary>
-<div class="details-body">
-<div class="tablewrap"><table class="compact">
-<thead><tr><th>ID</th><th>問題</th><th>原因</th><th>解決策</th></tr></thead>
-<tbody>
-<tr><td>M1</td><td>相関の点検が 2 変数間だけ・閾値 0.9 に根拠が無い（A2/D2）。3 層まとめて外すと上位 50 の 40% が入れ替わる</td><td>実装が <code>corr()</code> のみ</td><td>VIF か主成分を <code>--report</code> に追加。H2 と同じ仕組みに乗る</td></tr>
-<tr><td>M2</td><td>同じ建物が複数ホストとして数えられている（440 組 + 17 組）</td><td>複合施設を機能ごとに別行で載せる区がある</td><td>建物単位の集計列を別に持ち、「件数」と「建物数」を UI で区別</td></tr>
-<tr><td>M3</td><td>予約制の無人貸室 103 件を図書館と同格に数えている</td><td>線引きの一貫性を優先した判断（明記済み）</td><td><code>host_kind</code> を分けて凡例に出す、または常駐職員の有無で重み付け</td></tr>
-<tr><td>M4</td><td>根拠カードに母数・区外施設の比率の但し書きが無い（B1/B2）</td><td>表示文の設計</td><td>文言追加。実装コスト小</td></tr>
-<tr><td>M5</td><td><code>sensitivity.json</code> の staleness を検知できない（F-4）</td><td>JSON に生成時刻が無い</td><td><code>generated_at</code> を入れ、<code>meta.json</code> と不一致なら非表示</td></tr>
-<tr><td>M6</td><td><code>proposals.json</code>（6 件）と画面の提言（最大 12 件）で母数が違う（F-5）</td><td><code>TOP_N_CARDS=20</code> と UI の <code>topN=40</code></td><td>どちらかに揃えるか、JSON 側に母数を明記</td></tr>
-<tr><td>M7</td><td>CI が無い（F-7）</td><td>—</td><td>GitHub Actions で 3 コマンド</td></tr>
-<tr><td>M8</td><td>フロントの単体テストが無い</td><td>—</td><td>vitest で <code>gridIndex</code>/<code>clusterAdjacent</code>/<code>areaLabel</code> から</td></tr>
-<tr><td>M9</td><td>到達不可率を区間比較してはいけないことが画面に出ていない</td><td>文書にはある</td><td>「区内で優先度が中位以上の到達不可」127 件を画面の指標に採用</td></tr>
-<tr><td>M10</td><td><code>meta.sources</code>（ライセンス欄）が描画されていない（F-6）。未使用の出典 5 件も混在</td><td>配線漏れ</td><td>出典一覧セクションを追加し、未使用は削除するか「未使用」と明示</td></tr>
-</tbody></table></div>
-</div>
-</details>
-
-<details>
-<summary><span class="badge b-mute">⚪ Low</span>　7 件</summary>
-<div class="details-body">
-<div class="tablewrap"><table class="compact">
-<thead><tr><th>ID</th><th>問題</th><th>解決策</th></tr></thead>
-<tbody>
-<tr><td>L1</td><td><code>demand_points.geojson</code> 4.3MB を既定非表示なのに起動時ロード</td><td>トグル ON で遅延ロード</td></tr>
-<tr><td>L2</td><td><code>etl/fetch.py</code> が 2,763 行</td><td>パッケージ分割</td></tr>
-<tr><td>L3</td><td><code>requirements.txt</code> / <code>pyproject.toml</code> / linter 設定が無い</td><td>追加（B4 の環境差の軽減にもなる）</td></tr>
-<tr><td>L4</td><td><code>fetch.download()</code> が実サーバ未検証</td><td>1 レイヤーだけでも実行、または「手動取得前提」と明記</td></tr>
-<tr><td>L5</td><td>位置参照情報（geocode の出典）が <code>SOURCES</code> に無い</td><td>登録</td></tr>
-<tr><td>L6</td><td>対象が 23 区で多摩地域が入っていない</td><td>現状は明記で対応。将来拡張</td></tr>
-<tr><td>L7</td><td><code>MeshProps</code> の型がインデックスシグネチャで緩い</td><td><code>n_*</code> を明示的な型に</td></tr>
-</tbody></table></div>
-</div>
-</details>
-</section>
-
-<!-- ============================================ 12 -->
-<section id="s12">
-<h2 class="sec"><span class="n">12.</span>今後のロードマップ</h2>
-
-<h3>今すぐやるべきこと（今日〜2 日）</h3>
-<ol>
-<li><strong>全作業をコミットする</strong>（C1）。<strong>他のすべてに優先する。</strong> 論理単位で 5 コミット程度に分割</li>
-<li><strong>特別支援学校のラベルを実態に合わせる</strong>（C2 の②）。児童生徒数の突き合わせが間に合わなくても、<strong>「規模重み」という表示をやめるだけで説明の誠実さは回復する</strong>。UI・カード・<code>config.py</code> の <code>label</code>・methodology の 4 箇所</li>
-<li><strong>画面の正規化説明を修正する</strong>（H4）。1 関数の文言修正で、<strong>有利な事実を主張に変えられる</strong></li>
-<li><strong>文書の数値を最新ビルドから採り直す</strong>（H5 の暫定対応）</li>
-</ol>
-
-<h3>ハッカソン提出前</h3>
-<ol start="5">
-<li><strong>2 分プレゼン動画</strong>（H3）。「需要のみ → 負荷のみ → 設置優先度」で掛け算モデルを実演 → 提言 1 位の根拠カードで実数 → 「到達不可 1,058 区画」で締める</li>
-<li><strong>出典・ライセンス一覧を画面に出す</strong>（M10）。CC BY の義務であり、実装 30 分</li>
-<li><strong>根拠カードに母数の但し書き</strong>（M4）</li>
-<li><strong>当事者ヒアリング 1 件</strong>（できれば）。<strong>審査で最も痛い質問への回答が変わる</strong></li>
-<li><strong>CI を入れる</strong>（M7）</li>
-</ol>
-
-<h3>MVP 完成後（A 項目の完済）</h3>
-<ol start="10">
-<li><strong>騒音の欠測補完を是正</strong>（H1）。3 案を実測して選ぶ</li>
-<li><strong>感度分析の対象を固定値まで拡張</strong>（H2）＋ <strong>VIF/主成分</strong>（M1）</li>
-<li><strong>特別支援学校の児童生徒数を都教委資料から突き合わせ</strong>（C2 の①）</li>
-<li><strong>建物単位のホスト集計</strong>（M2）と<strong>予約制貸室の種別分離</strong>（M3）</li>
-<li><strong><code>area.ts</code> ↔ <code>hosts.py</code> の parity check</strong>、フロントの単体テスト（M8）</li>
-<li><strong><code>fetch.py</code> の分割</strong>（L2）と依存の固定（L3）</li>
-</ol>
-
-<h3>将来構想（Phase 2 以降）</h3>
-<ol start="16">
-<li><strong>既存カームダウンスペースとの照合</strong>。高需要メッシュに寄っていればモデル妥当、ズレていれば「現在の配置がニーズと合っていない」という提言。<strong>どちらに転んでも発見</strong></li>
-<li><strong>多摩地域への拡大</strong>（供給側の収集が律速）</li>
-<li><strong>PLATEAU 3D 建物・夜間光</strong>による「圧迫感・眩しさ」レイヤー</li>
-<li><strong>人流データ</strong>（ODPT の利用条件を確認したうえで）</li>
-<li><strong>手帳所持率による区単位補正</strong>（受け口は実装済み）</li>
-<li><strong>ベクタータイル化</strong>（都全域に広げる場合）</li>
-</ol>
-</section>
-
-<!-- ============================================ 13 -->
-<section id="s13">
-<h2 class="sec"><span class="n">13.</span>総合評価</h2>
-
-<h3>この設計は妥当か</h3>
-<p><strong>妥当。しかも、この規模の個人プロジェクトとしては設計の質が明らかに高い。</strong> 根拠は 3 つ。</p>
-<ol>
-<li><strong>中核の判断がすべて「なぜ」で裏打ちされている。</strong> 250m メッシュ（e-Stat 結合）、掛け算（片側極端の排除）、ブラウザ側の重み再計算（恣意性批判への転化）、絶対尺度（順位化が分布の広さを捨てるという発見）。<strong>どれも代替案の欠点まで説明できている。</strong></li>
-<li><strong>一度実装したものを、根拠が無いという理由で撤回している</strong>（A10）。施設名を見出しにした提言は「デモ映え」としては明らかに強かったが、<strong>モデルが計算していない主張だったので捨てた。</strong> この判断ができるプロジェクトは稀。</li>
-<li><strong>自分に不利な検証結果を、隠さずに主要文書へ書いている</strong>（Leave-one-out 0%、最悪ケース 40%、仮定員 68.9%）。</li>
-</ol>
-
-<h3>大きな方向転換は必要か</h3>
-<p><strong>不要。</strong> 方向転換ではなく<strong>完済</strong>が要る。アーキテクチャもデータ設計もスコアリングの骨格も変える理由が無い。残っているのは <code>issues.md</code> の A 項目（A3・A4・A6）と、コミット・提出物という運用の穴。唯一、中期的に検討に値するのは<strong>合成関数を CES 型にして指数を感度分析に載せること</strong>。これも転換ではなく拡張。</p>
-
-<h3>MVP 達成可能性</h3>
-<p><strong>高い（85% 到達済み・公開済み・稼働確認済み）。</strong> 「作るもの」として定義された 2 つは動いている。<strong>残りは機能開発ではなく、①コミット、②提出物、③バイアス 3 件の完済。</strong> ①②は数日、③は 1 項目あたり半日〜1 日の規模。</p>
-
-<div class="cards">
-  <div class="card is-ok">
-    <h4>最大の強み</h4>
-    <p><strong>「もっともらしく見えることが、そのまま発見を妨げる」という失敗の型を発見し、それをコードの構造にまで落とし込んだこと。</strong></p>
-    <p>A29 で列名の推測が外れ、全件 NaN のまま既定値が乗り、<strong>ビルドもテストも成功と表示された</strong>。この 1 回の失敗から、①中身で裏を取り取れなければ例外で止まる、②テストが検査するのは「間違いが黙って通らないこと」、③順位化は分布の広さを捨てる、④モデルが計算していない結論を出力しない、という一貫した規律が生まれている。<strong>オープンデータを扱う作品として本質的に正しい。</strong></p>
-  </div>
-  <div class="card is-bad">
-    <h4>最大の弱み</h4>
-    <p><strong>「書いてあること」と「直っていること」の距離。</strong></p>
-    <p>弱点はすべて文書化されている。しかし審査員にとって、「特別支援学校を外すと上位 10 件が 0% になります、と正直に書いてあります」は<strong>「上位 10 件の信頼性が保証されていない」と同義</strong>である。誠実さは前提であって、それ自体が結果を保証しない。<strong>具体的には A4 が単独で最大の弱み。</strong></p>
-  </div>
-  <div class="card is-warn">
-    <h4>最優先で改善すべきこと</h4>
-    <p><strong>順に、①コミット（C1）、②特別支援学校のラベルと依存（C2）、③提出物（H3）。</strong></p>
-    <p>①は 30 分で終わり、失われるものの大きさが桁違い。②はラベル修正だけなら 1 時間で、審査での最大の弱点を軽減できる。③は追加開発より期待値が高い。</p>
-  </div>
-</div>
-</section>
-
-<!-- ============================================ 14 -->
-<section id="s14">
-<h2 class="sec"><span class="n">14.</span>「もし自分がこのプロジェクトのテックリードなら」</h2>
-
-<h3>前提認識</h3>
-<blockquote>このプロジェクトは<strong>技術的負債ではなく「検証負債」を抱えている</strong>。コードは綺麗で、テストの質も高く、設計判断は文書化されている。足りないのは<strong>モデルの主張を支える証拠</strong>であり、そこは <code>issues.md</code> にすでに列挙されている。したがって私の方針は「新機能を作らない」ことから始まる。</blockquote>
-
-<h3>週次の運び方（提出までを 2 週間と仮定）</h3>
-
-<h4>Day 1 — 止血</h4>
-<p>まずコミットする。議論の余地なく最優先。<code>web/public/data/</code> を追跡対象にしたまま README が <code>git checkout -- web/public/data/</code> を推奨している構成は、<strong>今この瞬間、公開中の成果を消せる状態</strong>にある。5 つの論理コミットに分け、<code>data/processed/</code> と <code>web/public/data/</code> は最後に分離して積む。同時に GitHub Actions を 15 行書く（<code>selftest</code> / <code>parity_check</code> / <code>tsc</code>）。以後、CLAUDE.md の「変更したら必ず通す」を人が覚えている必要がなくなる。</p>
-
-<h4>Day 2–3 — 「言っていること」を「していること」に合わせる</h4>
-<p>コードを直すのではなく、<strong>主張を実態に合わせる</strong>作業を先にやる。</p>
+<p><strong>792 位・優先度 0.915</strong> へ。<code>methodology.md</code> の比較表は B-2 の表へ差し替え</p>
 <ul>
-<li>特別支援学校を「規模重み」と呼ぶのをやめる（4 箇所）</li>
-<li>画面の正規化説明を直し、絶対尺度の 2 層を明示する（H4）</li>
-<li>カードに母数を書く（M4）</li>
-<li>出典・ライセンス一覧を画面に出す（M10）</li>
+<li><strong>経過として残してある過去の順位（85 位・79 位・519 位・642 位）は消さないこと。</strong></li>
 </ul>
-<p>いずれも半日以内で、<strong>審査で突かれる場所を先に潰す</strong>。特に H4 は、直すことで「23 区の外でも値が変わらない層が 2 つある」という<strong>有利な主張が新しく手に入る</strong>。守りではなく攻めの修正である。</p>
-
-<h4>Day 4–6 — A 項目を 1 つだけ完済する</h4>
-<p>3 つ（A3・A4・A6）を中途半端に触るより、<strong>1 つを完全に閉じる</strong>。選ぶのは <strong>A6（騒音の欠測補完）</strong>。理由は 3 つ。</p>
-<ol>
-<li>3 案がすでに <code>issues.md</code> に書かれ、A1 の再現スクリプトで実測できる</li>
-<li>影響範囲が明確（1,095 セル・11.5%）で、結果を数値で示せる</li>
-<li><strong>「測っていない場所を『平均的にうるさい』と言わない」という判断は、この作品の理念そのものの実演になる</strong>——プレゼンで使える</li>
-</ol>
-<p>A4 は児童生徒数の突き合わせが外部資料に依存するので、Day 2 のラベル修正で止め、完済は提出後に回す。</p>
-
-<h4>Day 7–10 — 提出物</h4>
-<p>ここで開発を止める。2 分動画の筋はすでに <code>status.md</code> にある。私が足すのは 1 点だけ——<strong>冒頭 15 秒で「上位は渋谷駅前ではない（519 位 / 9,507）」を出す</strong>。反直感的な事実から入るほうが、掛け算モデルの説明が入りやすい。数値はすべて最新ビルドから採り直す（B4 の環境差があるので、<strong>動画・スライド・README の数値は 1 つの環境で生成したものに揃える</strong>）。</p>
-
-<h4>Day 11–12 — 当事者ヒアリング 1 件</h4>
-<p>技術タスクではないが、<strong>投資対効果が最も高い残件</strong>。1 件でもあれば「当事者検証を経ていない」という最大の弱点が「初期ヒアリングを実施し、以下の指摘を反映した」に変わる。上位地区の妥当性より、<strong><code>operation-idea.md</code> の「入口の摩擦」の仮説</strong>を聞くほうがよい（あの文書は作者の推測であることを自ら明記しており、検証すれば根拠のある文書になる）。</p>
-
-<h4>Day 13–14 — 予備</h4>
-<p>必ず溢れる。溢れなければ H2（感度分析の拡張）に着手する。</p>
-
-<h3>私が「やらない」と決めること</h3>
+<p>いずれも <code>5339358633</code> の値で、履歴として正しい。<strong>消すのは 3,469 位だけ</strong> —<wbr>—これは一度も渋谷駅前の値だったことが無い</p></li>
+<li><strong>B-1 を直す</strong> — <code>web/</code> で <code>npm run deploy</code>。 公開 <code>meta.json</code> の <code>generated_at</code> が <code>2026-08-02T06:00:47+00:00</code> になり、 <code>unreachable</code> が入り、提言が 11 件になることを確認。 <code>docs/handoff-hosts.md:9</code> の「未反映」を消す</li>
+<li><strong>3 章の D-1〜D-8 を直す</strong>（12 箇所。すべて記載場所を特定済み）</li>
+<li><strong>検査の網を広げる</strong>（F-3 / H5 を閉じ切る）<ul>
+<li><code>doc_numbers.py</code> に <code>sensitivity.json</code> 由来の値を追加する</li>
+</ul>
+<p>（<strong>実施済み。8 項目を追加して計 18 項目</strong>）</p>
 <ul>
-<li><strong>新レイヤー（PLATEAU・人流・鉄道騒音）を足さない。</strong> 現在 8 層でも Leave-one-out が 0% の層があり、<strong>層を増やすほど「何が効いているか」の説明が難しくなる</strong></li>
-<li><strong>多摩地域へ広げない。</strong> 供給側の収集が律速で、23 区で確立した品質が薄まる</li>
-<li><strong>UI を作り直さない。</strong> 3 カラムは機能しており、直すべきは文言であって構造ではない</li>
-<li><strong><code>fetch.py</code> の分割を今やらない。</strong> 2,763 行は不快だが、<strong>今それを触ると 10 レイヤー分の正規化を再検証することになる</strong>。提出後</li>
-</ul>
-
-<h3>中期（提出後 1〜2 か月）で構造に手を入れるなら</h3>
-<ol>
-<li><strong>感度分析を「全パラメータ」へ拡張する</strong>（H2 + M1）。ここが閉じると<strong>「恣意的では?」という批判に対して答えられない箇所が無くなる</strong>。本作の設計思想（スライダーで反証可能にする）の論理的な完成形</li>
-<li><strong>合成関数を CES 型にし、ρ を感度分析に載せる。</strong> 「掛け算か足し算か」という二択そのものを検証可能にする</li>
-<li><strong>数値の自動照合</strong>（H5）。文書 6 箇所の重複記載が壊れ続ける限り、「過去の数字を引用しないこと」という規約は守れない。<strong>規約は仕組みにする</strong></li>
-<li><strong>既存カームダウンスペースとの照合</strong>（Phase 2）。<strong>モデル妥当性の外部検証として、現状これが唯一の実行可能な手段</strong></li>
+<li><strong>数値を書く文書を減らす</strong>ほうが本質的だが、提出後でよい</li>
+</ul></li>
+<li><strong>このレポート自身の扱いを決める</strong>（次節）</li>
 </ol>
-
-<h3>最後に</h3>
-<blockquote>このプロジェクトの価値は、<strong>優先度マップそのものよりも、「オープンデータで根拠を示す」と言ったときに何が起きるかを実地で記録したこと</strong>にある。列名が外れて全件 NaN になり、順位化が測定の偏りを増幅し、フォルダ名が別の区を指し、名称が施設の種別を保証しない——これらは全部このリポジトリの中で起き、全部定量つきで残っている。<br><br><strong>その記録（<code>docs/issues.md</code>）を提出物の一部として扱うことを、私は強く推す。</strong> きれいに動く地図より、「なぜこの地図を信じてよいか / どこまで信じてよいか」を定量で示せることのほうが、オープンデータのハッカソンでは希少である。</blockquote>
-</section>
-
-<!-- ============================================ 付録 -->
-<section id="sa">
-<h2 class="sec">付録 A. 監査の再現手順</h2>
-<pre><code>cd ~/Dev/calmgap-tokyo
+<h3 id="s21">このレポートが同じ罠に落ちないために</h3>
+<p>前回のレポートは <strong>3 日で古くなった。</strong> 原因は 2 つある。</p>
+<ul>
+<li><strong>どの文書からもリンクされていない。</strong> <code>CLAUDE.md</code> の「読む順番」にも <code>README.md</code> にも出てこないので、再開時に誰も開かない</li>
+<li><strong>同じ内容が <code>.md</code> と <code>.html</code> に 2 つある</strong>（この作品が繰り返し踏んでいる 「同じものが 2 箇所にある」型）</li>
+</ul>
+<p>そこで今回は <strong>HTML を <code>.md</code> からの生成物にした</strong>（<code>tools/audit_html.py</code>）。 手で両方を保つのをやめる。加えて<strong>冒頭に対象ビルドの <code>generated_at</code> を明記</strong>し、 配信データが変わればこのレポートが対象外になることを読み手が判定できるようにした。</p>
+<p><strong>このレポートは 2026-08-02T06:00:47Z のビルドについての記述である。</strong> 再ビルドしたら、付録 A の手順で採り直すこと。</p>
+<hr>
+<h2 id="s22">10. 是正の記録（2026-08-03・監査と同日）</h2>
+<p><strong>B-1 以外はこのセッションで直した。</strong> 配信データ（<code>web/public/data/</code>）は <strong>1 バイトも変えていない</strong>—<wbr>—変えたのはコードと文書だけである。</p>
+<h3 id="s23">直したもの</h3>
+<div class="scroll"><table><thead><tr><th>#</th><th>内容</th><th>変更箇所</th></tr></thead><tbody>
+<tr><td><strong>B-2</strong></td><td>渋谷駅前のメッシュを <code>5339358611</code>（代官山）→ <strong><code>5339358633</code></strong>（渋谷駅）へ。順位 <strong>3,469 位 → 792 位</strong>。<strong>検査はコードだけでなく中身で裏を取る</strong>ようにした（最寄り駅「渋谷」・用途地域「商業地域」が一致しなければ例外で止まる）</td><td><code>tools/doc_numbers.py</code> / <code>docs/status.md</code> / <code>docs/methodology.md</code> / <code>CLAUDE.md</code></td></tr>
+<tr><td><strong>D-1</strong></td><td>仮定員を全部落としたときの上位10 <strong>90% → 80%</strong></td><td><code>CLAUDE.md</code> / <code>status.md</code> / <code>issues.md</code></td></tr>
+<tr><td><strong>D-2</strong></td><td>帯域単独の特別支援学校 <strong>71% → 75.3%</strong>、他 3 層 <strong>87〜92% → 86〜91%</strong></td><td>同上</td></tr>
+<tr><td><strong>D-3</strong></td><td>Leave-one-out を現ビルドの 8 層すべてで表にした。<strong>「1 層ではなく 2 層」</strong>（特別支援学校 0% / 用途地域 10%）を明記</td><td><code>status.md</code> / <code>CLAUDE.md</code></td></tr>
+<tr><td><strong>D-4</strong></td><td>D1 の群別表を 800m の値へ。右端に 1,200m の頃を残し、<strong>測り直しを忘れた事実そのものを記録</strong>した</td><td><code>issues.md</code></td></tr>
+<tr><td><strong>D-5</strong></td><td>区別の到達不可率 江東 <strong>38.8→38.7%</strong> / 大田 <strong>38.1→38.2%</strong></td><td><code>status.md</code> / <code>issues.md</code> / <code>methodology.md</code> / <code>handoff-hosts.md</code> / <code>README.md</code></td></tr>
+<tr><td><strong>D-6</strong></td><td>特別支援学校の規模 <strong>22〜654 人・29.7 倍</strong>（最小は私立の愛育学園）</td><td><code>status.md</code> / <code>issues.md</code> / <code>methodology.md</code> / <code>CLAUDE.md</code></td></tr>
+<tr><td><strong>D-7</strong></td><td>定員が実測の事業所 <strong>28.7% → 31.0%</strong>。2 区時点の記述には「2 区時点の値」と明記</td><td><code>status.md</code> / <code>methodology.md</code> / <code>CLAUDE.md</code></td></tr>
+<tr><td><strong>D-8</strong></td><td>ホスト 100m 以内の組 <strong>595 → 459 組</strong>（別種別 440 → 381）。<strong><code>--report</code> で出るようにした</strong>（<code>etl/hosts.py</code> の <code>proximity_report</code>）</td><td><code>etl/hosts.py</code> / <code>etl/build.py</code> ＋ 文書 5 本</td></tr>
+</tbody></table></div>
+<h3 id="s24">仕組みを直したもの（同じことが起きないように）</h3>
+<ul>
+<li><strong><code>doc_numbers.py</code> の網を 10 → 18 項目へ。</strong> <code>sensitivity.json</code> を検査対象に 加えた（重み ±30% の上位10 / 固定値 76 個 / 帯域群 / 特別支援学校の LOO / 用途地域の LOO / 仮定員を落としたとき / プリセット共通 / 帯域の単独）。 <strong>12 件の不一致はすべて、ここが空白だったために起きている。</strong></li>
+<li><strong>丸めを <code>score.publish_round</code> と同じ規則に揃えた。</strong> 組み込みの <code>round</code> は 75.25 を 75.2 へ（偶数側へ）丸める。文書に書く値と検査が食い違う</li>
+<li><strong><code>proximity_report</code> を足した。</strong> D-8 の原因は値の誤りではなく <strong>算出コードが残っていなかったこと</strong>で、数字だけ直しても再発する</li>
+<li><strong>HTML をこのレポートからの生成物にした</strong>（<code>tools/audit_html.py</code>）。 前回 <code>.md</code> と <code>.html</code> を手で 2 つ保って両方古くなったため</li>
+</ul>
+<h3 id="s25">是正後の検証</h3>
+<div class="scroll"><table class="headless"><tbody>
+<tr><td><code>python -m etl.selftest</code></td><td>✅ <strong>63 件</strong></td></tr>
+<tr><td><code>node tools/parity_check.mjs</code>（実データ）</td><td>✅ 乖離 0</td></tr>
+<tr><td><code>node tools/parity_check.mjs</code>（模擬データ）</td><td>✅ 乖離 0</td></tr>
+<tr><td><code>npx tsc --noEmit</code></td><td>✅ 0 件</td></tr>
+<tr><td><code>python tools/doc_numbers.py</code></td><td>✅ <strong>18 項目すべて一致</strong></td></tr>
+<tr><td><code>git status web/public/data/</code></td><td>✅ <strong>変更なし</strong>（配信データは凍結したまま）</td></tr>
+</tbody></table></div>
+<h3 id="s26">B-1 も同日に解消した</h3>
+<p><code>web/</code> で <code>npm run deploy</code> を実行し（9 ファイルを更新）、公開先を確認した。</p>
+<div class="scroll"><table class="headless"><tbody>
+<tr><td>公開 <code>meta.json</code></td><td><strong>手元と完全一致</strong>（<code>generated_at</code> = 2026-08-02T06:00:47+00:00）</td></tr>
+<tr><td>公開 <code>unreachable</code></td><td><strong><code>{count: 1058, ratio: 0.1113, mid_or_above: 151}</code></strong>（それまで存在しなかった）</td></tr>
+<tr><td>公開 <code>proposals.json</code></td><td><strong>11 件・手元と完全一致</strong>（第 1 位 豊島区 大塚・北池袋周辺）</td></tr>
+<tr><td>画面</td><td>見出しに <strong>1,058 区画 / 11.1%</strong>、提言 11 件、コンソールエラーなし</td></tr>
+</tbody></table></div>
+<p><strong>これで合格条件 3 つがすべて満たされた。</strong> コード・配信データ・文書・公開サイトが 1 つのビルド （<code>2026-08-02T06:00:47+00:00</code>）で揃っている。</p>
+<hr>
+<h2 id="s27">付録 A. この監査の再現手順</h2>
+<pre><code class="lang-bash">cd ~/Dev/calmgap-tokyo
 source .venv/bin/activate
 
-# 検証（すべて通ることを確認）
-python -m etl.selftest          # 50 件
+# 1. 検証
+python -m etl.selftest          # 63 件
 node tools/parity_check.mjs     # 全 9,507 メッシュで乖離 0
-cd web &amp;&amp; npx tsc --noEmit &amp;&amp; cd ..
+(cd web &amp;&amp; npx tsc --noEmit)
+python tools/doc_numbers.py
 
-# 生成物からの独立検算
-python - &lt;&lt;'PY'
-import json, pathlib, collections
-fc = json.loads(pathlib.Path('web/public/data/mesh.geojson').read_text())
-rows = [f['properties'] for f in fc['features']]
-meta = json.loads(pathlib.Path('web/public/data/meta.json').read_text())
-wards = meta['target_wards']
-unre = [r for r in rows if not r.get('host')]
-print('メッシュ', len(rows), '/ 到達不可', len(unre), f'{100*len(unre)/len(rows):.2f}%')
-order = sorted(rows, key=lambda r: -r['priority'])
-print('上位20の区内訳', collections.Counter(wards[r['w']] for r in order[:20] if 'w' in r))
-print('上位50のうち到達不可', sum(1 for r in order[:50] if not r.get('host')))
-print('渋谷駅前の順位', {r['c']: i+1 for i, r in enumerate(order)}['5339358633'])
+# 2. 配信データからの独立検算（etl を通さない）
+python - &lt;&lt;&#x27;PY&#x27;
+import json, pathlib, collections, statistics
+D = pathlib.Path(&#x27;web/public/data&#x27;)
+meta = json.loads((D / &#x27;meta.json&#x27;).read_text())
+rows = [f[&#x27;properties&#x27;] for f in json.loads((D / &#x27;mesh.geojson&#x27;).read_text())[&#x27;features&#x27;]]
+W = meta[&#x27;target_wards&#x27;]
+for r in rows:
+    r[&#x27;_w&#x27;] = W[r[&#x27;w&#x27;]]; r[&#x27;_un&#x27;] = &#x27;host&#x27; not in r
+order = sorted(rows, key=lambda r: -r[&#x27;priority&#x27;])
+rank = {r[&#x27;c&#x27;]: i + 1 for i, r in enumerate(order)}
+un = [r for r in rows if r[&#x27;_un&#x27;]]
+print(&#x27;メッシュ&#x27;, len(rows), &#x27;/ 到達不可&#x27;, len(un), f&#x27;{100*len(un)/len(rows):.2f}%&#x27;)
+by = collections.defaultdict(list)
+for r in rows: by[r[&#x27;_w&#x27;]].append(r)
+print(&#x27;うち区内で中位以上&#x27;, sum(
+    1 for w, rs in by.items()
+    for r in rs if r[&#x27;_un&#x27;] and r[&#x27;priority&#x27;] &gt;= statistics.median([x[&#x27;priority&#x27;] for x in rs])))
+print(&#x27;上位10&#x27;, collections.Counter(r[&#x27;_w&#x27;] for r in order[:10]).most_common())
+print(&#x27;上位20&#x27;, collections.Counter(r[&#x27;_w&#x27;] for r in order[:20]).most_common())
+print(&#x27;上位50のうち到達不可&#x27;, sum(1 for r in order[:50] if r[&#x27;_un&#x27;]))
+print(&#x27;渋谷駅前 5339358633&#x27;, rank[&#x27;5339358633&#x27;], &#x27;位&#x27;)  # 5339358611 は代官山。B-2
 PY
 
-# 公開先の一致確認
+# 3. 再ビルドが配信データと一致するか（凍結の前提）
+cp -r web/public/data /tmp/frozen
+python -m etl.build --live --report
+for f in mesh.geojson proposals.json cards.json hosts.geojson demand_points.geojson; do
+  cmp -s /tmp/frozen/$f web/public/data/$f &amp;&amp; echo &quot;同一 $f&quot; || echo &quot;差分 $f&quot;
+done
+git checkout -- web/public/data/     # 凍結時のバイト列へ戻す
+
+# 4. 公開先が同じビルドか
 curl -s https://calmgap-tokyo.hiroaki-kuwabara.workers.dev/data/meta.json \
-  | python -c "import json,sys; print(json.load(sys.stdin)['generated_at'])"</code></pre>
-</section>
-
-<section id="sb">
-<h2 class="sec">付録 B. 主要な指標（2026-07-31 時点・実測）</h2>
-<div class="tablewrap"><table>
-<tbody>
-<tr><th style="width:280px">対象</th><td>東京 23 区 / JIS X 0410 5 次メッシュ（250m）</td></tr>
-<tr><th>メッシュ数</th><td class="num">9,507</td></tr>
-<tr><th>実データレイヤー</th><td>10 / 10（模擬なし）</td></tr>
-<tr><th>需要側</th><td>事業所 14,118・駅 617・特別支援学校 45・精神科 1,548</td></tr>
-<tr><th>負荷側</th><td>用途地域 7,002・騒音 428 点・公園 3,835・混雑メッシュ 4,221</td></tr>
-<tr><th>供給側</th><td>1,541 件（区民センター 530・児童館 501・図書館 247・出張所 160・文化施設 76・公園管理施設 27）</td></tr>
-<tr><th>到達不可</th><td><strong>1,058 区画（11.13%）</strong>。うち区内で優先度が中位以上 127 件</td></tr>
-<tr><th>上位 50 のうち到達不可</th><td class="num">2</td></tr>
-<tr><th>上位 20 の区内訳</th><td>千代田 8 / 豊島 7 / 文京 4 / 新宿 1</td></tr>
-<tr><th>渋谷駅前の順位</th><td class="num">519 / 9,507</td></tr>
-<tr><th>感度（±30%・500 回）</th><td>上位 10 の 81.2% が残存（最悪 40.0%）・順位変動中央値 5 位</td></tr>
-<tr><th>Leave-one-out 最小</th><td><strong>特別支援学校 0%</strong></td></tr>
-<tr><th>プリセット共通</th><td>4 プリセット全てで上位 20 に入るのは 3 件（15%）</td></tr>
-<tr><th>コード規模</th><td>Python 7,984 行 / TypeScript 1,819 行 / CSS 665 行 / 文書 約 3,300 行</td></tr>
-<tr><th>テスト</th><td><code>selftest</code> 50 件・<code>parity_check</code> 全メッシュ</td></tr>
-<tr><th>配信</th><td>mesh.geojson 6.4MB（brotli 812KB）・demand_points 4.3MB</td></tr>
+  | python -c &quot;import json,sys; m=json.load(sys.stdin); print(m[&#x27;generated_at&#x27;], m.get(&#x27;unreachable&#x27;))&quot;</code></pre>
+<h2 id="s28">付録 B. 確定値（2026-08-02T06:00:47Z ビルド）</h2>
+<div class="scroll"><table><thead><tr><th>指標</th><th>値</th></tr></thead><tbody>
+<tr><td>対象</td><td>東京 23 区 / 5 次メッシュ（250m）<strong>9,507 区画</strong></td></tr>
+<tr><td>実データ</td><td><strong>10 / 10 レイヤー</strong></td></tr>
+<tr><td>需要側</td><td>事業所 14,118・駅 617・特別支援学校 45・精神科 1,548</td></tr>
+<tr><td>負荷側</td><td>用途地域 7,002・騒音 428 点・公園 3,835・混雑メッシュ 4,221</td></tr>
+<tr><td>供給側</td><td>1,541 件（区民センター 530・児童館 501・図書館 247・出張所 160・文化施設 76・公園管理施設 27）</td></tr>
+<tr><td><strong>到達不可</strong></td><td><strong>1,058 区画（11.13%）</strong>。うち区内で優先度が中位以上 <strong>151 件</strong></td></tr>
+<tr><td>提言</td><td><strong>11 件</strong>。第 1 位 豊島区 大塚・北池袋周辺（6 区画）</td></tr>
+<tr><td>上位 10 の区内訳</td><td>文京 4 / 豊島 3 / 千代田 2 / 江東 1</td></tr>
+<tr><td>上位 20 の区内訳</td><td>豊島 6 / 千代田 6 / 文京 4 / 板橋 2 / 江東 1 / 新宿 1</td></tr>
+<tr><td>上位 50 のうち到達不可</td><td>0</td></tr>
+<tr><td><strong>渋谷駅前</strong>（<code>5339358633</code>）</td><td><strong>792 / 9,507</strong>（優先度 0.915）</td></tr>
+<tr><td>感度（重み ±30%・500 回）</td><td>上位10 <strong>73.3%</strong>（最悪 10%）・上位50 86.6%・順位変動 中央値 6 位</td></tr>
+<tr><td>感度（固定値 76 個 ±30%・60 回）</td><td>上位10 <strong>62.5%</strong>（最悪 10%）</td></tr>
+<tr><td>Leave-one-out 最小</td><td><strong>特別支援学校 0%</strong>・次いで<strong>用途地域 10%</strong></td></tr>
+<tr><td>プリセット共通</td><td>4 プリセット全てで上位 20 に入る区画は <strong>0 件</strong></td></tr>
+<tr><td>テスト</td><td><code>selftest</code> <strong>63 件</strong>・<code>parity_check</code> 全メッシュで乖離 0</td></tr>
+<tr><td>コード</td><td>Python 9,761 行 / TypeScript 2,177 行 / CSS 690 行 / 文書 4,197 行</td></tr>
+<tr><td>配信</td><td><code>mesh.geojson</code> 6.4MB（brotli -q11 で 475KB）・<code>demand_points.geojson</code> 4.3MB</td></tr>
 </tbody></table></div>
-</section>
-
-<footer class="doc">
-<p>本レポートは 2026-07-31 時点のリポジトリ状態に基づく。数値は再ビルドで変わり得る（<code>issues.md</code> B4 の環境差を含む）。引用する際は付録 A の手順で採り直すこと。</p>
-<p>同内容の Markdown 版：<code>project_audit.md</code>（Mermaid 図つき）。</p>
-</footer>
-
+<hr>
+<p><em>本レポートは <code>generated_at = 2026-08-02T06:00:47+00:00</code> の配信データと、 コミット <code>501caed</code> のリポジトリ状態に基づく。数値は再ビルドで変わり得る （別環境では <code>issues.md</code> B4 の 4 桁目の差が出る）。引用する際は付録 A で採り直すこと。</em></p>
+</main>
 </div>
 </body>
 </html>

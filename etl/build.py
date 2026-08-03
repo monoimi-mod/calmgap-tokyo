@@ -664,6 +664,16 @@ def main(argv: list[str] | None = None) -> int:
             print("\n[点検] 到達不可区画は 0 件")
         print(reach.to_string(index=False))
 
+        # ホスト件数を「施設の数」として読めないことを数で出す
+        #（hosts.proximity_report。文書側の値が再現できなかった経緯もそこに）。
+        prox = hostlib.proximity_report(layers["hosts"])
+        print(
+            f"\n[点検] ホスト {prox['ホスト']:,}件 のうち "
+            f"{prox['半径m']:.0f}m 以内に別の行が並ぶ組 {prox['組']:,}"
+            f"（同一種別 {prox['同一種別']:,} / 別種別 {prox['別種別']:,}）"
+        )
+        print("       同じ建物を別種別で 2 度数えている疑いがある。件数 ≠ 施設数")
+
     return 0
 
 

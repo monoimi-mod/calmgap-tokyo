@@ -13,6 +13,15 @@
 
 いずれも**間違っていても動く**種類の誤りで、ビルドもテストも成功と表示される。
 
+**この検査を入れた後も 12 箇所踏んだ**（2026-08-03 の凍結検証。`project_audit.md`）。
+網が `meta.json` 由来のスカラーだけで、**`sensitivity.json` を 1 つも見ていなかった**
+ためで、帯域を 800m へ直して測り直した値が文書側に反映されていなかった。
+感度分析の主要な値もここで検査する。
+
+**さらに、この検査自身が誤りを固定していた**——渋谷駅前として
+渋谷駅の 700m 南（代官山）のメッシュを見ており、その順位に合わせて
+文書 4 本が書き換えられていた。**コードだけでなく中身で裏を取る**（下記）。
+
 **「古い値が残っていないか」は検査しない。** この作品の文書は
 過去の数値を意図的に残している——「かつて 44.4% だった」「A4 是正前の
 渋谷駅前 519 位」のように、**入れ替わってきた経緯そのものが中身**だからである。
@@ -33,6 +42,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -71,7 +81,25 @@ def main() -> int:
     u = meta["unreachable"]
 
     order = sorted(rows, key=lambda r: -r["priority"])
-    shibuya = next((i + 1 for i, r in enumerate(order) if r["c"] == "5339358611"), None)
+    # **このメッシュコードを目視で変えないこと。** 5339358633 は渋谷駅（35.6580,
+    # 139.7016）を含む区画で、配信データ側の f_station_name が「渋谷」・
+    # 用途地域が「商業地域」・乗降 2,897,703 人/日 になっていることで裏が取れる。
+    # かつて 5339358611 を渋谷駅前として検査していた——実際には約 700m 南の
+    # 代官山（第二種低層住居専用地域・乗降 28,772 人）で、その 3,469 位という
+    # 順位に合わせて文書が 4 本書き換えられていた。**検査が誤りを固定していた。**
+    # 下の裏取りは、次に誰かがコードを差し替えたときに黙って通らないためにある。
+    shibuya = None
+    for i, r in enumerate(order):
+        if r["c"] != "5339358633":
+            continue
+        if r.get("f_station_name") != "渋谷" or r.get("f_zoning_name") != "商業地域":
+            sys.exit(
+                "渋谷駅前として検査しているメッシュ 5339358633 の中身が想定と違う"
+                f"（最寄り駅 {r.get('f_station_name')!r} / 用途地域 {r.get('f_zoning_name')!r}）。"
+                "メッシュコードか配信データのどちらかが変わっている"
+            )
+        shibuya = i + 1
+        break
 
     # (説明, status.md に在るべき文字列)
     checks: list[tuple[str, str]] = [
@@ -88,6 +116,47 @@ def main() -> int:
     if shibuya is not None:
         checks.append(("渋谷駅前の順位", f"{shibuya:,} 位"))
 
+    # 感度分析の値も見る。**ここが最後まで検査の外にあった。**
+    # 帯域を 1,200m → 800m へ直したとき全部を測り直したのに、追随したのは
+    # issues.md A4 の比較表と status.md の一部だけで、**12 箇所が 1,200m の値のまま
+    # 残った**（2026-08-03 の凍結検証。`project_audit.md` D-1〜D-4）。
+    # 変化がいちばん大きく、「不利な結果」として最も引用される数値群が、
+    # meta.json 由来のスカラーしか見ない検査からこぼれていた。
+    sens_path = WEB_DATA / "sensitivity.json"
+    sens = json.loads(sens_path.read_text()) if sens_path.exists() else None
+    if sens:
+        rp = sens["random_perturbation"]
+        fv = sens["fixed_values"]
+        groups = {g["id"]: g for g in fv["groups"]}
+        loo = {r["key"]: r for r in sens["leave_one_out"]}
+        scen = {s["id"]: s for s in fv["scenarios"]}
+        # bandwidth_profile は fixed_values の下にある（トップレベルではない）
+        band = {b["key"]: b for b in fv.get("bandwidth_profile", [])}
+
+        def pct(x: float) -> str:
+            """0.7334 → '73.3%' / 0.65 → '65%'。文書の書き方に合わせる。
+
+            **組み込みの `round` を使わない。** 「ちょうど半分」を偶数側へ
+            丸めるため 75.25 が 75.2 になる（`CLAUDE.md` の丸めの項と同じ理由）。
+            文書に書くのは大きい側——`score.publish_round` と規則を揃える。
+            """
+            v = Decimal(str(x * 100)).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+            return f"{v.normalize():f}%"
+
+        checks += [
+            ("重み ±30% の上位10", pct(rp["overlap_mean"]["10"])),
+            ("固定値 76 個の上位10", pct(groups["all"]["overlap_mean"]["10"])),
+            ("帯域群の上位10", pct(groups["bandwidth"]["overlap_mean"]["10"])),
+            ("特別支援学校の LOO", pct(loo["sped_school"]["overlap_top10"])),
+            ("用途地域の LOO", pct(loo["zoning"]["overlap_top10"])),
+            ("仮定員を全部落とす", pct(scen["drop_assumed_capacity"]["overlap"]["10"])),
+            ("プリセット共通", f"{sens['preset_agreement']['common_count']} 件"),
+        ]
+        if "sped_school" in band:
+            checks.append(
+                ("帯域・特別支援学校の単独", pct(band["sped_school"]["alone"]["overlap_mean"]["10"]))
+            )
+
     text = STATUS.read_text()
     failures = [
         f"{label}: 現在値 {value!r} が {STATUS.relative_to(ROOT)} に無い"
@@ -96,15 +165,12 @@ def main() -> int:
     ]
 
     # 画面の staleness 検知と同じ条件。配信物どうしの整合。
-    sens_path = WEB_DATA / "sensitivity.json"
-    if sens_path.exists():
-        sens = json.loads(sens_path.read_text())
-        if sens.get("generated_at") != meta["generated_at"]:
-            failures.append(
-                "sensitivity.json が meta.json と別のビルド"
-                f"（{sens.get('generated_at')} / {meta['generated_at']}）。"
-                "`python -m etl.build --live --sensitivity` で作り直すこと"
-            )
+    if sens and sens.get("generated_at") != meta["generated_at"]:
+        failures.append(
+            "sensitivity.json が meta.json と別のビルド"
+            f"（{sens.get('generated_at')} / {meta['generated_at']}）。"
+            "`python -m etl.build --live --sensitivity` で作り直すこと"
+        )
 
     print(f"現況の数値と配信データの照合（{STATUS.relative_to(ROOT)}）")
     for label, value in checks:
