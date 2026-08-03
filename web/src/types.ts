@@ -50,6 +50,19 @@ export interface Meta {
   priority_beta: number;
   host_max_distance_m: number;
   /**
+   * 「この区画の実数」の各行が、どの半径で数えた値か。etl/build.py が出す。
+   * 画面はここから節見出しを作る（半径を TypeScript に直接書くと、
+   * 帯域を動かしたときにラベルだけが古い値を主張し続ける）。
+   */
+  fact_radius_m: {
+    welfare: number;
+    school: number;
+    clinic: number;
+    host: number;
+    /** 最寄り駅を探す上限。件数ではなく最寄り 1 件なので意味が違う。 */
+    station_max: number;
+  };
+  /**
    * 「既存施設では到達不可」の要約。**重みにもスコアにも依存しない**ので
    * 画面の見出しに使う。mid_or_above は区内の優先度の中央値で切った件数で、
    * しきい値の取り方が込み入っているため Python 側でだけ計算する
@@ -61,9 +74,12 @@ export interface Meta {
     mid_or_above: number;
     note: string;
   };
-  /** 提言リストを組み立てる母数と上限。etl/config.py が唯一の出所。 */
-  proposal_top_n: number;
-  proposal_limit: number;
+  /**
+   * 順位表に出す件数の選択肢と既定値。etl/config.py が唯一の出所。
+   * **選べるようにしてあるのは、打ち切りに根拠が無いことを隠さないため。**
+   */
+  ranking_options: number[];
+  ranking_default_n: number;
   /** 重みプリセット。etl/config.py の PRESETS が単一の情報源。 */
   presets: { id: string; label: string; note: string; weights: Weights }[];
   components: ComponentDef[];
@@ -143,24 +159,30 @@ export interface Card {
 }
 
 /**
- * 提言の単位は「隣接する上位区画のまとまり（地区）」。
- * 施設単位ではない — 理由は etl/hosts.py の build_proposals を参照。
+ * proposals.json の 1 行。**単位は区画**（地区でも施設でもない）。
+ * 束ねるのをやめた理由は etl/hosts.py の build_ranking を参照。
  */
 export interface Proposal {
-  /** 例「豊島区 池袋・北池袋周辺」。区名 + 最寄り駅名で組む。 */
-  area_label: string;
-  ward_label: string;
-  ward_counts: Record<string, number>;
-  best_rank: number;
-  priority: number;
+  rank: number;
+  mesh_code: string;
   lon: number;
   lat: number;
-  mesh_count: number;
-  mesh_codes: string[];
-  /** そのうち徒歩圏に区の公共施設が 1 件も無い区画の数。 */
-  unreachable_meshes: number;
-  /** 各区画の最寄り施設（重複を除く）。設置候補ではなく既存ストックの例示。 */
-  facilities: { name: string; kind: string; ward: string }[];
+  ward: string;
+  station: string;
+  priority: number;
+  demand: number;
+  load: number;
+  host_count: number;
+  host_name: string;
+  host_kind: string;
+  host_ward: string;
+  host_distance_m: number | null;
+  /** 徒歩圏に区の公共施設が 1 件も無い。 */
+  unreachable: boolean;
+  /** 上位 adjacent_of 区画のうち、この区画に接しているものの数。 */
+  adjacent_n: number;
+  /** adjacent_n の母数。**これが無いと隣接数が場所の性質に見える。** */
+  adjacent_of: number;
   narrative: string;
 }
 

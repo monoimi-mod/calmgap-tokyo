@@ -110,7 +110,11 @@ export interface ScoreResult {
  *      （重みの合計が変わっても色のスケールが動かない。
  *        相対比較のツールなので絶対値には意味を持たせない）
  *   3. priority = demand^alpha * load^beta
- *   4. 表示用に priority もパーセンタイル化
+ *
+ * **4 番目の手順「表示用に priority もパーセンタイル化」は 2026-08-03 に外した。**
+ * 理由は etl/score.py の compose() に書いてある（要点: 順位化は等間隔なので
+ * 上位が横並びに見えるが、掛け算の生値では上位ほど差が大きい。
+ * 外しても順位は 1 つも動かない）。
  */
 export function compose(
   rows: MeshProps[],
@@ -142,11 +146,11 @@ export function compose(
     if (typeof coef === "number") demand[i] *= coef;
   }
 
-  const priorityRaw = new Float64Array(rows.length);
+  // 需要 0 なら掛け算で 0 になる（掛け算モデルの肝）。
+  const priority = new Float64Array(rows.length);
   for (let i = 0; i < rows.length; i++) {
-    priorityRaw[i] = Math.pow(demand[i], alpha) * Math.pow(load[i], beta);
+    priority[i] = Math.pow(demand[i], alpha) * Math.pow(load[i], beta);
   }
-  const priority = percentileNormalize(priorityRaw, true);
 
   const order = Array.from({ length: rows.length }, (_, i) => i).sort(
     (a, b) => priority[b] - priority[a],

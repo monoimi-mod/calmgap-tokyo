@@ -1,13 +1,13 @@
 /**
  * パネル UI の描画。
  *
- * 提言リストはサーバ側の proposals.json をそのまま出すのではなく、
+ * 順位表はサーバ側の proposals.json をそのまま出すのではなく、
  * 現在のスライダー重みから毎回組み直す。重みを動かしたのに
- * 提言が変わらなければ、このツールは嘘をついていることになる。
+ * 順位が変わらなければ、このツールは嘘をついていることになる。
  * （proposals.json は既定重みでの静的な書き出しであり、資料添付用に残してある）
  */
 
-import { areaLabel, clusterAdjacent } from "./area";
+import { clusterAdjacent, gridIndex } from "./area";
 import { compose, topFactors, type ScoreResult } from "./score";
 import type { ComponentDef, Meta, MeshProps, Sensitivity, Weights } from "./types";
 
@@ -17,224 +17,238 @@ export interface AppState {
   weights: Weights;
   score: ScoreResult;
   selected: string | null;
-  tab: "proposals" | "selected" | "table";
+  /**
+   * **タブは 2 つ。** かつては「提言リスト（地区単位）」と「表で見る（区画単位）」に
+   * 分かれていたが、提言の単位を区画に戻した時点で、両者は
+   * 「同じ順位表を文章で見るか数値で見るか」の違いしか無くなった。
+   * 根拠文も同じ narrate() の出力で、2 箇所に同じ文が出ていた。
+   */
+  tab: "ranking" | "selected";
   activePreset: string;
-  /** 地図に塗る値。提言リストの順位は常に優先度で決まる。 */
+  /** 地図に塗る値。順位は常に優先度で決まる。 */
   displayMode: "priority" | "demand" | "load";
+  /**
+   * 順位表に出す件数。**選べるようにしてあるのは、打ち切りに根拠が
+   * 無いことを隠さないため**（優先度は連続していて、どこにも切れ目が無い）。
+   */
+  rankingN: number;
 }
 
-const fmt = (n: number, d = 2) => n.toFixed(d);
-const pctRank = (p: number) => Math.max(1, Math.round((1 - p) * 100));
+// 優先度は 9,507 区画の中で 0.99〜0.17 と動く。2 桁だと上位 100 件が
+// すべて 0.99 か 1.00 になり、差が無いように見えていた（実際には在る）。
+const fmt = (n: number, d = 3) => n.toFixed(d);
 
-/* ------------------------------------------------------------------ 提言 */
+/**
+ * 「上位◯%」。**順位から出す。優先度の値から出してはいけない。**
+ *
+ * かつては `(1 - priority) * 100` だった。priority がパーセンタイル順位
+ * だった頃は正しかったが、2026-08-03 に「需要 × 負荷」の生値へ変えたので
+ * 成り立たなくなった（渋谷駅前は 792 位 = 上位 8% なのに、
+ * 生値 0.7219 から出すと 28% になる）。etl/hosts.py の _narrative と対。
+ */
+const pctRank = (rank: number, total: number) =>
+  Math.max(1, Math.round((rank / total) * 100));
 
-export interface UiProposal {
-  areaLabel: string;
-  wardCounts: Map<string, number>;
-  bestRank: number;
+/* --------------------------------------------------------------- 順位表 */
+
+/** 順位表の 1 行。**単位は区画。** 地区（「○○周辺」）は作らない。 */
+export interface RankRow {
+  index: number;
+  rank: number;
+  meshCode: string;
+  ward: string;
+  station: string;
   priority: number;
-  meshCodes: string[];
-  meshCount: number;
-  unreachableMeshes: number;
-  facilities: { name: string; kind: string; ward: string }[];
-  rowIndex: number;
-  narrative: string;
-  /** 地区の全区画が徒歩圏に公共施設を持たない。 */
+  demand: number;
+  load: number;
+  hostCount: number;
   unreachable: boolean;
+  /** 表示中の上位 N 区画のうち、この区画に接しているものの数（8 近傍）。 */
+  adjacentN: number;
 }
 
 /**
- * 上位メッシュを「隣接する区画のまとまり（地区）」に束ねる。
+ * 現在の重みでの上位 N 区画。**束ねない。**
  *
- * **以前は割当先の施設ごとに束ね、施設名を見出しにしていた。** やめた理由は
- * etl/hosts.py の build_proposals に書いてある（要点: このモデルは施設の
- * 適性を一切測っておらず、見出しの施設はその区画の中に無いことも多い）。
+ * かつては上位 40 区画を格子隣接で束ね、「区名＋最寄り駅名＋周辺」という
+ * 地区を提言の単位にしていた。束ね方（格子隣接）には根拠があったが、
+ * **どこまでを束ねるかには無かった**——地区の広がりは母数 40 で決まり、
+ * 40 のあたりに切れ目は無い。「大塚・北池袋周辺は 6 区画」の 6 は
+ * 場所の性質ではなく 40 で切ったことの帰結で、**「○○周辺」という名前が、
+ * 計算していない広がりを主張していた**（etl/hosts.py の build_ranking と対）。
  *
- * 束ねる根拠も「同じ施設が最寄り（最大 700m）」から「格子の上で接している」へ
- * 変えた。後者は整数座標だけで決まり、施設の配置に依存しない。
+ * 隣接は単位ではなく記述的な事実として残す。母数（表示件数）を必ず添える。
  */
-export function buildProposals(
-  state: AppState,
-  topN?: number,
-  limit?: number,
-): UiProposal[] {
-  const { rows, score, meta, weights } = state;
-  // 母数と上限は etl/config.py が唯一の出所（meta.json 経由）。
-  // ここに数値を置くと、資料添付用の proposals.json と画面が別物になる。
-  const n = topN ?? meta.proposal_top_n;
-  const max = limit ?? meta.proposal_limit;
-  const top = score.order.slice(0, n);
-  const wardOf = (row: MeshProps) =>
-    typeof row.w === "number" ? (meta.target_wards[row.w] ?? "") : "";
+export function rankingRows(state: AppState): RankRow[] {
+  const { rows, score, meta } = state;
+  const top = score.order.slice(0, state.rankingN);
+  const idx = top.map((i) => gridIndex(rows[i].c));
 
-  const groups = clusterAdjacent(top.map((idx) => rows[idx].c));
-
-  const list = groups.map((members): UiProposal => {
-    const idxs = members.map((m) => top[m]);
-    const headIdx = idxs[0];
-
-    const wardCounts = new Map<string, number>();
-    for (const i of idxs) {
-      const w = wardOf(rows[i]);
-      if (w) wardCounts.set(w, (wardCounts.get(w) ?? 0) + 1);
-    }
-
-    const { label } = areaLabel(
-      idxs.map((i) => wardOf(rows[i])),
-      idxs.map((i) => (rows[i].f_station_name as string) ?? ""),
-    );
-
-    // 各区画の最寄り施設。設置候補ではなく「徒歩圏に何が在るか」の例示。
-    const facilities: UiProposal["facilities"] = [];
-    const seen = new Set<string>();
-    for (const i of idxs) {
-      const name = (rows[i].host as string) ?? "";
-      if (name && !seen.has(name)) {
-        seen.add(name);
-        facilities.push({
-          name,
-          kind: (rows[i].host_kind as string) ?? "",
-          ward: (rows[i].host_ward as string) ?? "",
-        });
+  return top.map((rowIdx, k) => {
+    const row = rows[rowIdx];
+    let adjacent = 0;
+    for (let j = 0; j < idx.length; j++) {
+      if (j === k) continue;
+      if (
+        Math.abs(idx[k][0] - idx[j][0]) <= 1 &&
+        Math.abs(idx[k][1] - idx[j][1]) <= 1
+      ) {
+        adjacent++;
       }
     }
-
-    const unreachableMeshes = idxs.filter((i) => !rows[i].host).length;
-
     return {
-      areaLabel: label,
-      wardCounts,
-      bestRank: members[0] + 1,
-      priority: score.priority[headIdx],
-      meshCodes: idxs.map((i) => rows[i].c),
-      meshCount: idxs.length,
-      unreachableMeshes,
-      facilities,
-      rowIndex: headIdx,
-      narrative:
-        narrate(state, headIdx, members[0] + 1, weights, meta) +
-        clusterNarrative(idxs.length, wardCounts, unreachableMeshes, facilities),
-      unreachable: unreachableMeshes === idxs.length,
+      index: rowIdx,
+      rank: k + 1,
+      meshCode: row.c,
+      ward: typeof row.w === "number" ? (meta.target_wards[row.w] ?? "") : "",
+      station: (row.f_station_name as string) ?? "",
+      priority: score.priority[rowIdx],
+      demand: score.demand[rowIdx],
+      load: score.load[rowIdx],
+      hostCount: (row.f_host_n as number) ?? 0,
+      unreachable: !row.host,
+      adjacentN: adjacent,
     };
   });
-
-  return list.sort((a, b) => a.bestRank - b.bestRank).slice(0, max);
 }
 
 /**
- * 地区としてまとまって初めて言えることだけを足す。
- * 1 区画ずつ眺めても出てこない情報 — 何区画続いているか、区をまたぐか、
- * そのうち何区画が徒歩圏に施設を持たないか。etl/hosts.py の
- * _cluster_narrative と対応。
+ * その区画に連なる上位区画のコード（自分を含む）。地図の破線に使う。
+ *
+ * **地区ではない。** 表示中の上位 N のうち格子の上でつながっているもの、
+ * というだけ。件数を変えれば範囲も変わる——それが見えることに意味がある。
  */
-function clusterNarrative(
-  n: number,
-  wardCounts: Map<string, number>,
-  unreachableMeshes: number,
-  facilities: UiProposal["facilities"],
-): string {
-  const parts: string[] = [];
-
-  if (n > 1) parts.push(`隣接する${n}区画がまとまって上位に入っている。`);
-
-  if (wardCounts.size > 1) {
-    const breakdown = [...wardCounts.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .map(([w, c]) => `${w}${c}区画`)
-      .join("・");
-    parts.push(`この地区は${breakdown}にまたがり、提言先の自治体が分かれる。`);
-  }
-
-  if (unreachableMeshes === n && n > 1) {
-    parts.push("全区画が徒歩圏に区の公共施設を持たない。");
-  } else if (unreachableMeshes) {
-    parts.push(`うち${unreachableMeshes}区画は徒歩圏に区の公共施設が無い。`);
-  }
-
-  // 施設名は「1 区画だけの地区」なら区画側の文が既に挙げているので繰り返さない。
-  if (facilities.length > 1) {
-    const names = facilities
-      .slice(0, 3)
-      .map((f) => `${f.name}（${f.kind}）`)
-      .join("、");
-    const more = facilities.length > 3 ? " ほか" : "";
-    parts.push(
-      `各区画から最も近い施設は重複を除いて${facilities.length}件（${names}${more}）。`,
-    );
-  }
-  if (facilities.length) {
-    const other = [
-      ...new Set(facilities.map((f) => f.ward).filter((w) => w && !wardCounts.has(w))),
-    ].sort();
-    if (other.length) {
-      parts.push(`うち${other.join("・")}の施設が含まれ、区境をまたぐ連携が前提になる。`);
-    }
-  }
-
-  return parts.join("");
+export function clusterOf(state: AppState, meshCode: string | null): string[] {
+  if (!meshCode) return [];
+  const codes = state.score.order
+    .slice(0, state.rankingN)
+    .map((i) => state.rows[i].c);
+  if (!codes.includes(meshCode)) return [];
+  const groups = clusterAdjacent(codes);
+  const hit = groups.find((g) => g.some((m) => codes[m] === meshCode));
+  return hit ? hit.map((m) => codes[m]) : [];
 }
 
 const num = (n: number) => n.toLocaleString("ja-JP");
 
+export interface FactSection {
+  title: string;
+  /** その節の値が何を数えたものかを一度だけ言う。行ごとに繰り返さない。 */
+  note: string;
+  items: { label: string; value: string }[];
+}
+
 /**
- * そのメッシュの「実数」。ETL が f_* として配信している表示専用の値。
+ * その区画の「実数」。ETL が f_* として配信している表示専用の値。
  *
  * スコアは順位に正規化された相対値なので、それ単体では提言文にならない。
  * 「需要 0.94」ではなく「徒歩圏に事業所 4 件・定員 77 人」と書けて初めて
  * 予算会議の資料になる。
+ *
+ * **節に分けているのは、1 枚の表に性質の違う値が混ざっていたから。**
+ * かつては 8 行を平らに並べており、半径 800m の件数・1,500m 以内の最寄り 1 件・
+ * 区画自身の値・半径 700m の件数が同じ見た目で並んでいた。しかも「徒歩圏の」が
+ * 付いているのは障害福祉サービス事業所だけで、同じ 800m の精神科・心療内科には
+ * 付いていない。**半径が 1 つだけ違うこと（公共施設の 700m）が、
+ * 節に分けて初めて見える。**
  */
-export function factsOf(row: MeshProps): { label: string; value: string }[] {
-  const f: { label: string; value: string }[] = [];
+export function factsOf(row: MeshProps, radius: Meta["fact_radius_m"]): FactSection[] {
   const g = (k: string) => row[k] as number | undefined;
   const s = (k: string) => row[k] as string | undefined;
 
+  // 半径ごとに束ねる。3 層とも同じ 800m なら 1 節にまとまり、
+  // 帯域を層ごとに変えたら節が自動的に分かれる。
+  const walk: (FactSection["items"][number] & { r: number })[] = [];
   if (g("f_welfare_n")) {
     const cap = g("f_welfare_cap");
     // 徒歩圏は区界で切っていない（エッジ効果を避けるため入力を区界の外側
     // 2km まで拾う設計）。**その事実をカードに出す**——外周のメッシュは
     // 「隣の市の事業所」で需要が決まっていることがある（docs/issues.md B1）。
     const outside = g("f_welfare_outside_n") ?? 0;
-    f.push({
-      label: "徒歩圏の障害福祉サービス事業所",
+    walk.push({
+      label: "障害福祉サービス事業所",
+      r: radius.welfare,
       value:
         `${num(g("f_welfare_n")!)}件${cap ? `（定員 ${num(cap)}人）` : ""}` +
         (outside ? ` ※うち対象23区の外 ${num(outside)}件` : ""),
     });
   }
   if (g("f_school_n")) {
-    f.push({ label: "特別支援学校", value: `${num(g("f_school_n")!)}校` });
+    walk.push({
+      label: "特別支援学校",
+      r: radius.school,
+      value: `${num(g("f_school_n")!)}校`,
+    });
   }
   if (g("f_clinic_n")) {
-    f.push({ label: "精神科・心療内科", value: `${num(g("f_clinic_n")!)}件` });
+    walk.push({
+      label: "精神科・心療内科",
+      r: radius.clinic,
+      value: `${num(g("f_clinic_n")!)}件`,
+    });
   }
+
+  const nearest: FactSection["items"] = [];
   if (s("f_station_name")) {
     const r = g("f_station_riders");
     const d = g("f_station_dist");
-    f.push({
-      label: "最寄り駅",
+    nearest.push({
+      label: s("f_station_name")!,
       value:
-        `${s("f_station_name")}` +
-        (r ? `（乗降 ${num(r)}人/日）` : "") +
-        (d != null ? ` ${num(d)}m` : ""),
+        (r ? `乗降 ${num(r)}人/日` : "乗降規模不明") +
+        (d != null ? ` / ${num(d)}m` : ""),
     });
   }
-  if (s("f_zoning_name")) {
-    f.push({ label: "用途地域", value: s("f_zoning_name")! });
-  }
+
+  const own: FactSection["items"] = [];
+  if (s("f_zoning_name")) own.push({ label: "用途地域", value: s("f_zoning_name")! });
   if (g("f_noise_db")) {
-    f.push({ label: "推定騒音", value: `${g("f_noise_db")} dB (LAeq)` });
+    own.push({ label: "推定騒音", value: `${g("f_noise_db")} dB (LAeq)` });
   }
-  f.push({
+  own.push({
     label: "緑・公園被覆",
     value: g("f_green_pct") ? `${g("f_green_pct")}%` : "0%（屋外に退避先なし）",
   });
+
   // 供給側について言える唯一の実数。数えているのは施設一覧の行数であって
   // 建物の数ではない（同じ建物の別種別が別行で載っている。docs/issues.md）。
-  f.push({
-    label: "徒歩圏の公共施設",
-    value: g("f_host_n") ? `${num(g("f_host_n")!)}件（一覧の行数）` : "0件",
-  });
-  return f;
+  const host: FactSection["items"] = [
+    {
+      label: "区の公共施設",
+      value: g("f_host_n") ? `${num(g("f_host_n")!)}件（一覧の行数）` : "0件",
+    },
+  ];
+
+  const walkSections: FactSection[] = [...new Set(walk.map((w) => w.r))]
+    .sort((a, b) => a - b)
+    .map((r) => ({
+      title: `徒歩圏（半径 ${num(r)}m）にあるもの`,
+      note:
+        `この区画の中心から ${num(r)}m 以内にある件数です。` +
+        "区界では切っていないため、隣の自治体の施設も含みます。",
+      items: walk.filter((w) => w.r === r).map(({ label, value }) => ({ label, value })),
+    }));
+
+  return [
+    ...walkSections,
+    {
+      title: "最寄り駅",
+      note: `${num(radius.station_max)}m 以内で最も近い 1 駅です。件数ではありません。`,
+      items: nearest,
+    },
+    {
+      title: "この区画そのものの値",
+      note: "周囲を数えたものではなく、区画自身に与えられた値です。",
+      items: own,
+    },
+    {
+      title: `既存の公共施設（半径 ${num(radius.host)}m）`,
+      note:
+        `到達可否の判定だけ半径が ${num(radius.host)}m で、上の徒歩圏とは別の距離です。` +
+        "23 区が公開する公共施設一覧のみを数えており、都・国・民間の施設は入っていません。",
+      items: host,
+    },
+  ].filter((sec) => sec.items.length > 0);
 }
 
 /**
@@ -258,9 +272,10 @@ function narrate(
   // カードの文面そのものには母数が無かった（docs/issues.md B2）。
   parts.push(
     `優先度 第${rank}位 / ${meta.mesh_count.toLocaleString("ja-JP")}区画中` +
-      `（上位${pctRank(score.priority[idx])}%）。`,
-    `需要 ${fmt(score.demand[idx])} × 負荷 ${fmt(score.load[idx])}` +
-      "（いずれも対象地域内での相対値で、絶対的な水準ではない）。",
+      `（上位${pctRank(rank, meta.mesh_count)}%）。`,
+    `需要 ${fmt(score.demand[idx])} × 負荷 ${fmt(score.load[idx])} = ` +
+      `${fmt(score.priority[idx])}` +
+      "（需要と負荷は対象地域内での相対値で、絶対的な水準ではない）。",
   );
 
   // --- 需要側を実数で述べる ---
@@ -350,26 +365,57 @@ const shortLabel = (c: ComponentDef) => c.label.split("（")[0];
  */
 export function renderStat(state: AppState): void {
   const { rows, score, meta } = state;
-  const N = Math.min(50, rows.length);
+  // 順位表に出している件数と揃える。ここだけ 50 固定だと、
+  // 表示件数を変えたときに 2 つの数字が食い違う。
+  const N = Math.min(state.rankingN, rows.length);
   const top = score.order.slice(0, N);
   const uncoveredTop = top.filter((i) => !rows[i].host).length;
 
+  const kickerEl = document.getElementById("stat-kicker")!;
   const valueEl = document.getElementById("stat-value")!;
   const labelEl = document.getElementById("stat-label")!;
   const u = meta.unreachable;
 
+  // **「何の数字か」を数字より先に置く。** 以前はここが無く、いきなり
+  // 「1,058 区画 / 11.1%」だった。区画の定義も「到達不可」の定義も
+  // 画面に無いまま大きい数だけが出るので、大きいことしか伝わらない。
+  kickerEl.textContent =
+    `徒歩圏（半径 ${num(meta.host_max_distance_m)}m）に区の公共施設が 1 件も無い区画`;
+
+  // 母数を必ず添える。提言文には母数を書く方針にしていたのに、
+  // 画面でいちばん大きいこの数字にだけ母数が無かった。
   valueEl.innerHTML =
-    `${u.count.toLocaleString("ja-JP")}<small> 区画 / ${Math.round(u.ratio * 1000) / 10}%</small>`;
+    `${u.count.toLocaleString("ja-JP")}<small> / ${meta.mesh_count.toLocaleString("ja-JP")} 区画` +
+    `（${Math.round(u.ratio * 1000) / 10}%）</small>`;
 
   labelEl.innerHTML =
-    `半径 ${meta.host_max_distance_m}m 以内に区の公共施設が 1 件も無い区画。` +
-    "既存ストックの徒歩圏から外れており、新規整備か民間施設との連携が要る。" +
+    "既存ストックの徒歩圏から外れており、新規整備か民間施設との連携が要る区画です。" +
     "<b>この数字は重みにもスコアにも依存しません</b>（スライダーを動かしても変わりません）。" +
     `<br><br>うち<b>区内で優先度が中位以上</b>のものが ${u.mid_or_above} 区画。` +
-    "<b>区ごとの到達不可率を並べてはいけません</b>——皇居・羽田空港・埋立地・" +
+    "<b>区ごとにこの割合を出して並べてはいけません</b>——皇居・羽田空港・埋立地・" +
     "河川敷を含む区で高く出るだけで、非市街地の面積比でほぼ決まります。" +
     "区をまたいで比べるならこちらを使ってください。" +
-    `<br><br>現在の重みでの上位 ${N} 区画のうち到達不可は ${uncoveredTop} 件。`;
+    `<br><br>現在の重みでの上位 ${N} 区画のうち、公共施設が徒歩圏に無いものは ${uncoveredTop} 件。`;
+}
+
+/**
+ * 「これは何か」を画面の最初に置く。
+ *
+ * 都のオープンデータカタログの可視化事例はどれも「説明 1 文 → 使用データセット」
+ * という順で、専門用語を本文で使わない。こちらはタイトルの次がいきなり
+ * 見出し数値で、**区画・到達不可・レイヤーがどれも未定義のまま出ていた**。
+ *
+ * 数値は meta から入れる。ここに直接書くと対象地域を変えたときに古くなる。
+ */
+export function renderIntro(meta: Meta): void {
+  const el = document.getElementById("intro-lead");
+  if (!el) return;
+  el.innerHTML =
+    `東京 ${meta.target_wards.length} 区を 250m 四方の<b>区画</b>` +
+    `（${escapeHtml(meta.mesh_label)}）${meta.mesh_count.toLocaleString("ja-JP")} 個に区切り、` +
+    "カームダウン・クールダウンスペースを次に検討すべき区画を、" +
+    "オープンデータだけから算出した地図です。" +
+    "<b>示すのは区画であって、特定の施設ではありません。</b>";
 }
 
 /* ------------------------------------------------------------------ スライダー */
@@ -395,14 +441,22 @@ export function renderSliders(
       const wrap = document.createElement("div");
       wrap.className = "slider" + (c.sign < 0 ? " is-negative" : "");
       const id = `w-${c.key}`;
+      // 出典と尺度の札は `title` 属性にしか無かった。**タッチ環境では
+      // 読めないうえ、8 本のスライダーが「データの層」であることが
+      // 画面のどこにも書かれていない**状態になっていた（点の重畳表示の方が
+      // レイヤーらしく見える、という取り違えが実際に起きた）。
+      const tag = c.absolute
+        ? `<span class="scale-tag is-absolute" title="${escapeAttr(c.absolute.basis)}">絶対尺度</span>`
+        : '<span class="scale-tag" title="対象地域内での順位。対象地域を変えれば値も変わる。">地域内順位</span>';
       wrap.innerHTML = `
         <div class="slider-head">
-          <label for="${id}" title="${escapeAttr(c.rationale)}&#10;&#10;出典: ${escapeAttr(c.source)}">${c.label}</label>
+          <label for="${id}" title="${escapeAttr(c.rationale)}&#10;&#10;出典: ${escapeAttr(c.source)}">${escapeHtml(c.label)} ${tag}</label>
           <span class="slider-value" id="${id}-val">${fmt(weights[c.key] ?? c.weight, 1)}</span>
         </div>
         <input type="range" id="${id}" min="0" max="2" step="0.1"
                value="${weights[c.key] ?? c.weight}"
-               aria-label="${escapeAttr(c.label)} の重み" />`;
+               aria-label="${escapeAttr(c.label)} の重み" />
+        <div class="factor-source slider-source">出典: ${escapeHtml(c.source)}</div>`;
       group.appendChild(wrap);
 
       const input = wrap.querySelector<HTMLInputElement>("input")!;
@@ -440,24 +494,33 @@ export const DISPLAY_MODES: {
   id: "priority" | "demand" | "load";
   label: string;
   legend: string;
+  /** 凡例の目盛りに書く「この色が何の値か」。 */
+  scale: string;
   note: string;
 }[] = [
   {
     id: "priority",
     label: "設置優先度",
     legend: "設置優先度（需要 × 負荷）",
-    note: "需要と負荷の掛け算。両方が揃った場所だけが濃くなる。",
+    // **「対象地域内での順位」と書いてはいけない。** 2026-08-03 に
+    // 優先度から最後のパーセンタイル化を外したので、この色は順位ではなく
+    // 掛け算の値そのものになった。需要・負荷の 2 つは順位のままなので、
+    // 目盛りの語をモードごとに変える。
+    scale: "需要 × 負荷の値",
+    note: "需要と負荷の掛け算。両方が揃った場所だけが濃くなる。色は順位ではなく値なので、差が小さい場所は色の差も小さい。",
   },
   {
     id: "demand",
     label: "需要のみ",
     legend: "需要スコア",
+    scale: "対象地域内での順位",
     note: "通わざるを得ない人の量だけを見る。住宅地や郊外の通所拠点も濃く出る。",
   },
   {
     id: "load",
     label: "負荷のみ",
     legend: "負荷スコア",
+    scale: "対象地域内での順位",
     note: "過負荷になり得る量だけを見る。人のいない工業地帯も濃く出る。",
   },
 ];
@@ -477,16 +540,42 @@ export function renderDisplayModes(
     b.addEventListener("click", () => onPick(m.id));
     host.appendChild(b);
   }
-  document.getElementById("display-note")!.textContent =
-    DISPLAY_MODES.find((m) => m.id === active)?.note ?? "";
+  const mode = DISPLAY_MODES.find((m) => m.id === active);
+  document.getElementById("display-note")!.textContent = mode?.note ?? "";
   const legendTitle = document.querySelector(".legend-title");
-  if (legendTitle) {
-    legendTitle.textContent =
-      DISPLAY_MODES.find((m) => m.id === active)?.legend ?? "設置優先度";
-  }
+  if (legendTitle) legendTitle.textContent = mode?.legend ?? "設置優先度";
+  const scaleLabel = document.getElementById("legend-scale-label");
+  if (scaleLabel) scaleLabel.textContent = mode?.scale ?? "";
 }
 
 /* ------------------------------------------------------------------ プリセット */
+
+/**
+ * 順位表に出す件数の切り替え。
+ *
+ * **恣意性を隠さないために置いている。** 優先度は連続していて、
+ * 20 でも 50 でも 100 でも、そこに切れ目があるわけではない。
+ * 固定の件数を黙って出すより、動かせるほうが正直である
+ *（重みスライダーと同じ考え方）。選択肢は etl/config.py が唯一の出所。
+ */
+export function renderRankingN(
+  meta: Meta,
+  active: number,
+  onPick: (n: number) => void,
+): void {
+  const host = document.getElementById("ranking-n");
+  if (!host) return;
+  host.innerHTML = '<span class="ranking-n-label">表示件数</span>';
+  for (const n of meta.ranking_options) {
+    const b = document.createElement("button");
+    b.className = "preset-btn";
+    b.type = "button";
+    b.textContent = String(n);
+    b.setAttribute("aria-pressed", String(n === active));
+    b.addEventListener("click", () => onPick(n));
+    host.appendChild(b);
+  }
+}
 
 export function renderPresets(
   meta: Meta,
@@ -517,75 +606,101 @@ export function renderDetail(
   const body = document.getElementById("detail-body")!;
   body.innerHTML = "";
 
-  if (state.tab === "proposals") renderProposals(body, state, onPick);
-  else if (state.tab === "selected") renderSelected(body, state);
-  else renderTable(body, state, onPick);
+  if (state.tab === "ranking") renderRanking(body, state, onPick);
+  else renderSelected(body, state);
 }
 
-function renderProposals(
+function renderRanking(
   body: HTMLElement,
   state: AppState,
   onPick: (meshCode: string) => void,
 ): void {
-  const proposals = buildProposals(state);
+  const { meta } = state;
+  const list = rankingRows(state);
+
   const intro = document.createElement("p");
   intro.className = "card-narrative";
-  intro.style.marginBottom = "12px";
-  intro.textContent =
-    "現在の重みでの優先順位を、隣接する区画のまとまり（地区）ごとに示す。" +
-    "示すのは区画であって設置先の施設ではない — この分析は施設の余剰空間も" +
-    "運営体制も測っておらず、特定の建物を評価する根拠を持たない。" +
-    "挙げている施設名は「徒歩圏に屋内の公共空間が在るか」の例示。";
+  intro.style.marginBottom = "10px";
+  // **「提言リスト」と「表で見る」を分けていた理由はもう無い。**
+  // 提言の単位を区画に戻した時点で、両者は同じ順位表の別表示になった。
+  intro.innerHTML =
+    `現在の重みでの優先順位です。<b>単位は 250m の区画</b>で、` +
+    `全 ${meta.mesh_count.toLocaleString("ja-JP")} 区画から上位 ${list.length} 件を出しています。` +
+    "行を選ぶと地図がその区画へ寄ります。根拠文と実数は" +
+    "「選択中の区画」タブに出ます。" +
+    "<br><br>" +
+    "<b>この打ち切りに根拠はありません。</b>優先度は連続していて、" +
+    "どこにも切れ目がありません（件数を変えて確かめられます）。" +
+    "示すのは区画であって設置先の施設ではありません — この分析は施設の余剰空間も" +
+    "運営体制も測っておらず、特定の建物を評価する根拠を持ちません。";
   body.appendChild(intro);
 
-  if (!proposals.length) {
-    body.innerHTML = '<div class="empty">該当なし</div>';
+  if (!list.length) {
+    body.appendChild(Object.assign(document.createElement("div"), {
+      className: "empty",
+      textContent: "該当なし",
+    }));
     return;
   }
 
-  proposals.forEach((p) => {
-    const el = document.createElement("div");
-    el.className = "card";
-    if (state.selected && p.meshCodes.includes(state.selected)) el.classList.add("is-active");
+  const table = document.createElement("table");
+  table.className = "data-table is-ranking";
+  table.innerHTML = `
+    <thead>
+      <tr>
+        <th>順位</th><th>区 / 最寄り駅</th>
+        <th class="num">優先度</th><th class="num">需要</th><th class="num">負荷</th>
+        <th class="num">公共<br>施設</th><th class="num">接する<br>上位</th>
+      </tr>
+    </thead>`;
 
-    const meta: string[] = [];
-    if (p.meshCount > 1) meta.push(`隣接 <b>${p.meshCount}</b> 区画`);
-    if (p.unreachableMeshes) {
-      meta.push(`徒歩圏に公共施設が無い区画 <b>${p.unreachableMeshes}</b>`);
-    }
-    const metaRow = meta.length
-      ? `<div class="card-meta">${meta.map((m) => `<span>${m}</span>`).join("")}</div>`
-      : "";
+  const tbody = document.createElement("tbody");
+  for (const r of list) {
+    const tr = document.createElement("tr");
+    tr.style.cursor = "pointer";
+    if (state.selected === r.meshCode) tr.style.background = "var(--surface-2)";
+    const where = [r.ward, r.station].filter(Boolean).join(" ");
+    tr.innerHTML = `
+      <td>${r.rank}</td>
+      <td>${escapeHtml(where || "—")}
+        <span class="factor-source" style="font-family:var(--mono)">${escapeHtml(r.meshCode)}</span></td>
+      <td class="num">${fmt(r.priority)}</td>
+      <td class="num">${fmt(r.demand)}</td>
+      <td class="num">${fmt(r.load)}</td>
+      <td class="num">${
+        r.unreachable
+          ? '<b class="is-unreachable-text">0 件</b>'
+          : `${num(r.hostCount)} 件`
+      }</td>
+      <td class="num">${r.adjacentN}</td>`;
+    tr.addEventListener("click", () => onPick(r.meshCode));
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  body.appendChild(table);
 
-    // 見出しの右肩は施設の種別ではなく、またがる区の数。提言先が幾つに
-    // 分かれるかが、地区単位で見たときに最初に効いてくる情報。
-    const wards =
-      p.wardCounts.size > 1 ? `${p.wardCounts.size} 区にまたがる` : "";
-
-    el.innerHTML = `
-      <div class="card-head">
-        <span class="rank${p.unreachable ? " is-unreachable" : ""}">${p.bestRank}</span>
-        <span class="card-title">${escapeHtml(p.areaLabel || "地区名なし")}</span>
-        <span class="card-kind">${escapeHtml(wards)}</span>
-      </div>
-      <div class="card-narrative">${escapeHtml(p.narrative)}</div>
-      ${metaRow}`;
-
-    el.addEventListener("click", () => onPick(p.meshCodes[0]));
-    body.appendChild(el);
-  });
+  const note = document.createElement("p");
+  note.className = "card-narrative";
+  note.style.marginTop = "10px";
+  // **「接する上位区画」の母数を必ず書く。** この数は表示件数で変わる。
+  note.innerHTML =
+    `「徒歩圏の公共施設」は半径 ${num(meta.host_max_distance_m)}m の件数（<b>0 件 = 到達不可</b>）。` +
+    `「接する上位区画」は<b>いま表示している ${list.length} 区画のうち</b>` +
+    "この区画に隣り合うものの数です（斜めも隣として数えます）。" +
+    "<b>表示件数を変えればこの数も変わります</b> — 場所の性質ではありません。";
+  body.appendChild(note);
 }
 
 function renderSelected(body: HTMLElement, state: AppState): void {
   const { rows, score, meta, selected, weights } = state;
   if (!selected) {
     body.innerHTML =
-      '<div class="empty">地図上のメッシュ、または提言リストの項目を選択してください。</div>';
+      '<div class="empty">地図上の区画、または提言リストの項目を選択してください。</div>';
     return;
   }
   const idx = rows.findIndex((r) => r.c === selected);
   if (idx < 0) {
-    body.innerHTML = '<div class="empty">該当メッシュが見つかりません。</div>';
+    body.innerHTML = '<div class="empty">該当する区画が見つかりません。</div>';
     return;
   }
 
@@ -594,8 +709,8 @@ function renderSelected(body: HTMLElement, state: AppState): void {
 
   const head = document.createElement("div");
   head.innerHTML = `
-    <h3>メッシュ ${escapeHtml(row.c)}</h3>
-    <p class="subtitle">${escapeHtml(meta.mesh_label)} / 全 ${meta.mesh_count.toLocaleString("ja-JP")} 区画中 第 ${rank} 位</p>
+    <h3>区画 <span style="font-family:var(--mono)">${escapeHtml(row.c)}</span></h3>
+    <p class="subtitle">メッシュコード（${escapeHtml(meta.mesh_label)}） / 全 ${meta.mesh_count.toLocaleString("ja-JP")} 区画中 第 ${rank} 位</p>
     <div class="card-meta" style="border-top:none;padding-top:0">
       <span>優先度 <b>${fmt(score.priority[idx])}</b></span>
       <span>需要 <b>${fmt(score.demand[idx])}</b></span>
@@ -610,20 +725,32 @@ function renderSelected(body: HTMLElement, state: AppState): void {
   body.appendChild(narrative);
 
   // --- 実数（スコアの根拠になる生の数字） ---
-  const facts = factsOf(row);
-  if (facts.length) {
+  //
+  // 節ごとに「どの半径で数えたか」を一度だけ書く。平らな 1 枚の表に戻すと、
+  // 半径 800m の件数・最寄り 1 件・区画自身の値・半径 700m の件数が
+  // 同じ見た目で並び、読み手が区別できない。
+  const sections = factsOf(row, meta.fact_radius_m);
+  if (sections.length) {
     const box = document.createElement("div");
     box.innerHTML =
-      '<h2>このメッシュの実数</h2>' +
-      '<table class="data-table">' +
-      facts
+      "<h2>この区画の実数</h2>" +
+      sections
         .map(
-          (f) =>
-            `<tr><th style="text-transform:none;letter-spacing:0">${escapeHtml(f.label)}</th>` +
-            `<td class="num">${escapeHtml(f.value)}</td></tr>`,
+          (sec) =>
+            `<div class="fact-section">
+               <div class="fact-section-title">${escapeHtml(sec.title)}</div>
+               <div class="factor-source">${escapeHtml(sec.note)}</div>
+               <table class="data-table">` +
+            sec.items
+              .map(
+                (f) =>
+                  `<tr><th style="text-transform:none;letter-spacing:0">${escapeHtml(f.label)}</th>` +
+                  `<td class="num">${escapeHtml(f.value)}</td></tr>`,
+              )
+              .join("") +
+            "</table></div>",
         )
-        .join("") +
-      "</table>";
+        .join("");
     body.appendChild(box);
   }
 
@@ -668,51 +795,6 @@ function renderSelected(body: HTMLElement, state: AppState): void {
  * 表形式。色に頼らずに順位を読めるようにするためのアクセシビリティ経路であり、
  * 数値をそのまま資料へ転記するための出力でもある。
  */
-function renderTable(
-  body: HTMLElement,
-  state: AppState,
-  onPick: (meshCode: string) => void,
-): void {
-  const { rows, score, meta } = state;
-  const top = score.order.slice(0, 60);
-
-  const table = document.createElement("table");
-  table.className = "data-table";
-  table.innerHTML = `
-    <thead>
-      <tr>
-        <th>順位</th><th>メッシュ</th><th>区</th><th>徒歩圏の公共施設</th>
-        <th class="num">優先度</th><th class="num">需要</th><th class="num">負荷</th>
-      </tr>
-    </thead>`;
-
-  const tbody = document.createElement("tbody");
-  top.forEach((idx, i) => {
-    const row = rows[idx];
-    const tr = document.createElement("tr");
-    tr.style.cursor = "pointer";
-    if (state.selected === row.c) tr.style.background = "var(--surface-2)";
-    tr.innerHTML = `
-      <td>${i + 1}</td>
-      <td style="font-family:var(--mono)">${escapeHtml(row.c)}</td>
-      <td>${escapeHtml(typeof row.w === "number" ? (meta.target_wards[row.w] ?? "—") : "—")}</td>
-      <td class="num">${row.host ? `${num((row.f_host_n as number) ?? 0)} 件` : "0 件"}</td>
-      <td class="num">${fmt(score.priority[idx])}</td>
-      <td class="num">${fmt(score.demand[idx])}</td>
-      <td class="num">${fmt(score.load[idx])}</td>`;
-    tr.addEventListener("click", () => onPick(row.c));
-    tbody.appendChild(tr);
-  });
-  table.appendChild(tbody);
-
-  const note = document.createElement("p");
-  note.className = "card-narrative";
-  note.style.marginBottom = "10px";
-  note.textContent = `現在の重みでの上位 ${top.length} メッシュ。${meta.mesh_label}。`;
-  body.appendChild(note);
-  body.appendChild(table);
-}
-
 /* ------------------------------------------------------------------ 補助 */
 
 export function renderBanner(meta: Meta): void {
@@ -830,9 +912,11 @@ export function renderLimitations(meta: Meta): void {
 }
 
 export function renderLegendNote(meta: Meta): void {
-  document.getElementById("legend-note")!.textContent =
-    `${meta.mesh_label}・${meta.mesh_count.toLocaleString("ja-JP")}区画。` +
-    "色は地域内の相対順位。";
+  // 輪郭が 2 種類あることを凡例に書く。書かないと、破線が何を囲んでいるのかが
+  // 提言タブの説明文を読んだ人にしか分からない。
+  document.getElementById("legend-note")!.innerHTML =
+    `${escapeHtml(meta.mesh_label)}・${meta.mesh_count.toLocaleString("ja-JP")}区画。` +
+    "<br>実線 = 選択中の区画 / 破線 = その区画が属する地区。";
 }
 
 /**

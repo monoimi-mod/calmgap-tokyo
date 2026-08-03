@@ -1348,24 +1348,6 @@ def _cluster_keeps_separate_areas():
     assert groups[1] == [2, 3], groups
 
 
-@check("地区の見出しが同じ場所を指す駅名を重ねない")
-def _area_label_dedupes_stations():
-    label, ward = hostlib._area_label(
-        ["豊島区", "豊島区", "豊島区"], ["大塚", "大塚駅前", "大塚"]
-    )
-    assert label == "豊島区 大塚周辺", label
-    assert ward == "豊島区", ward
-
-    # 別の場所を指す駅名は 2 つまで残す。
-    label, _ = hostlib._area_label(["豊島区"] * 2, ["池袋", "北池袋"])
-    assert label == "豊島区 池袋・北池袋周辺", label
-
-    # 区をまたぐことは見出しから消さない（提言先の自治体が分かれるため）。
-    label, ward = hostlib._area_label(["千代田区", "文京区"], ["水道橋"])
-    assert label.startswith("千代田区ほか"), label
-    assert ward == "千代田区ほか", ward
-
-
 @check("到達不可の点検は、区内で優先度が下位の区画（非市街地）を数えない")
 def _reach_report_excludes_low_priority():
     # 江東区の到達不可は大半が有明・青海・夢の島の埋立地で、区内で下位に沈む。
@@ -1427,7 +1409,7 @@ def _reach_report_keeps_columns_when_empty():
 
 
 @check("提言に施設への設置を指示する語を出さない")
-def _proposal_never_recommends_a_facility():
+def _ranking_never_recommends_a_facility():
     # 施設名は「徒歩圏に在るもの」としてなら出てよいが、
     # それを設置先として名指しする語と結び付けてはいけない。
     cards = [
@@ -1439,24 +1421,28 @@ def _proposal_never_recommends_a_facility():
             "ward": "豊島区",
             "station": "池袋",
             "priority": 1.0,
+            "demand": 1.0,
+            "load": 1.0,
             "host_count": 5,
             "host_name": "上池袋図書館",
             "host_kind": "図書館",
             "host_ward": "豊島区",
+            "host_distance_m": 400,
             "narrative": "（区画の説明）",
         }
     ]
-    got = hostlib.build_proposals(cards)
+    got = hostlib.build_ranking(cards, 20)
     assert len(got) == 1, got
-    assert "area_label" in got[0] and got[0]["area_label"] == "豊島区 池袋周辺", got[0]
-    # 見出しは地区名であって施設名ではない。
-    assert "図書館" not in got[0]["area_label"], got[0]["area_label"]
-    for word in ("設置候補", "設置先", "設置すべき", "転用"):
+    # **単位は区画。** 地区の見出し（「○○周辺」）はもう作らない——
+    # その広がりはモデルが計算しておらず、母数の切り方で決まっていた。
+    assert "area_label" not in got[0], got[0]
+    assert got[0]["mesh_code"] == "5339458711", got[0]
+    for word in ("設置候補", "設置先", "設置すべき", "転用", "周辺"):
         assert word not in got[0]["narrative"], (word, got[0]["narrative"])
 
 
-@check("地区にまたがる区と到達不可の区画数を落とさない")
-def _proposal_reports_wards_and_gaps():
+@check("隣接の数は母数つきで述べる（地区として束ねない）")
+def _ranking_states_adjacency_with_denominator():
     def card(rank, code, ward, station, host):
         return {
             "rank": rank,
@@ -1466,10 +1452,13 @@ def _proposal_reports_wards_and_gaps():
             "ward": ward,
             "station": station,
             "priority": 1.0,
+            "demand": 1.0,
+            "load": 1.0,
             "host_count": 0 if not host else 3,
             "host_name": host,
             "host_kind": "図書館" if host else "",
             "host_ward": ward if host else "",
+            "host_distance_m": None if not host else 400,
             "narrative": "（区画の説明）",
         }
 
@@ -1479,21 +1468,34 @@ def _proposal_reports_wards_and_gaps():
     clat = (cell.min_lat + cell.max_lat) / 2
     clon = (cell.min_lon + cell.max_lon) / 2
     right = meshlib.encode(clat, clon + dlon, 5)
+    far = meshlib.encode(clat + dlat * 40, clon, 5)
 
-    got = hostlib.build_proposals(
+    got = hostlib.build_ranking(
         [
             card(1, base, "千代田区", "水道橋", "千代田図書館"),
             card(2, right, "文京区", "水道橋", ""),
-        ]
+            card(3, far, "板橋区", "板橋", "板橋図書館"),
+        ],
+        20,
     )
-    assert len(got) == 1, got
-    p = got[0]
-    assert p["mesh_count"] == 2, p
-    assert p["unreachable_meshes"] == 1, p
-    assert p["ward_counts"] == {"千代田区": 1, "文京区": 1}, p
-    assert "千代田区ほか" in p["area_label"], p["area_label"]
-    assert "文京区1区画" in p["narrative"], p["narrative"]
-    assert "1区画は徒歩圏に区の公共施設が無い" in p["narrative"], p["narrative"]
+    # 束ねない。3 区画は 3 行のまま出る。
+    assert len(got) == 3, got
+    assert [g["rank"] for g in got] == [1, 2, 3], got
+
+    # 隣り合う 2 件は互いに 1 件ずつ接している。離れた 1 件は 0。
+    assert got[0]["adjacent_n"] == 1, got[0]
+    assert got[1]["adjacent_n"] == 1, got[1]
+    assert got[2]["adjacent_n"] == 0, got[2]
+
+    # **母数を必ず書く。** 「隣接 1 区画」だけだと場所の性質に見えるが、
+    # この数は上位何件を見るかで変わる。
+    assert "上位20区画のうち1区画" in got[0]["narrative"], got[0]["narrative"]
+    assert "上位20区画のうち、この区画に接するものは無い" in got[2]["narrative"], got[2]
+    assert got[2]["adjacent_of"] == 20, got[2]
+
+    # 到達不可は区画ごとのフラグとして残る（地区単位の集計ではない）。
+    assert got[0]["unreachable"] is False, got[0]
+    assert got[1]["unreachable"] is True, got[1]
 
 
 def main() -> int:

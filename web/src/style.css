@@ -157,6 +157,43 @@ p {
   margin: 0 0 8px;
 }
 
+/* ---------------------------------------------------------------- 導入 */
+
+/*
+ * 「これは何か」を最初に置く。都のオープンデータカタログの可視化事例は
+ * どれも説明 1 文が本文の先頭にあり、こちらはそれが無いまま
+ * いきなり見出し数値が出ていた。
+ */
+.intro-lead {
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--text-secondary);
+  margin: 8px 0 0;
+}
+
+.intro-lead b,
+.intro-steps b {
+  color: var(--text-primary);
+}
+
+.intro-steps {
+  margin: 8px 0 0;
+  padding-left: 1.35em;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.intro-steps li {
+  margin-bottom: 2px;
+}
+
+.section-note {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  margin: -4px 0 10px;
+}
+
 /* ---------------------------------------------------------------- 警告バナー */
 
 .banner {
@@ -186,6 +223,15 @@ p {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 12px 14px;
+}
+
+/* 「何の数字か」を数字の上に置くための行。数字より先に読ませる。 */
+.stat-kicker {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  line-height: 1.45;
+  margin-bottom: 4px;
 }
 
 .stat-value {
@@ -300,6 +346,12 @@ p {
   margin: 2px 0 0;
   accent-color: var(--accent);
   cursor: pointer;
+}
+
+/* 出典をスライダーの下に常時出す。title 属性だけではタッチ環境で読めない。 */
+.slider-source {
+  margin-top: 1px;
+  line-height: 1.4;
 }
 
 .slider.is-negative .slider-value::before {
@@ -436,6 +488,30 @@ p {
   border-color: var(--border);
   color: var(--text-primary);
   font-weight: 600;
+}
+
+/* 順位表の件数切り替え。タブ列の右端に小さく置く。 */
+.ranking-n {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-bottom: 4px;
+}
+
+.ranking-n-label {
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+
+.ranking-n .preset-btn {
+  font-size: 11px;
+  padding: 2px 7px;
+}
+
+/* 到達不可（徒歩圏に公共施設が 1 件も無い）。この作品で最も頑健な出力。 */
+.is-unreachable-text {
+  color: var(--status-critical);
 }
 
 .card {
@@ -616,9 +692,48 @@ p {
   letter-spacing: 0.04em;
 }
 
+/*
+ * 日本語の見出しが 1 文字ずつ折り返されるのを防ぐ。改行は <br> で明示する。
+ *
+ * **順位表だけに掛ける。** 最初 `.data-table th` 全体に掛けたところ、
+ * 左パネルの出典一覧（長いラベルが並ぶ）まで折り返さなくなり、
+ * パネルが横に 556px まで溢れた。
+ */
+.data-table.is-ranking th {
+  white-space: nowrap;
+}
+
+.data-table.is-ranking td,
+.data-table.is-ranking th {
+  padding: 5px 5px;
+}
+
 .data-table td.num {
   text-align: right;
   font-family: var(--mono);
+}
+
+/*
+ * 実数の節。半径ごとに分ける。**平らな 1 枚の表に戻してはいけない**——
+ * 半径 800m の件数・最寄り 1 件・区画自身の値・半径 700m の件数が
+ * 同じ見た目で並ぶと、読み手は「なぜこれだけ徒歩圏なのか」しか読み取れない。
+ */
+.fact-section + .fact-section {
+  margin-top: 12px;
+}
+
+.fact-section-title {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--text-primary);
+  padding-bottom: 3px;
+  border-bottom: 1px solid var(--border);
+}
+
+.fact-section .factor-source {
+  display: block;
+  margin: 4px 0 2px;
+  line-height: 1.45;
 }
 
 .empty {

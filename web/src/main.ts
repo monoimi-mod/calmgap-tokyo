@@ -12,14 +12,17 @@ import "./style.css";
 import { initMap, setPointData, type MapHandles } from "./map";
 import type { Meta, MeshProps, Sensitivity, Weights } from "./types";
 import {
+  clusterOf,
   recompute,
   renderBanner,
   renderDetail,
+  renderIntro,
   renderLegendNote,
   renderLimitations,
   renderMethodology,
   renderSensitivity,
   renderPresets,
+  renderRankingN,
   renderSliders,
   renderDisplayModes,
   renderStat,
@@ -59,13 +62,15 @@ async function boot(): Promise<void> {
     weights,
     score: { demand: new Float64Array(), load: new Float64Array(), priority: new Float64Array(), order: [] },
     selected: null,
-    tab: "proposals",
+    tab: "ranking",
     activePreset: "default",
     displayMode: "priority",
+    rankingN: meta.ranking_default_n,
   };
   state.score = recompute(state);
 
   renderBanner(meta);
+  renderIntro(meta);
   renderLegendNote(meta);
   renderMethodology(meta);
   renderLimitations(meta);
@@ -106,6 +111,10 @@ async function boot(): Promise<void> {
         }
         handles.setMeshData(meshFC);
       }
+      // 地区の輪郭は重みで変わる。**スコアを計算し直したら必ず引き直す**——
+      // 重みを動かして上位の顔ぶれが変わったのに枠だけ残ると、
+      // 画面が古い地区を主張し続けることになる。
+      handles.setCluster(clusterOf(state, state.selected));
       renderStat(state);
       renderDetail(state, onPickMesh);
     });
@@ -114,21 +123,23 @@ async function boot(): Promise<void> {
   function select(meshCode: string | null): void {
     state.selected = meshCode;
     handles.setSelected(meshCode);
-    if (meshCode && state.tab === "proposals") state.tab = "selected";
+    if (meshCode && state.tab === "ranking") state.tab = "selected";
     syncTabs();
     render(false);
   }
 
+  /** 提言リスト・表からの選択。地図側は選んだものが見える位置へ寄せる。 */
   function onPickMesh(meshCode: string): void {
-    const row = state.rows.find((r) => r.c === meshCode);
     state.selected = meshCode;
     handles.setSelected(meshCode);
-    if (row) {
-      const f = meshFC.features.find(
-        (x) => (x.properties as unknown as MeshProps).c === meshCode,
-      );
-      const c = f && centroidOf(f);
-      if (c) handles.flyTo(c[0], c[1]);
+
+    // 地区が複数区画なら、その全体が入るように寄せる。1 区画へ寄ると
+    // 「隣接 11 区画」と書いてあるものの広がりが画面から外れる。
+    const cluster = clusterOf(state, meshCode);
+    const b = boundsOf(meshFC, cluster.length > 1 ? cluster : [meshCode]);
+    if (b) {
+      if (cluster.length > 1) handles.fitTo(b);
+      else handles.flyTo((b[0][0] + b[1][0]) / 2, (b[0][1] + b[1][1]) / 2);
     }
     render(false);
   }
@@ -160,6 +171,15 @@ async function boot(): Promise<void> {
   }
 
   renderPresets(meta, "default", applyPreset);
+
+  function applyRankingN(n: number): void {
+    state.rankingN = n;
+    renderRankingN(meta, n, applyRankingN);
+    // 地図の破線は「表示中の上位 N のうち連なるもの」なので、
+    // 件数を変えたら引き直す（render の中で clusterOf を呼び直している）。
+    render(false);
+  }
+  renderRankingN(meta, state.rankingN, applyRankingN);
 
   function applyDisplayMode(id: "priority" | "demand" | "load"): void {
     state.displayMode = id;
@@ -196,20 +216,33 @@ async function boot(): Promise<void> {
   render();
 }
 
-/** ポリゴンの外環から重心を求める（メッシュは矩形なので平均で足りる）。 */
-function centroidOf(f: GeoJSON.Feature): [number, number] | null {
-  const g = f.geometry;
-  if (g.type !== "Polygon" || !g.coordinates[0]?.length) return null;
-  const ring = g.coordinates[0].slice(0, -1);
-  const n = ring.length;
-  if (!n) return null;
-  let x = 0;
-  let y = 0;
-  for (const [lon, lat] of ring) {
-    x += lon;
-    y += lat;
+/** 指定したメッシュ群を囲む矩形。1 件でも複数でも同じ経路で出す。 */
+function boundsOf(
+  fc: GeoJSON.FeatureCollection,
+  meshCodes: string[],
+): [[number, number], [number, number]] | null {
+  const want = new Set(meshCodes);
+  let minx = Infinity;
+  let miny = Infinity;
+  let maxx = -Infinity;
+  let maxy = -Infinity;
+
+  for (const f of fc.features) {
+    if (!want.has((f.properties as unknown as MeshProps).c)) continue;
+    const g = f.geometry;
+    if (g.type !== "Polygon") continue;
+    for (const [lon, lat] of g.coordinates[0] ?? []) {
+      if (lon < minx) minx = lon;
+      if (lat < miny) miny = lat;
+      if (lon > maxx) maxx = lon;
+      if (lat > maxy) maxy = lat;
+    }
   }
-  return [x / n, y / n];
+  if (!Number.isFinite(minx)) return null;
+  return [
+    [minx, miny],
+    [maxx, maxy],
+  ];
 }
 
 boot().catch((err: unknown) => {

@@ -110,6 +110,30 @@ function baseStyle(): StyleSpecification {
         },
       },
 
+      // --- 提言の地区（隣接する上位区画のまとまり）の輪郭 ---
+      //
+      // **カードが「隣接する 6 区画」と書いているのに、地図には 1 マスしか
+      // 出ていなかった。** 束ね方（格子の上で接している）が画面のどこにも
+      // 見えず、「選択中のメッシュと周囲 8 マスを評価している」という
+      // 誤解を招いていた。選択中の 1 区画とは別の色・別の太さで描く。
+      {
+        id: "mesh-cluster",
+        type: "line",
+        source: "mesh",
+        filter: ["in", ["get", "c"], ["literal", []]],
+        paint: {
+          // **新しい色を足さない。** 橙とアクアは点レイヤー（需要側の施設・
+          // 既存の公共施設）に割り当て済みで、3 つ目のカテゴリカル色を出すと
+          // 「この橙の枠は施設の色と関係があるのか」という問いが生まれる。
+          // 選択中の 1 区画と同じ黒の、破線・細めで区別する。
+          "line-color": "#0b0b0b",
+          // 1.4px・不透明度 0.85 では、濃い区画の上でほとんど見えなかった。
+          // 選択中の 1 区画（実線 2.2px）と混ざらない範囲で太くする。
+          "line-width": 1.9,
+          "line-dasharray": [2.2, 1.6],
+        },
+      },
+
       // --- 選択中メッシュの強調（色ではなく輪郭で示す） ---
       {
         id: "mesh-selected",
@@ -188,8 +212,12 @@ export interface MapHandles {
   map: MLMap;
   setMeshData: (data: GeoJSON.FeatureCollection) => void;
   setSelected: (meshCode: string | null) => void;
+  /** 提言の地区に含まれる区画すべてを輪郭で囲む。空配列で消える。 */
+  setCluster: (meshCodes: string[]) => void;
   toggleLayer: (id: "demand-points" | "host-points", visible: boolean) => void;
   flyTo: (lon: number, lat: number, zoom?: number) => void;
+  /** 地区全体が画面に入るように寄せる。1 区画だけのときは flyTo で足りる。 */
+  fitTo: (bounds: [[number, number], [number, number]]) => void;
 }
 
 export async function initMap(
@@ -321,11 +349,19 @@ export async function initMap(
     setSelected: (meshCode) => {
       map.setFilter("mesh-selected", ["==", ["get", "c"], meshCode ?? "__none__"]);
     },
+    setCluster: (meshCodes) => {
+      map.setFilter("mesh-cluster", ["in", ["get", "c"], ["literal", meshCodes]]);
+    },
     toggleLayer: (id, visible) => {
       map.setLayoutProperty(id, "visibility", visible ? "visible" : "none");
     },
     flyTo: (lon, lat, zoom = 15.2) => {
       map.flyTo({ center: [lon, lat], zoom, duration: 800 });
+    },
+    fitTo: (bounds) => {
+      // 上限を切らないと 1 区画（250m 四方）で最大ズームまで寄ってしまい、
+      // 地区の広がりが読めなくなる。
+      map.fitBounds(bounds, { padding: 80, maxZoom: 15.2, duration: 800 });
     },
   };
 }

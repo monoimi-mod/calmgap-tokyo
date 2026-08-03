@@ -159,17 +159,29 @@ def _target_ward(value) -> str:
     return name if name in TARGET_WARDS else ""
 
 
-def _narrative(row: pd.Series, rank: int) -> str:
-    """予算会議にそのまま出せる日本語の根拠文を組み立てる。"""
+def _narrative(row: pd.Series, rank: int, total: int) -> str:
+    """予算会議にそのまま出せる日本語の根拠文を組み立てる。
+
+    **「上位◯%」は順位から出す。優先度の値から出してはいけない。**
+    かつては `(1 - priority) * 100` で計算していた。priority が
+    パーセンタイル順位だった頃はそれで正しかったが、2026-08-03 に
+    「需要 × 負荷」の生値へ変えたので成り立たなくなった
+    （渋谷駅前は 792 位 = 上位 8% なのに、生値 0.7219 から出すと 28% になる）。
+    **順位化をやめると、順位化を前提にした計算が黙って壊れる。**
+    web/src/ui.ts の narrate() と対。片方を触ったら必ず両方。
+    """
     d_factors = _top_factors(row, "demand", 2)
     l_factors = _top_factors(row, "load", 2)
 
-    def pct(x: float) -> str:
-        return f"上位{max(1, round((1 - x) * 100)):d}%"
+    def pct(r: int) -> str:
+        return f"上位{max(1, round(r / total * 100)):d}%"
 
     parts = [
-        f"優先度 第{rank}位（対象地域内 {pct(float(row['priority']))}）。",
-        f"需要スコア {float(row['demand']):.2f} / 負荷スコア {float(row['load']):.2f}。",
+        f"優先度 第{rank}位（対象地域内 {pct(rank)}）。",
+        # 3 桁で出す。2 桁だと上位 100 件がすべて 0.99〜1.00 になり、
+        # 実際には在る差が見えない（優先度は 0.99〜0.17 と動く）。
+        f"需要 {float(row['demand']):.3f} × 負荷 {float(row['load']):.3f}"
+        f" = {float(row['priority']):.3f}。",
     ]
 
     if d_factors:
@@ -242,7 +254,7 @@ def build_cards(df: pd.DataFrame, top_n: int = 20) -> list[dict]:
                 ),
                 "demand_factors": _top_factors(row, "demand", 3),
                 "load_factors": _top_factors(row, "load", 3),
-                "narrative": _narrative(row, rank),
+                "narrative": _narrative(row, rank, len(df)),
             }
         )
     return cards
@@ -276,149 +288,74 @@ def cluster_adjacent(codes: list[str]) -> list[list[int]]:
     return [groups[k] for k in sorted(groups)]
 
 
-def _area_label(wards: list[str], stations: list[str]) -> tuple[str, str]:
-    """地区の見出しを組み立て、(表示名, 区の表記) を返す。
+def build_ranking(cards: list[dict], top_n: int) -> list[dict]:
+    """根拠カードを、そのまま**区画単位の提言リスト**にする。
 
-    駅名は「その区画から最も近い駅」であって管理者でも所在地でもないので、
-    名指しの問題を起こさずに場所を指せる。順位の高い区画のものから採り、
-    片方がもう片方の先頭に含まれる名前は落とす（「大塚」と「大塚駅前」を
-    並べても場所は 1 つしか指していない）。
-    """
-    picked: list[str] = []
-    for s in stations:
-        if not s or any(s.startswith(p) or p.startswith(s) for p in picked):
-            continue
-        picked.append(s)
-        if len(picked) == 2:
-            break
+    **かつては「上位 40 区画を隣接で束ねた地区」を単位にしていた。
+    2026-08-03 にやめた。** 束ね方（格子隣接）には根拠があったが、
+    **どこまでを束ねるかには無かった**——地区の広がりは母数 40 で決まり、
+    40 のあたりに切れ目は無い（優先度は 40 位 0.9510・60 位 0.9435 と連続）。
+    「大塚・北池袋周辺は 6 区画」の 6 は場所の性質ではなく 40 で切ったことの
+    帰結で、**「○○周辺」という名前が、計算していない広がりを主張していた**。
+    斜めを隣とみなすか（8 近傍 / 4 近傍）にも根拠が無い。
 
-    uniq_wards = list(dict.fromkeys(w for w in wards if w))
-    if not uniq_wards:
-        ward_label = ""
-    elif len(uniq_wards) == 1:
-        ward_label = uniq_wards[0]
-    else:
-        # またがっていること自体が重要な情報。提言先の自治体が分かれる。
-        ward_label = f"{uniq_wards[0]}ほか"
+    モデルが計算しているのは区画である。だから提言の単位も区画にする。
+    **隣接は単位ではなく記述的な事実として残す**——「上位 N 区画のうち
+    k 区画がこの区画に接している」と、母数を文に含めて述べる。
+    母数を書けば、その数が N に依存することが読み手から隠れない。
 
-    where = "・".join(picked) + "周辺" if picked else "周辺"
-    return (f"{ward_label} {where}".strip(), ward_label)
-
-
-def build_proposals(cards: list[dict], limit: int = 10) -> list[dict]:
-    """カードを「隣接する区画のまとまり（地区）」単位に束ねる。
-
-    **以前は割当先の施設ごとに束ね、施設名を見出しにしていた。** やめた理由:
-
-    1. **このモデルは施設を評価していない。** 需要も負荷も区画の属性で、
-       施設の適性を測る構成要素は一つも無い。上位の見出しが図書館ばかりに
-       なるのは、区の公共施設一覧に何が載っていたかと、それがたまたま
-       どこに在ったかの副産物であって、選定の結果ではない。
-       それでも出力は「図書館を選んでいる」ように読めてしまう。
-    2. **見出しの施設は、その区画の中に無いことが多い。** 割当は半径 700m
-       まで許しているので、250m メッシュの重心から 500〜700m 離れた建物が
-       見出しに載る。分析している場所と名指しした建物が一致していない。
-    3. **名指しされる側は同意していない。** 公開地図の見出しに実在の施設名を
-       置けば、それは特定の建物への設置要求として読まれる。オープンデータから
-       言えるのは区画までで、建物の余剰空間も運営体制も測っていない。
-
-    束ねる根拠も変えた。「同じ施設が最寄り（最大 700m）」から
-    「メッシュが格子の上で接している」へ。後者は整数座標だけで決まり、
-    施設の配置にも距離のしきい値にも依存しない。
+    web/src/ui.ts の renderRanking と対。片方を触ったら必ず両方。
     """
     if not cards:
         return []
 
-    groups = cluster_adjacent([c["mesh_code"] for c in cards])
-    proposals: list[dict] = []
+    codes = [c["mesh_code"] for c in cards]
+    idx = [meshlib.grid_index(c) for c in codes]
 
-    for members_idx in groups:
-        members = [cards[i] for i in members_idx]
-        top = members[0]
-        n = len(members)
-
-        wards = [m["ward"] for m in members]
-        label, ward_label = _area_label(wards, [m.get("station", "") for m in members])
-
-        # 徒歩圏に在る施設の「例」。見出しにはしない。
-        facilities: list[dict] = []
-        seen: set[str] = set()
-        for m in members:
-            name = m["host_name"]
-            if name and name not in seen:
-                seen.add(name)
-                facilities.append(
-                    {"name": name, "kind": m["host_kind"], "ward": m["host_ward"]}
-                )
-
-        unreachable_n = sum(1 for m in members if not m["host_name"])
-
-        ward_counts: dict[str, int] = {}
-        for w in wards:
-            if w:
-                ward_counts[w] = ward_counts.get(w, 0) + 1
-
-        proposals.append(
+    rows: list[dict] = []
+    for i, card in enumerate(cards):
+        # 上位 top_n のうち、この区画に接しているものの数（8 近傍）。
+        adjacent = sum(
+            1
+            for j in range(len(codes))
+            if j != i
+            and abs(idx[i][0] - idx[j][0]) <= 1
+            and abs(idx[i][1] - idx[j][1]) <= 1
+        )
+        rows.append(
             {
-                "area_label": label,
-                "ward_label": ward_label,
-                "ward_counts": ward_counts,
-                "best_rank": top["rank"],
-                "priority": top["priority"],
-                "lon": top["lon"],
-                "lat": top["lat"],
-                "mesh_count": n,
-                "mesh_codes": [m["mesh_code"] for m in members],
-                "unreachable_meshes": unreachable_n,
-                "facilities": facilities,
-                "narrative": top["narrative"]
-                + _cluster_narrative(n, ward_counts, unreachable_n, facilities),
+                "rank": card["rank"],
+                "mesh_code": card["mesh_code"],
+                "lon": card["lon"],
+                "lat": card["lat"],
+                "ward": card["ward"],
+                "station": card["station"],
+                "priority": card["priority"],
+                "demand": card["demand"],
+                "load": card["load"],
+                "host_count": card["host_count"],
+                "host_name": card["host_name"],
+                "host_kind": card["host_kind"],
+                "host_ward": card["host_ward"],
+                "host_distance_m": card["host_distance_m"],
+                "unreachable": not card["host_name"],
+                "adjacent_n": adjacent,
+                "adjacent_of": top_n,
+                "narrative": card["narrative"] + _adjacency_note(adjacent, top_n),
             }
         )
-
-    proposals.sort(key=lambda d: d["best_rank"])
-    return proposals[:limit]
+    return rows
 
 
-def _cluster_narrative(
-    n: int, ward_counts: dict[str, int], unreachable_n: int, facilities: list[dict]
-) -> str:
-    """地区としてまとまったことで初めて言えることを足す。
+def _adjacency_note(adjacent: int, top_n: int) -> str:
+    """隣接を「事実」として一文で述べる。**必ず母数を書く。**
 
-    1 区画ずつ眺めても出てこない情報だけを書く。何区画が続いているか、
-    区をまたぐか、そのうち何区画が徒歩圏に施設を持たないか。
+    「隣接 6 区画」だけだと場所の性質に見えるが、この数は上位何件を
+    見るかで変わる。母数を書けばその依存が読み手から隠れない。
     """
-    parts: list[str] = []
-
-    if n > 1:
-        parts.append(f"隣接する{n}区画がまとまって上位に入っている。")
-
-    if len(ward_counts) > 1:
-        breakdown = "・".join(
-            f"{w}{c}区画" for w, c in sorted(ward_counts.items(), key=lambda kv: -kv[1])
-        )
-        parts.append(f"この地区は{breakdown}にまたがり、提言先の自治体が分かれる。")
-
-    if unreachable_n == n and n > 1:
-        parts.append("全区画が徒歩圏に区の公共施設を持たない。")
-    elif unreachable_n:
-        parts.append(f"うち{unreachable_n}区画は徒歩圏に区の公共施設が無い。")
-
-    # 施設名は「1 区画だけの地区」なら区画側の文が既に挙げているので繰り返さない。
-    if len(facilities) > 1:
-        names = "、".join(f"{f['name']}（{f['kind']}）" for f in facilities[:3])
-        more = f" ほか" if len(facilities) > 3 else ""
-        parts.append(
-            f"各区画から最も近い施設は重複を除いて{len(facilities)}件（{names}{more}）。"
-        )
-    if facilities:
-        other = {f["ward"] for f in facilities if f["ward"] and f["ward"] not in ward_counts}
-        if other:
-            parts.append(
-                f"うち{'・'.join(sorted(other))}の施設が含まれ、区境をまたぐ連携が前提になる。"
-            )
-
-    return "".join(parts)
+    if not adjacent:
+        return f"上位{top_n}区画のうち、この区画に接するものは無い。"
+    return f"上位{top_n}区画のうち{adjacent}区画がこの区画に接している。"
 
 
 # ---------------------------------------------------------------------------

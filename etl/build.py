@@ -9,8 +9,8 @@
 出力は web/public/data/ 配下:
     mesh.geojson       メッシュ形状 + 正規化済み構成要素 + 既定重みでのスコア
     cards.json         上位メッシュの根拠カード
-    proposals.json     隣接する上位区画を地区にまとめた提言リスト
-                       （施設単位ではない。理由は etl/hosts.py の build_proposals）
+    proposals.json     提言リスト（＝優先度の順位表）。**単位は区画**
+                       （地区でも施設でもない。理由は etl/hosts.py の build_ranking）
     hosts.geojson      既存の公共施設（供給側）
     demand_points.geojson  需要側の点データ（地図の文脈表示用）
     meta.json          構成要素定義・出典・生成条件
@@ -42,8 +42,8 @@ from .config import (
     PRIORITY_ALPHA,
     PRIORITY_BETA,
     PRESETS,
-    PROPOSAL_LIMIT,
-    PROPOSAL_TOP_N,
+    RANKING_DEFAULT_N,
+    RANKING_OPTIONS,
     CRS_GEOGRAPHIC,
     SOURCES,
     STUDY_BBOX,
@@ -51,6 +51,13 @@ from .config import (
     TOP_N_CARDS,
     WEB_DATA,
 )
+
+# 「最寄り駅」を探す上限距離。これを超えると駅名を出さない。
+#
+# 件数ではなく最寄り 1 件を採る唯一の実数で、他の f_* と半径の意味が違う。
+# 画面がこの値を書けるよう meta.json へ出す（TypeScript に直接書くと、
+# ここを動かしたときに画面のラベルだけが古くなる）。
+STATION_MAX_DISTANCE_M = 1500.0
 
 
 # ---------------------------------------------------------------------------
@@ -236,7 +243,10 @@ def _attach_facts(mesh_gdf: gpd.GeoDataFrame, layers: dict) -> None:
     ).to_numpy()
 
     station = aggregate.nearest_feature(
-        mesh_gdf, layers["stations"], ["name", "capacity"], max_distance_m=1500.0
+        mesh_gdf,
+        layers["stations"],
+        ["name", "capacity"],
+        max_distance_m=STATION_MAX_DISTANCE_M,
     )
     mesh_gdf["f_station_name"] = station["name"].to_numpy()
     mesh_gdf["f_station_riders"] = station["capacity"].to_numpy()
@@ -423,10 +433,25 @@ def write_outputs(
         "priority_alpha": PRIORITY_ALPHA,
         "priority_beta": PRIORITY_BETA,
         "host_max_distance_m": HOST_MAX_DISTANCE_M,
-        # 提言リストの母数と上限。TypeScript 側に重複定義を作らない
-        #（画面と配信 JSON が別物になっていた。config.PROPOSAL_TOP_N 参照）。
-        "proposal_top_n": PROPOSAL_TOP_N,
-        "proposal_limit": PROPOSAL_LIMIT,
+        # 「この区画の実数」の各行が、どの半径で数えた値なのか。
+        #
+        # **画面はこれを節見出しに出す。** かつては 8 行を平らに並べていて、
+        # 半径 800m の件数と 700m の件数と区画自身の値が同じ見た目だった。
+        # ここを TypeScript に直接書くと、帯域を動かしたときに
+        # ラベルだけが古い半径を主張し続ける（`_attach_facts` と同じ
+        # 定数から出しているので、そのズレが起こらない）。
+        "fact_radius_m": {
+            "welfare": BANDWIDTH_M["welfare_capacity"],
+            "school": BANDWIDTH_M["sped_school"],
+            "clinic": BANDWIDTH_M["clinic"],
+            "host": HOST_MAX_DISTANCE_M,
+            "station_max": STATION_MAX_DISTANCE_M,
+        },
+        # 提言リスト（＝順位表）に出す件数。TypeScript 側に重複定義を作らない
+        #（画面と配信 JSON が別物になっていた。config.RANKING_OPTIONS 参照）。
+        # **選べるようにしてあるのは、打ち切りに根拠が無いことを隠さないため。**
+        "ranking_options": list(RANKING_OPTIONS),
+        "ranking_default_n": RANKING_DEFAULT_N,
         "presets": [
             {
                 "id": p["id"],
@@ -592,10 +617,12 @@ def main(argv: list[str] | None = None) -> int:
     scored = scored.merge(host_df, on="mesh_code", how="left")
 
     cards = hostlib.build_cards(scored, args.top)
-    # 提言は根拠カードとは別の母数で束ねる（PROPOSAL_TOP_N のコメント参照）。
-    # cards.json は上位 20 区画のままでよいが、提言リストは画面と揃える。
-    proposals = hostlib.build_proposals(
-        hostlib.build_cards(scored, PROPOSAL_TOP_N), limit=PROPOSAL_LIMIT
+    # 提言リスト（＝優先度の順位表）。**単位は区画。**
+    # 根拠カードと同じ `build_cards` から作るので、2 つが別物になり得ない
+    #（かつて proposals.json と画面が別の母数で束ねていた事故の再発防止）。
+    # cards.json は上位 20 件に要因の内訳が付いたもので、こちらの部分集合。
+    proposals = hostlib.build_ranking(
+        hostlib.build_cards(scored, RANKING_DEFAULT_N), RANKING_DEFAULT_N
     )
 
     # meta.json と sensitivity.json が同じ値を持つことで、画面が
@@ -614,11 +641,14 @@ def main(argv: list[str] | None = None) -> int:
         generated_at,
     )
 
-    print(f"\n[提言] 隣接区画を地区にまとめた候補 {len(proposals)} 件（上位 3 件）:")
-    for p in proposals[:3]:
+    print(f"\n[提言] 上位 {len(proposals)} 区画（上位 5 件）:")
+    for p in proposals[:5]:
+        where = " ".join(x for x in (p["ward"], p["station"]) if x)
+        reach = "徒歩圏に公共施設なし" if p["unreachable"] else f"公共施設{p['host_count']}件"
         print(
-            f"  {p['best_rank']:>2}位 {p['area_label']}"
-            f"（{p['mesh_count']}区画 / 徒歩圏に施設が無い区画 {p['unreachable_meshes']}）"
+            f"  {p['rank']:>2}位 {p['mesh_code']} {where}"
+            f"  優先度 {p['priority']:.3f}  {reach}"
+            f"  隣接 {p['adjacent_n']}"
         )
 
     if args.sensitivity:

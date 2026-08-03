@@ -17,13 +17,34 @@
           <p class="subtitle">
             カームダウン・クールダウンスペース 設置優先度マップ
           </p>
+          <!--
+            **説明を画面に出す。** ここには以前タイトルしか無く、次に来るのが
+            いきなり「1,058 区画 / 11.1%」だった。区画が何を指すのかを
+            述べないまま数字だけを大きく出しても、大きいことしか伝わらない。
+            文面の数値は meta.json から入れる（ここに直接書くと古くなる）。
+          -->
+          <p class="intro-lead" id="intro-lead"></p>
+          <ol class="intro-steps">
+            <li><b>地図の色が濃い区画</b>ほど優先度が高い（需要 × 負荷）。</li>
+            <li>
+              右の一覧が<b>優先順位そのもの</b>。行を選ぶと根拠が出ます。
+            </li>
+            <li>
+              左のスライダーで<b>重視するものを変える</b>と、順位も提言も変わる。
+            </li>
+          </ol>
         </div>
 
         <!-- 模擬データ実行時のみ表示される。build.py が meta.synthetic で制御。 -->
         <div id="synthetic-banner" hidden></div>
 
         <div class="panel-section">
+          <!--
+            見出し数値は「何の数字か」を数字より先に置く。順番が逆だと、
+            読み手は定義を知らないまま大きい数を見ることになる。
+          -->
           <div class="stat">
+            <div class="stat-kicker" id="stat-kicker">—</div>
             <div class="stat-value" id="stat-value">—</div>
             <div class="stat-label" id="stat-label">集計中…</div>
           </div>
@@ -43,8 +64,18 @@
           <div class="preset-note" id="preset-note"></div>
         </div>
 
+        <!--
+          **スライダー 8 本がそのままデータの層（レイヤー）である**ことを
+          見出しで言う。「重みを調整する」だけだと、何の重みなのかが
+          画面のどこにも書かれていなかった。下の「地図に点を重ねる」の方が
+          レイヤーらしく見える、という取り違えが実際に起きた。
+        -->
         <div class="panel-section">
-          <h2>重みを調整する</h2>
+          <h2>評価に使う 8 つのデータ（レイヤー）</h2>
+          <p class="section-note">
+            この 8 層を重み付きで足し合わせて需要スコアと負荷スコアを作り、
+            2 つを掛けて優先度にしています。重みを動かすと地図も提言も変わります。
+          </p>
           <div id="sliders"></div>
           <button class="ghost-btn" id="reset-btn" style="margin-top: 10px">
             既定値に戻す
@@ -52,7 +83,10 @@
         </div>
 
         <div class="panel-section">
-          <h2>重ねて表示</h2>
+          <h2>地図に施設の点を重ねる</h2>
+          <p class="section-note">
+            表示だけの切り替えです。スコアには影響しません。
+          </p>
           <div class="toggles">
             <label class="toggle">
               <input type="checkbox" id="toggle-demand" />
@@ -67,11 +101,14 @@
           </div>
         </div>
 
+        <!--
+          出典は畳まない。都のオープンデータカタログの可視化事例は例外なく
+          「説明 → 使用データセットの全列挙 → 作成日」を本文に出しており、
+          出典を折り畳みの中に入れるのは行政向けの様式から外れる。
+        -->
         <div class="panel-section">
-          <details>
-            <summary>算出方法とデータ出典</summary>
-            <div id="methodology"></div>
-          </details>
+          <h2>算出方法とデータ出典</h2>
+          <div id="methodology"></div>
         </div>
 
         <!--
@@ -91,24 +128,28 @@
         <div id="legend">
           <div class="legend-title">設置優先度</div>
           <div class="legend-ramp"></div>
+          <!-- 真ん中の語は表示モードで変わる（優先度は実値・需要/負荷は順位）。 -->
           <div class="legend-scale">
-            <span>低</span><span>対象地域内での順位</span><span>高</span>
+            <span>低</span><span id="legend-scale-label">—</span><span>高</span>
           </div>
           <div class="legend-note" id="legend-note"></div>
         </div>
       </main>
 
       <aside id="detail" class="panel">
+        <!--
+          **タブは 2 つ。** かつては「提言リスト」と「表で見る」が別々にあったが、
+          提言の単位を区画に戻した時点で、両者は同じ順位表の別表示でしかなくなった
+          （根拠文も同じ関数の出力で、2 箇所に同じ文が出ていた）。
+        -->
         <div class="tabs" role="tablist">
-          <button class="tab" role="tab" data-tab="proposals" aria-selected="true">
-            提言リスト
+          <button class="tab" role="tab" data-tab="ranking" aria-selected="true">
+            提言（優先順位）
           </button>
           <button class="tab" role="tab" data-tab="selected" aria-selected="false">
-            選択中のメッシュ
+            選択中の区画
           </button>
-          <button class="tab" role="tab" data-tab="table" aria-selected="false">
-            表で見る
-          </button>
+          <div class="ranking-n" id="ranking-n"></div>
         </div>
         <div class="panel-section" id="detail-body"></div>
       </aside>

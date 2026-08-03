@@ -99,7 +99,17 @@ def main() -> int:
                 "メッシュコードか配信データのどちらかが変わっている"
             )
         shibuya = i + 1
+        shibuya_priority = r["priority"]
         break
+
+    # **提言リストの件数は config の値そのものなので、文書との突き合わせでは
+    # 意味がない**（"50 件" は他の行にも当たる）。代わりに配信 JSON どうしの
+    # 整合として見る——proposals.json が既定件数ぶん書き出されていること。
+    if len(proposals) != meta["ranking_default_n"]:
+        sys.exit(
+            f"proposals.json の件数 {len(proposals)} が "
+            f"meta.ranking_default_n {meta['ranking_default_n']} と違う"
+        )
 
     # (説明, status.md に在るべき文字列)
     checks: list[tuple[str, str]] = [
@@ -110,11 +120,15 @@ def main() -> int:
         ("到達不可の件数", f"{u['count']:,}"),
         ("到達不可の率", f"{u['ratio'] * 100:.1f}%"),
         ("到達不可のうち区内で中位以上", f"{u['mid_or_above']} 件"),
-        ("提言の件数", f"{len(proposals)} 件"),
         ("selftest の件数", f"{selftest_count()} 件"),
     ]
     if shibuya is not None:
         checks.append(("渋谷駅前の順位", f"{shibuya:,} 位"))
+        # **優先度の値も見る。** 2026-08-03 に最後のパーセンタイル化を外して
+        # 「需要 × 負荷」の生値を配信するようにしたとき、順位（792 位）は
+        # 動かないのに値だけが 0.915 → 0.7219 へ変わった。順位しか検査して
+        # いなかったため、文書側の 0.915 は検査を素通りしていた。
+        checks.append(("渋谷駅前の優先度", f"{shibuya_priority}"))
 
     # 感度分析の値も見る。**ここが最後まで検査の外にあった。**
     # 帯域を 1,200m → 800m へ直したとき全部を測り直したのに、追随したのは

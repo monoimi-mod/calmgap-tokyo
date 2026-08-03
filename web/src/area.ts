@@ -1,14 +1,15 @@
 /**
- * 上位メッシュを「隣接する区画のまとまり（地区）」へ束ねる。
+ * メッシュの格子座標と、隣接するメッシュの連結成分。
  *
- * 提言の単位を施設名から地区へ移した経緯は etl/hosts.py の build_proposals に
- * 書いてある（要点: このモデルは施設の適性を一切測っていない）。
+ * **かつてはここで「地区」を作り、それを提言の単位にしていた。**
+ * 2026-08-03 にやめた（理由は etl/hosts.py の build_ranking）。
+ * いま隣接が使われるのは 2 箇所だけ——順位表の「接する上位区画」の数と、
+ * 地図の破線。どちらも**単位ではなく記述**である。
  *
- * ここは etl/mesh.py の grid_index / etl/hosts.py の cluster_adjacent・
- * _area_label と対になる実装。**片方を触ったら必ず両方。**
- * スコアと違って parity_check の対象外なので、食い違っても静かに通る。
- * その代わり、束ね方を整数だけで決めている（浮動小数の距離を使わない）ので、
- * 両言語で結果がズレる余地は無い。
+ * ここは etl/mesh.py の grid_index / etl/hosts.py の cluster_adjacent と
+ * 対になる実装。**片方を触ったら必ず両方。** スコアと違って parity_check の
+ * 対象外なので食い違っても静かに通る。その代わり整数だけで決めている
+ * （浮動小数の距離を使わない）ので、両言語で結果がズレる余地は無い。
  */
 
 /**
@@ -73,31 +74,4 @@ export function clusterAdjacent(codes: string[]): number[][] {
     else groups.set(r, [i]);
   }
   return [...groups.entries()].sort((a, b) => a[0] - b[0]).map(([, g]) => g);
-}
-
-/**
- * 地区の見出し。
- *
- * 駅名は「その区画から最も近い駅」であって管理者でも所在地でもないので、
- * 実在の施設を名指しせずに場所を指せる。優先度の高い区画のものから採り、
- * 片方がもう片方の先頭に含まれる名前は落とす（「大塚」と「大塚駅前」を
- * 並べても場所は 1 つしか指していない）。
- */
-export function areaLabel(
-  wards: string[],
-  stations: string[],
-): { label: string; wardLabel: string } {
-  const picked: string[] = [];
-  for (const s of stations) {
-    if (!s) continue;
-    if (picked.some((p) => s.startsWith(p) || p.startsWith(s))) continue;
-    picked.push(s);
-    if (picked.length === 2) break;
-  }
-
-  const uniq = [...new Set(wards.filter(Boolean))];
-  // またがっていること自体が重要な情報。提言先の自治体が分かれる。
-  const wardLabel = uniq.length === 0 ? "" : uniq.length === 1 ? uniq[0] : `${uniq[0]}ほか`;
-  const where = picked.length ? `${picked.join("・")}周辺` : "周辺";
-  return { label: `${wardLabel} ${where}`.trim(), wardLabel };
 }

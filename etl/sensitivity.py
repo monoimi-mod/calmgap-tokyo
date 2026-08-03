@@ -18,6 +18,8 @@
 
 from __future__ import annotations
 
+import zlib
+
 import numpy as np
 import pandas as pd
 
@@ -564,7 +566,13 @@ def bandwidth_profile(
                 }
             )
         # その層だけを ±30% 揺さぶった値。群（4 層同時）の 76% を分解する。
-        rng = np.random.default_rng(hash(key) % (2**31))
+        #
+        # **種は `hash(key)` で作ってはいけない。** Python の文字列 hash は
+        # プロセスごとに乱数化されるので（PYTHONHASHSEED）、同じ入力・同じ
+        # コードで走らせても毎回違う値が出る。他の摂動は固定種（42/43）で
+        # 再現するのに、ここだけが再現しなかった——**再現できない数字を
+        # 文書に引用していた**ことになる。crc32 は版にも環境にも依存しない。
+        rng = np.random.default_rng(zlib.crc32(key.encode("utf-8")))
         samples = [
             model.evaluate(
                 bandwidths={
