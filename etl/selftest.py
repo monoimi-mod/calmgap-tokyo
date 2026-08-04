@@ -304,6 +304,40 @@ def _multiplicative():
     assert out["priority_raw"].max() > 0.0, "全メッシュが 0 になっている"
 
 
+@check("レイヤーの並び順を変えてもスコアは 1 ビットも変わらない")
+def _order_independent():
+    """**画面の並び順が数値に触れてはいけない。**
+
+    `config.py` のタプルの順は「左のスライダー・算出方法・内訳をどの順で
+    出すか」という**表示の決めごと**で、スコアの定義ではない。
+    ところが浮動小数の加算は順序で最後の桁が変わるので、素朴に定義順で
+    足すと**並べ替えただけでスコアが動く**。実際 2026-08-04 に需要側の
+    並びを変えたとき、29 区画の優先度が 4 桁目でずれて 18 区画の順位が
+    動いた（`score._weighted_sum` はキー順に足すようにして解消）。
+
+    ここが落ちたら、直すのは並び順ではなく `_weighted_sum` の側である。
+    """
+    df = score.normalize_components(_toy_frame())
+    base = score.compose(df)
+
+    # 定義順を逆さにして同じ計算をする。表示順が変わっただけの状態。
+    import etl.score as score_mod
+
+    orig_d, orig_l = score_mod.DEMAND_COMPONENTS, score_mod.LOAD_COMPONENTS
+    try:
+        score_mod.DEMAND_COMPONENTS = tuple(reversed(orig_d))
+        score_mod.LOAD_COMPONENTS = tuple(reversed(orig_l))
+        flipped = score.compose(df)
+    finally:
+        score_mod.DEMAND_COMPONENTS, score_mod.LOAD_COMPONENTS = orig_d, orig_l
+
+    for col in ("demand", "load", "priority_raw"):
+        assert (base[col].to_numpy() == flipped[col].to_numpy()).all(), (
+            f"並び順を変えたら {col} が変わった。"
+            "_weighted_sum がキー順に足しているか確認すること"
+        )
+
+
 @check("片側の重みを全て 0 にしても優先度が消えない")
 def _neutral_side():
     df = score.normalize_components(_toy_frame())

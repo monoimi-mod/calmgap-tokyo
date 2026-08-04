@@ -80,7 +80,11 @@ function weightedSum(
   const sum = new Float64Array(rows.length);
   let totalAbsWeight = 0;
 
-  for (const c of components) {
+  // **キー順に足す。配信された順ではない。**
+  // 浮動小数の加算は順序で最後の桁が変わるので、定義順のまま足すと
+  // 「画面の並び順を変えただけでスコアが動く」ことになる
+  //（etl/score.py の _weighted_sum に経緯）。**Python 側と同じ順序**。
+  for (const c of [...components].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))) {
     const w = weights[c.key] ?? c.weight;
     if (w === 0) continue;
     totalAbsWeight += Math.abs(w);

@@ -154,10 +154,24 @@ def _weighted_sum(
     """重み付き和と、重みの絶対値合計を返す。
 
     絶対値合計は「その側を評価しているか」の判定に使う（compose 参照）。
+
+    **キー順に足す。定義順ではない。**
+
+    浮動小数の加算は順序で最後の桁が変わる。定義順のまま足すと、
+    **画面の並び順を変えただけでスコアが動く**——実際、2026-08-04 に
+    需要側の並びを変えた（駅を先頭へ）ときに 29 区画の優先度が 4 桁目で
+    ずれ、18 区画の順位が最大 3 つ動いた（上位 100 は不変）。
+    `config.py` の並び順は**画面の見やすさのために決める**もので、
+    そこを触るたびに数値が動くのでは、並べ替えを検討することすらできない。
+
+    キー順という固定の順序で足せば、定義順をどう変えても和は同じになる。
+    **TypeScript 側（`web/src/score.ts` の weightedSum）も同じ順に
+    並べ替えること**——片方だけ直すと parity_check が落ちる。
+    `selftest` が「並び順を入れ替えても結果が完全一致すること」を検査する。
     """
     total = pd.Series(np.zeros(len(df)), index=df.index, dtype=float)
     total_abs_weight = 0.0
-    for c in components:
+    for c in sorted(components, key=lambda c: c.key):
         w = float(weights.get(c.key, c.weight))
         if w == 0.0:
             continue
