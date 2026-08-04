@@ -30,6 +30,121 @@ const CAT_HOST = "#1baf7a";
 const GSI_ATTRIBUTION =
   '<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">国土地理院</a>';
 
+/**
+ * ポップアップとカーソルを付ける点レイヤー。
+ * **ハイライト層を必ず含めること**——数えた当のものが無反応だと、
+ * 「なぜこの点が光っているのか」を画面から辿れない。
+ */
+const POINT_LAYERS = ["demand-points", "host-points", "highlight-points"] as const;
+
+/**
+ * 規模の欄に何を書くか。**層ごとに単位が違う。**
+ *
+ * `capacity` という 1 つの列に、在籍者数（人）・定員（人）・乗降客数（人/日）が
+ * 入っている。集計側は掛け算の材料として同じ列で扱ってよいが、
+ * **画面に「規模 131」とだけ出すと、それが何の 131 なのかが消える**。
+ * クリニックは全件 1（存在フラグとして 1 を置いてある）なので出さない。
+ */
+const CAPACITY_LABEL: Record<
+  string,
+  { label: string; unit: string; assumedNote?: string } | null
+> = {
+  // **仮の値である理由が層で違う。** 学校は「公表されていない」（国立 3 校は
+  // 在籍者数を出していない）。事業所は「そもそも制度上の定員が無い」種別が
+  // 多く、**欠測ではない**——訪問系・相談系・共同生活援助がこれに当たる。
+  // 同じ「未公表のため」で括ると、後者を「本当はあるのに隠されている数」に
+  // 見せてしまう。
+  school: {
+    label: "在籍者数",
+    unit: "人",
+    assumedNote: "仮の値（在籍者数が未公表のため既定値）",
+  },
+  welfare: {
+    label: "定員",
+    unit: "人",
+    assumedNote: "仮の値（届出に定員の記載が無く、種別ごとの既定値）",
+  },
+  station: { label: "乗降客数", unit: "人/日" },
+  clinic: null,
+};
+
+/**
+ * 点をクリックしたときに出す詳細。
+ *
+ * **規模と出典を必ず並べる。** この作品は「区画について述べる」道具なので、
+ * 施設の点は根拠の材料でしかない。材料である以上、
+ * **どの数字がどこから来たか**を、その数字の隣で言えなければならない。
+ *
+ * **仮定値には必ず印を付ける。** 在籍者数を公表していない国立 3 校には
+ * 既定値 150 人が入っており、印が無ければ実数と区別できない。
+ */
+function pointDetailHtml(p: Record<string, unknown>): string {
+  const name = escapeHtml(String(p.name ?? ""));
+  const kind = escapeHtml(String(p.host_kind ?? p.kind ?? ""));
+
+  const spec = CAPACITY_LABEL[String(p.layer ?? "")];
+  let size = "";
+  if (spec && p.capacity != null) {
+    const n = Number(p.capacity).toLocaleString("ja-JP");
+    // 仮定値であることを、値と同じ行に書く。注記へ逃がすと読み飛ばされる。
+    const mark =
+      p.assumed && spec.assumedNote
+        ? `<span class="popup-assumed">${spec.assumedNote}</span>`
+        : "";
+    size = `<div class="popup-row"><b>${spec.label}</b> ${n}${spec.unit}${mark}</div>`;
+  }
+
+  const source = p.source
+    ? `<div class="popup-source">出典: ${escapeHtml(String(p.source))}</div>`
+    : "";
+
+  // ホスト施設だけは「供給側＝徒歩圏の判定に使う」ことを明示する。
+  // 需要側の点と同じ見た目で出ると、何のために数えているかが伝わらない。
+  const role =
+    p.host_kind != null
+      ? '<div class="popup-role">既存の公共施設（徒歩圏にあるかの判定に使う）</div>'
+      : "";
+
+  return `<div class="popup-card"><b>${name}</b><div class="popup-kind">${kind}</div>${role}${size}${source}</div>`;
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(
+    /[&<>"']/g,
+    (c) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!,
+  );
+}
+
+/**
+ * 斜線のパターン画像を作る（到達不可の区画に敷く）。
+ *
+ * **画像ファイルを置かない。** タイルと同じで、外部リソースが 1 つ増えると
+ * それが落ちたときの分岐が増える。16×16 を実行時に描けば依存が無い。
+ *
+ * 色は黒（選択の輪郭と同じ）。**新しい色相を作らない**——橙と緑は
+ * 点レイヤーに割り当て済みで、3 つ目の色を出すと「この色は施設の色と
+ * 関係があるのか」という問いが生まれる。区別は色ではなく形（斜線）で付ける。
+ */
+function hatchImage(): ImageData | null {
+  const size = 16;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  ctx.strokeStyle = "rgba(11,11,11,0.55)";
+  ctx.lineWidth = 2;
+  // 端をまたぐ線も引く。1 本だけだとタイルの継ぎ目で斜線が途切れる。
+  for (const offset of [-size, 0, size]) {
+    ctx.beginPath();
+    ctx.moveTo(offset, size);
+    ctx.lineTo(offset + size, 0);
+    ctx.stroke();
+  }
+  return ctx.getImageData(0, 0, size, size);
+}
+
 /** 空の GeoJSON ソース。実データは setMeshData / setPointData が後から差し込む。 */
 function emptySource(): SourceSpecification {
   return {
@@ -114,6 +229,35 @@ function baseStyle(): StyleSpecification {
         },
       },
 
+      // --- 徒歩圏に公共施設が 1 件も無い区画（既定は非表示） ---
+      //
+      // **画面でいちばん大きい数字なのに、それがどこなのかは
+      // どこにも出ていなかった。** 1,058 区画と書いてあっても、
+      // 地図で見せなければ「多い」以上のことは伝わらない。
+      //
+      // **表示モード（優先度/需要/負荷）には入れない。** あれは
+      // 連続値を色の濃淡に写す枠で、こちらは真偽値である。
+      // 同じランプに載せると 0/1 が両端に張り付き、
+      // **凡例のグラデーションが「途中の値」があるかのように嘘をつく。**
+      // 重ねる層として、優先度の塗りの上から斜線で示す。
+      //
+      // 斜線にするのは色を増やさないため（橙=需要側・緑=供給側・
+      // 黒=選択と隣接で埋まっている）。パターンなら、どの濃さの
+      // コロプレスの上でも「印が付いている」と読める。
+      {
+        id: "mesh-unreachable",
+        type: "fill",
+        source: "mesh",
+        layout: { visibility: "none" },
+        // host は「最寄りのホスト施設名」。徒歩圏に 1 件も無い区画では
+        // props ごと省かれる（etl/build.py の _feature_properties）。
+        filter: ["!", ["has", "host"]],
+        paint: {
+          "fill-pattern": "hatch",
+          "fill-opacity": 0.85,
+        },
+      },
+
       // --- 徒歩圏の円（ハイライト時のみ） ---
       //
       // **塗りつぶさない。** 中を塗ると「この円の中が均等に効いている」と
@@ -131,12 +275,18 @@ function baseStyle(): StyleSpecification {
         },
       },
 
-      // --- 提言の地区（隣接する上位区画のまとまり）の輪郭 ---
+      // --- 選択中の区画と接している上位区画の輪郭 ---
       //
-      // **カードが「隣接する 6 区画」と書いているのに、地図には 1 マスしか
-      // 出ていなかった。** 束ね方（格子の上で接している）が画面のどこにも
-      // 見えず、「選択中のメッシュと周囲 8 マスを評価している」という
-      // 誤解を招いていた。選択中の 1 区画とは別の色・別の太さで描く。
+      // **順位表が「接している上位区画 6」と書いているのに、地図には
+      // 1 マスしか出ていなかった。** 何と接しているのか（格子の上で
+      // 隣り合う上位区画）が画面のどこにも見えず、「選択中のメッシュと
+      // 周囲 8 マスを評価している」という誤解を招いていた。
+      // 選択中の 1 区画とは別の色・別の太さで描く。
+      //
+      // **これは「地区」ではない。** 2026-08-03 に地区を廃止したあとも
+      // 破線そのものは残してある——囲む対象は変わっておらず、
+      // 変わったのは**それを提言の単位として述べるのをやめた**ことだけ。
+      // 単位ではなく記述なので、順位表の側では必ず母数を添える。
       {
         id: "mesh-cluster",
         type: "line",
@@ -258,7 +408,7 @@ export interface MapHandles {
   map: MLMap;
   setMeshData: (data: GeoJSON.FeatureCollection) => void;
   setSelected: (meshCode: string | null) => void;
-  /** 提言の地区に含まれる区画すべてを輪郭で囲む。空配列で消える。 */
+  /** 選択中の区画と接している上位区画を輪郭で囲む。空配列で消える。 */
   setCluster: (meshCodes: string[]) => void;
   /**
    * 「徒歩圏に在るもの」を光らせる。null で消える。
@@ -270,9 +420,12 @@ export interface MapHandles {
     center: [number, number];
     radiusM: number;
   } | null) => void;
-  toggleLayer: (id: "demand-points" | "host-points", visible: boolean) => void;
+  toggleLayer: (
+    id: "demand-points" | "host-points" | "mesh-unreachable",
+    visible: boolean,
+  ) => void;
   flyTo: (lon: number, lat: number, zoom?: number) => void;
-  /** 地区全体が画面に入るように寄せる。1 区画だけのときは flyTo で足りる。 */
+  /** 接している上位区画までが画面に入るように寄せる。1 区画なら flyTo で足りる。 */
   fitTo: (bounds: [[number, number], [number, number]]) => void;
 }
 
@@ -339,6 +492,14 @@ export async function initMap(
   // 主題レイヤーは baseStyle() に含めてあるので、ここで追加する必要はない。
   // スタイルが確定したら、それまでに届いていたデータを流し込む。
   map.on("style.load", () => {
+    // **パターンはスタイル確定後にしか登録できない。** 登録前でも
+    // レイヤー定義は通り、`fill-pattern` が解決できないぶんだけ
+    // 何も描かれない（例外は出ない）。既定で非表示の層なので、
+    // ここで失敗しても地図そのものは無事——ベースマップと同じ扱いにする。
+    if (!map.hasImage("hatch")) {
+      const img = hatchImage();
+      if (img) map.addImage("hatch", img);
+    }
     flushPending(map);
     fitToArea();
   });
@@ -359,6 +520,11 @@ export async function initMap(
 
   // --- 操作 ---
   map.on("click", "mesh-fill", (e) => {
+    // 点の上で押したときは区画を選び直さない。**点と区画は重なっている**ので、
+    // 素通しにすると「施設を見ようとして押したら選択が飛んで、
+    // その施設のハイライトごと消える」ことになる。
+    if (map.queryRenderedFeatures(e.point, { layers: [...POINT_LAYERS] }).length)
+      return;
     const f = e.features?.[0];
     if (f) onMeshClick(String(f.properties?.c));
   });
@@ -369,31 +535,41 @@ export async function initMap(
     map.getCanvas().style.cursor = "";
   });
 
-  const popup = new maplibregl.Popup({
+  // ホバーは軽い下見（名前と種別だけ）、クリックで規模・仮定値・出典まで出す。
+  // **ハイライトした点にも付ける。** 以前は重畳トグルの 2 層にしか付いておらず、
+  // 「徒歩圏に事業所 60 件」と書いた隣で光っている点を押しても何も出なかった
+  // ——数えた当のものだけが、画面で唯一無反応だった。
+  const hover = new maplibregl.Popup({
     closeButton: false,
     closeOnClick: false,
     offset: 10,
   });
+  const detail = new maplibregl.Popup({ closeButton: true, offset: 10 });
 
-  for (const id of ["demand-points", "host-points"] as const) {
+  for (const id of POINT_LAYERS) {
     map.on("mouseenter", id, (e) => {
       const f = e.features?.[0];
       if (!f) return;
       map.getCanvas().style.cursor = "pointer";
       const p = f.properties ?? {};
-      const kind = p.host_kind ?? p.kind ?? "";
-      const cap =
-        p.capacity != null && p.layer !== "clinic"
-          ? `<br>規模 ${Number(p.capacity).toLocaleString("ja-JP")}`
-          : "";
-      popup
+      hover
         .setLngLat(e.lngLat)
-        .setHTML(`<b>${p.name ?? ""}</b><br>${kind}${cap}`)
+        .setHTML(
+          `<b>${escapeHtml(String(p.name ?? ""))}</b><br>` +
+            `${escapeHtml(String(p.host_kind ?? p.kind ?? ""))}` +
+            '<br><span class="popup-hint">押すと詳細</span>',
+        )
         .addTo(map);
     });
     map.on("mouseleave", id, () => {
       map.getCanvas().style.cursor = "";
-      popup.remove();
+      hover.remove();
+    });
+    map.on("click", id, (e) => {
+      const f = e.features?.[0];
+      if (!f) return;
+      hover.remove();
+      detail.setLngLat(e.lngLat).setHTML(pointDetailHtml(f.properties ?? {})).addTo(map);
     });
   }
 
@@ -432,7 +608,7 @@ export async function initMap(
     },
     fitTo: (bounds) => {
       // 上限を切らないと 1 区画（250m 四方）で最大ズームまで寄ってしまい、
-      // 地区の広がりが読めなくなる。
+      // 接している区画がどこまで続いているのかが読めなくなる。
       map.fitBounds(bounds, { padding: 80, maxZoom: 15.2, duration: 800 });
     },
   };

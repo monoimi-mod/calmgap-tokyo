@@ -559,6 +559,16 @@ class Source:
     layer: str | None = None  # 生成に使ったレイヤー名。None = 未使用
     vintage: str = ""  # 年次。年がそろっていないこと自体が課題（issues.md C1）
 
+    # **URL が 200 を返すことは、そこに使ったデータがある証拠にならない。**
+    # 列名の決め打ちと同じ壊れ方をした——N03 は `-v3_1` のページが生きているが
+    # 最新が 2023 年版で、実際に使った `N03-20240101_13` は別ページ
+    # （`-2024`）にあった。P29 も同じで、リンク先には 2013 年版しか無い。
+    # **どちらもリンクは開ける**ので、押して確かめても気付けない。
+    # 実際に読み込んだファイル名をここに書き、tools/link_check.py が
+    # 「リンク先のページにその名前が載っていること」まで検査する。
+    # 空文字は「ページ内から機械的に確かめる手掛かりが無い」の意（API・検索）。
+    file_hint: str = ""
+
 
 SOURCES: dict[str, Source] = {
     # --- 対象地域そのもの ---
@@ -568,13 +578,16 @@ SOURCES: dict[str, Source] = {
     "ksj_n03_boundary": Source(
         key="ksj_n03_boundary",
         label="国土数値情報 N03 行政区域",
-        url="https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-N03-v3_1.html",
+        # **`-v3_1` ではない。** そちらも開けるが最新が 2023 年版で、
+        # 実際に使った 2024 年版は載っていない（2026-08-04 に是正）。
+        url="https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-N03-2024.html",
         kind="shp",
         license="国土数値情報 利用約款（出典表示）",
         note="メッシュを張る範囲・区名・区ごとの集計の基準。"
         "名称とコード（N03_007）の両方で対象 23 区を判定する。",
         layer="area",
         vintage="2024年",
+        file_hint="N03-20240101_13",
     ),
     # --- 需要レイヤー ---
     "wamnet_jigyosho": Source(
@@ -587,17 +600,23 @@ SOURCES: dict[str, Source] = {
         "事業所緯度・経度を持つのでジオコーディングは不要。",
         layer="welfare",
         vintage="2026年3月",
+        file_hint="sfkopendata",
     ),
     "ksj_p29_school": Source(
         key="ksj_p29_school",
         label="国土数値情報 P29 学校（特別支援学校を含む）",
-        url="https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-P29.html",
+        # **`KsjTmplt-P29.html` ではない。** そちらは開けるが都内版は
+        # 2013 年版しか無く、使っている 2023 年版は別ページ（2026-08-04 に是正）。
+        # 列の意味が第1.1版と第2.0版でずれている層なので、
+        # **どの版のページを指しているかが特に効く。**
+        url="https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-P29-2023.html",
         kind="shp",
         license="国土数値情報 利用約款（出典表示）",
         note="P29_003 学校分類コード 16012 = 特別支援学校。"
         "**在籍者数は持たない**ので規模は tokyo_sped_enrollment から当てる。",
         layer="schools",
         vintage="2023年度",
+        file_hint="P29-23_13",
     ),
     "tokyo_sped_enrollment": Source(
         key="tokyo_sped_enrollment",
@@ -610,6 +629,7 @@ SOURCES: dict[str, Source] = {
         "1 行 = 学校 × 障害種別で、併置校は同じ学校番号が複数行に分かれる。",
         layer="schools",
         vintage="令和7年度（2025年5月1日）",
+        file_hint="",  # 一覧ページで、ファイル名は出ていない
     ),
     "ksj_p14_welfare": Source(
         key="ksj_p14_welfare",
@@ -620,16 +640,20 @@ SOURCES: dict[str, Source] = {
         note="需要側は WAM NET へ置き換えた。現在はホスト施設（児童館）の出典。",
         layer="hosts",
         vintage="2022年度",
+        file_hint="P14-21_13",
     ),
     "ksj_p04_medical": Source(
         key="ksj_p04_medical",
         label="国土数値情報 P04 医療機関",
-        url="https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-P04-v3_1.html",
+        # **`-v3_1` は存在しない**（404）。画面に出していたのに誰も押していなかった
+        # ——リンク切れは黙って通る（2026-08-04 に是正。tools/link_check.py）。
+        url="https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-P04-v3_0.html",
         kind="shp",
         license="国土数値情報 利用約款（出典表示）",
         note="診療科目欄から精神科・心療内科を抽出する。",
         layer="clinics",
         vintage="2020年度",
+        file_hint="P04-20_13",
     ),
     "ksj_s12_station": Source(
         key="ksj_s12_station",
@@ -641,6 +665,9 @@ SOURCES: dict[str, Source] = {
         "1 行が「駅×事業者×路線」なのでグループコードで束ねて合算する。",
         layer="stations",
         vintage="2024年値",
+        # ページ名の 2024 は年次で、載っているファイルは S12-25（2025 年公開・
+        # 2024 年値）。**名前がずれているが、リンク先に実物がある**ので正しい。
+        file_hint="S12-25",
     ),
     "odpt_station": Source(
         key="odpt_station",
@@ -679,24 +706,42 @@ SOURCES: dict[str, Source] = {
         "（列名は年度で変わるため中身から自動判定する）。",
         layer="zoning",
         vintage="2019年度",
+        file_hint="A29-19_13",
     ),
     "tokyo_road_noise": Source(
         key="tokyo_road_noise",
-        label="自動車騒音 要請限度測定結果",
-        url="https://catalog.data.metro.tokyo.lg.jp/dataset/t000010d0000000041",
+        # **ラベルもリンクも別のデータセットを指していた。**（2026-08-04 に是正）
+        # 「自動車騒音 要請限度測定結果」は目黒区が別途公開している
+        # データセットの名前で、こちらが読んでいるのは東京都環境局の
+        # 「自動車交通騒音調査結果」（`H25_kekka.csv`）。リンク先の ID
+        # `t000010d0000000041` はカタログに存在しない（404）。
+        # **名前が似ていて、押さなければ気付けない位置にあった。**
+        label="平成25年度 自動車交通騒音調査結果（東京都環境局）",
+        url="https://catalog.data.metro.tokyo.lg.jp/dataset/t000009d1900000003",
         kind="csv",
         license="東京都オープンデータカタログ CC BY 4.0",
-        note="測定地点の点データ。等価騒音レベル LAeq を距離重み付き内挿する。",
+        note="測定地点の点データ。等価騒音レベル LAeq を距離重み付き内挿する。"
+        "**2013 年度が最新**——このシリーズは平成12〜25年度で配信が止まっており、"
+        "古いのは選択ではなく入手可能な最新である（2026-08-04 に全 14 件を確認）。",
         layer="noise",
         vintage="平成25年度（2013）",
+        file_hint="H25_kekka.csv",
     ),
     "tokyo_rail_noise": Source(
         key="tokyo_rail_noise",
         label="鉄道騒音・振動調査結果",
-        url="https://catalog.data.metro.tokyo.lg.jp/dataset/t000010d0000000042",
+        # **このデータセットは存在しない。**（2026-08-04 に確認）
+        # 元のリンク `t000010d0000000042` は 404 で、カタログ上で
+        # 東京都環境局が騒音として公開しているのは自動車交通騒音調査結果
+        # （平成12〜25年度）の 14 件だけ。**「測定点が疎だから使わない」と
+        # 書いていたが、実際には測定点の疎密以前に入手できていなかった。**
+        # 使っていない出典なので画面には出ないが、理由を書き替える。
+        url="",
         kind="csv",
         license="東京都オープンデータカタログ CC BY 4.0",
-        note="測定点が疎なため、鉄道路線（KSJ N02）からの距離減衰で補完する。",
+        note="カタログに該当データセットが無い（2026-08-04 時点）。"
+        "都の鉄道騒音調査は報告書としては公表されているが、"
+        "点データのオープンデータとしては配信されていない。",
     ),
     "ksj_p13_park": Source(
         key="ksj_p13_park",
@@ -707,11 +752,17 @@ SOURCES: dict[str, Source] = {
         note="ポリゴンの面積被覆率をメッシュ単位で算出する。",
         layer="parks",
         vintage="2011年度",
+        file_hint="P13-11_13",
     ),
     "estat_mesh_pop": Source(
         key="estat_mesh_pop",
         label="地域メッシュ統計 人口・昼間人口",
-        url="https://api.e-stat.go.jp/rest/3.0/app/json/getStatsData",
+        # **画面に出す URL は API のエンドポイントであってはいけない。**
+        # 押しても人間向けのページではなく、引数の無いエラー JSON が返る。
+        # 出典欄の URL は「読み手が同じデータに辿り着ける場所」なので、
+        # 統計 GIS のダウンロード画面（経済センサス－活動調査）を指す
+        # （2026-08-04 に是正）。取得そのものは api_key_env の API で行う。
+        url="https://www.e-stat.go.jp/gis/statmap-search?page=1&type=1&toukeiCode=00200553",
         kind="api",
         license="政府統計 e-Stat 利用規約（出典表示）",
         api_key_env="ESTAT_APP_ID",
@@ -722,11 +773,20 @@ SOURCES: dict[str, Source] = {
     # --- 供給側 ---
     "tokyo_public_facility": Source(
         key="tokyo_public_facility",
-        label="公共施設一覧（図書館・文化施設・区民センター等）",
+        label="各区の公共施設一覧（23 区・様式は区ごとに異なる）",
+        # **これは検索結果へのリンクで、使ったファイルを指していない。**
+        # 統合一覧を持たない区（港・江戸川・中野）、KML の区（足立）、
+        # xlsx の区（北・大田）があり、1 本の URL で代表できない。
+        # 代表できないことを label に書いたうえで、**実際に読んだファイルの
+        # 一覧は docs/handoff-hosts.md にある**と note で示す
+        # （URL を 1 本だけ載せて代表させると、そこに無いものまで
+        # そこから採ったように読める）。
         url="https://catalog.data.metro.tokyo.lg.jp/dataset?q=公共施設",
         kind="csv",
         license="東京都オープンデータカタログ CC BY 4.0",
-        note="区市町村ごとに様式が異なるため normalize 側で名寄せする。",
+        note="区市町村ごとに様式が異なるため normalize 側で名寄せする。"
+        "実際に読み込んだファイルの区ごとの一覧は docs/handoff-hosts.md。"
+        "北区は区が一覧を公開しておらず、P14 の児童館しか入っていない。",
         layer="hosts",
         vintage="2025年時点で各区が公開",
     ),

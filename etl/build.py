@@ -414,10 +414,31 @@ def write_outputs(
         ],
         ignore_index=True,
     )
+
+    # **「規模」の隣に、それが実測か仮置きかを必ず添える。**
+    # 地図の点をクリックすると名前と規模が出るが、`capacity` だけを配ると
+    # **筑波大附属の 3 校が「150 人」を実数として名乗る**（在籍者数を
+    # 公表していないので既定値を置いてある）。事業所側も同じで、
+    # 定員欄が空だった 9,748 行（69.0%）は種別ごとの仮定員である。
+    # どちらも `data/processed` には印が付いているのに、配信で落ちていた。
+    #
+    # **値の一致で後から復元してはいけない**（CLAUDE.md）——実定員が
+    # たまたま仮定員と同じ 20 人だった行が 2,934 件あり、それを仮定側に
+    # 数えると「需要寄与の 68.9% が仮定員」（実際は 25.1%）になる。
+    # 正規化の時点で立てた列をそのまま運ぶ。
+    #
+    # True のときだけ載せる。False を全行に書くと、印の付かない
+    # 駅・クリニックと区別が付かないうえ、配信量も無駄に増える。
+    assumed = pd.Series(pd.NA, index=demand_points.index, dtype="object")
+    for col in ("capacity_assumed", "students_assumed"):
+        if col in demand_points.columns:
+            assumed = assumed.mask(demand_points[col].fillna(False).astype(bool), True)
+    demand_points = demand_points.assign(assumed=assumed)
+
     _write_geojson(
         WEB_DATA / "demand_points.geojson",
         gpd.GeoDataFrame(demand_points, crs=layers["welfare"].crs),
-        ["name", "kind", "capacity", "layer", "source"],
+        ["name", "kind", "capacity", "assumed", "layer", "source"],
         with_xy=True,
     )
 

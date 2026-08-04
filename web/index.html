@@ -88,9 +88,10 @@
         </div>
 
         <div class="panel-section">
-          <h2>地図に施設の点を重ねる</h2>
+          <h2>地図に重ねる</h2>
           <p class="section-note">
             表示だけの切り替えです。スコアには影響しません。
+            <b>点は押すと、名前・規模・出典が出ます。</b>
           </p>
           <div class="toggles">
             <label class="toggle">
@@ -102,6 +103,16 @@
               <input type="checkbox" id="toggle-hosts" />
               <span class="swatch host"></span>
               既存の公共施設（徒歩圏にあるか の判定に使う）
+            </label>
+            <!--
+              **上の見出し数値が指している区画そのもの。** 数字は画面で
+              いちばん大きく出ているのに、それがどこなのかは地図に
+              出ていなかった。点ではなく面なので、swatch も斜線にする。
+            -->
+            <label class="toggle">
+              <input type="checkbox" id="toggle-unreachable" />
+              <span class="swatch unreachable"></span>
+              徒歩圏に公共施設が 1 件も無い区画
             </label>
           </div>
         </div>

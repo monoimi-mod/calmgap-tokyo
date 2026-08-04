@@ -111,6 +111,22 @@ def main() -> int:
             f"meta.ranking_default_n {meta['ranking_default_n']} と違う"
         )
 
+    # **到達不可がどのあたりの順位にいるか。** 2026-08-04 に見出し数値を
+    # 1,058 から 151 へ格下げした根拠がこれで、status.md がその数字を
+    # 引用している。**「上位 100 区画には 1 件も入らない」は重みで動く**
+    # ——既定重みでの値なので、重みの既定値を変えたらここが落ちる。
+    # 落ちたときに直すのは status.md であって、この検査ではない。
+    unreachable_ranks = [i + 1 for i, r in enumerate(order) if not r.get("host")]
+    rank_median = sorted(unreachable_ranks)[len(unreachable_ranks) // 2]
+    in_top100 = sum(1 for r in unreachable_ranks if r <= 100)
+
+    # 需要側の点のうち、規模が仮の値のもの。**この数を配信するようにしたので
+    # 検査に入れる**（学校 3 件は筑波大附属で、在籍者数を公表していない）。
+    demand_points = load("demand_points.geojson")
+    assumed = [
+        f["properties"] for f in demand_points["features"] if f["properties"].get("assumed")
+    ]
+
     # (説明, status.md に在るべき文字列)
     checks: list[tuple[str, str]] = [
         ("メッシュ数", f"{meta['mesh_count']:,}"),
@@ -120,6 +136,9 @@ def main() -> int:
         ("到達不可の件数", f"{u['count']:,}"),
         ("到達不可の率", f"{u['ratio'] * 100:.1f}%"),
         ("到達不可のうち区内で中位以上", f"{u['mid_or_above']} 件"),
+        ("到達不可の順位の中央値", f"{rank_median:,} 位"),
+        ("到達不可のうち上位100区画", f"{in_top100} 件"),
+        ("規模が仮の値の点", f"{len(assumed):,} 件"),
         ("selftest の件数", f"{selftest_count()} 件"),
     ]
     if shibuya is not None:

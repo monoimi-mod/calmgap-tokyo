@@ -120,9 +120,9 @@ async function boot(): Promise<void> {
         }
         handles.setMeshData(meshFC);
       }
-      // 地区の輪郭は重みで変わる。**スコアを計算し直したら必ず引き直す**——
-      // 重みを動かして上位の顔ぶれが変わったのに枠だけ残ると、
-      // 画面が古い地区を主張し続けることになる。
+      // 破線が囲む範囲（接している上位区画）は重みで変わる。
+      // **スコアを計算し直したら必ず引き直す**——重みを動かして上位の
+      // 顔ぶれが変わったのに枠だけ残ると、画面が古い隣接を主張し続ける。
       handles.setCluster(clusterOf(state, state.selected));
       renderStat(state);
       renderDetail(state, onPickMesh, applyHighlight);
@@ -229,8 +229,8 @@ async function boot(): Promise<void> {
     state.selected = meshCode;
     handles.setSelected(meshCode);
 
-    // 地区が複数区画なら、その全体が入るように寄せる。1 区画へ寄ると
-    // 「隣接 11 区画」と書いてあるものの広がりが画面から外れる。
+    // 接している上位区画があるなら、その全体が入るように寄せる。
+    // 1 区画へ寄ると「接する上位区画 11」と書いてあるものが画面から外れる。
     const cluster = clusterOf(state, meshCode);
     const b = boundsOf(meshFC, cluster.length > 1 ? cluster : [meshCode]);
     if (b) {
@@ -293,6 +293,11 @@ async function boot(): Promise<void> {
   });
   document.getElementById("toggle-hosts")!.addEventListener("change", (e) => {
     handles.toggleLayer("host-points", (e.target as HTMLInputElement).checked);
+  });
+  // 見出し数値（区内で中位以上の到達不可 区画）が「どこなのか」を出す層。
+  // **数字だけ大きく出して場所を見せない状態が長く続いていた。**
+  document.getElementById("toggle-unreachable")!.addEventListener("change", (e) => {
+    handles.toggleLayer("mesh-unreachable", (e.target as HTMLInputElement).checked);
   });
 
   const tabs = [...document.querySelectorAll<HTMLButtonElement>(".tab")];

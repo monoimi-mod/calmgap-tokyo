@@ -445,6 +445,18 @@ p {
   background: var(--cat-host);
 }
 
+/* 到達不可は点ではなく面なので、丸ではなく四角の斜線で示す。
+   地図で使っている斜線パターンと同じ向き・同じ色にする
+   （凡例と地図で見た目が違うと、同じものだと分からない）。 */
+.swatch.unreachable {
+  border-radius: 2px;
+  background: repeating-linear-gradient(
+    45deg,
+    color-mix(in srgb, var(--text-primary) 55%, transparent) 0 1.5px,
+    transparent 1.5px 4px
+  );
+}
+
 /* ---------------------------------------------------------------- 地図 */
 
 #map-wrap {
@@ -464,6 +476,46 @@ p {
   padding: 9px 11px;
   border-radius: var(--radius);
   box-shadow: 0 2px 12px rgb(0 0 0 / 0.18);
+}
+
+/* 点をクリックしたときの詳細。ホバーの下見より情報が多いので幅を持たせる。 */
+.popup-card {
+  max-width: 230px;
+  line-height: 1.5;
+}
+
+.popup-kind,
+.popup-hint {
+  color: var(--text-muted);
+}
+
+.popup-role {
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.popup-row {
+  margin-top: 5px;
+}
+
+/* **仮の値であることを、値と同じ塊の中で言う。**
+   注記へ逃がすと読み飛ばされ、既定値が実測として引用される。 */
+.popup-assumed {
+  display: block;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.stat-hint {
+  color: var(--text-muted);
+}
+
+.popup-source {
+  margin-top: 6px;
+  padding-top: 5px;
+  border-top: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 11px;
 }
 
 /* ---------------------------------------------------------------- 凡例 */
