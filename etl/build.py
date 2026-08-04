@@ -295,6 +295,10 @@ def _attach_facts(mesh_gdf: gpd.GeoDataFrame, layers: dict) -> None:
     # 騒音と緑被覆は生値がそのまま意味を持つので、丸めるだけ。
     mesh_gdf["f_noise_db"] = np.round(mesh_gdf["noise"].to_numpy(), 1)
     mesh_gdf["f_green_pct"] = np.round(mesh_gdf["green"].to_numpy() * 100, 1)
+    # 混雑だけ実数を配信していなかった。**8 層のうち 1 層だけ実数が無いと、
+    # 「正規化値 0.93」の隣に何も置けない**——画面は実数と正規化値を
+    # 1 行に並べる作りにしたので、そこが空くと対応関係の説明が崩れる。
+    mesh_gdf["f_crowding"] = np.round(mesh_gdf["crowding"].to_numpy()).astype(int)
 
 
 # ---------------------------------------------------------------------------
@@ -343,6 +347,7 @@ def _feature_properties(row: pd.Series, xy: tuple[float, float] | None = None) -
         ("f_station_riders", int),
         ("f_station_dist", int),
         ("f_host_n", int),
+        ("f_crowding", int),
         ("f_noise_db", float),
         ("f_green_pct", float),
     ):

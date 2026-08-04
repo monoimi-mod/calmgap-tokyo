@@ -515,9 +515,11 @@ p {
 /* **60 件を超えることがある**（上位区画の事業所は 71 件）。
    全部出したうえで枠を切って中だけ送る——件数を減らすと
    「地図の点と同じ」ではなくなる。 */
-.fact-list > td {
-  padding: 0 0 10px;
+.fact-list {
+  margin: 0 -6px 8px;
+  padding-bottom: 8px;
   background: var(--surface-2);
+  border-radius: var(--radius);
 }
 
 .fl-head {
@@ -668,25 +670,33 @@ p {
  * 地図に光らせられる実数の行。**「事業所 60 件」と書いてあっても
  * どこにあるか分からない**、というのが元の指摘だった。
  */
-tr.is-highlightable {
+/* 押すと施設一覧が開く行。**内訳の行そのものがこれになった**
+   （かつては「この区画の実数」という別の表の行だった）。 */
+.factor.is-highlightable {
   cursor: pointer;
+  border-radius: var(--radius);
+  padding: 4px 6px;
+  margin-left: -6px;
+  margin-right: -6px;
 }
 
-tr.is-highlightable th {
+.factor.is-highlightable .factor-label {
   text-decoration: underline;
   text-decoration-style: dotted;
   text-underline-offset: 2px;
 }
 
-tr.is-highlightable:hover {
+.factor.is-highlightable:hover,
+.factor.is-highlightable:focus-visible {
   background: var(--surface-2);
+  outline: none;
 }
 
-tr.is-highlightable.is-on {
+.factor.is-highlightable.is-on {
   background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
-tr.is-highlightable.is-on th {
+.factor.is-highlightable.is-on .factor-label {
   color: var(--accent);
   font-weight: 700;
 }
@@ -806,6 +816,26 @@ tr.is-highlightable.is-on th {
   gap: 8px;
   font-size: 11.5px;
   margin-bottom: 5px;
+}
+
+/* **実数を正規化値と同じ行に置く。** 別の節に分けていたときは、
+   同じレイヤーが画面の 2 箇所に、対応の付かない形で出ていた。 */
+.factor-fact {
+  margin-top: 2px;
+  line-height: 1.5;
+}
+
+/* 何を数えた値か（半径がバラバラな理由がここで分かる）。 */
+.factor-basis {
+  display: block;
+  color: var(--text-muted);
+  font-size: 10.5px;
+}
+
+/* 重み 0 の層は消さずに、効いていないことを行の側で言う。 */
+.factor-zero {
+  margin-left: 4px;
+  color: var(--text-muted);
 }
 
 .factor-bar {

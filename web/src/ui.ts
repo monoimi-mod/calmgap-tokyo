@@ -179,159 +179,149 @@ export interface FactSection {
 }
 
 /**
- * その区画の「実数」。ETL が f_* として配信している表示専用の値。
+ * 1 レイヤーぶんの「実数」。ETL が f_* として配信している表示専用の値。
  *
- * スコアは順位に正規化された相対値なので、それ単体では提言文にならない。
- * 「需要 0.94」ではなく「徒歩圏に事業所 4 件・定員 77 人」と書けて初めて
- * 予算会議の資料になる。
- *
- * **節に分けているのは、1 枚の表に性質の違う値が混ざっていたから。**
- * かつては 8 行を平らに並べており、半径 800m の件数・1,500m 以内の最寄り 1 件・
- * 区画自身の値・半径 700m の件数が同じ見た目で並んでいた。しかも「徒歩圏の」が
- * 付いているのは障害福祉サービス事業所だけで、同じ 800m の精神科・心療内科には
- * 付いていない。**半径が 1 つだけ違うこと（公共施設の 700m）が、
- * 節に分けて初めて見える。**
+ * **かつては「この区画の実数」という独立した節だった。** 8 層の正規化値を
+ * 並べる「需要側の内訳／負荷側の内訳」とは別の場所に、同じ 8 層の実数が
+ * 別の順序で並んでいた——**同じレイヤーが画面の 2 箇所に、対応の付かない
+ * 形で出ていた**（「障害福祉サービス事業所 60件」と「障害福祉サービス
+ * 事業所 0.995」が離れた場所にあり、どちらがどちらの根拠なのか読めない）。
+ * 実数を内訳の行そのものへ畳んだので、この関数は 1 行ぶんを返す。
  */
-export function factsOf(row: MeshProps, radius: Meta["fact_radius_m"]): FactSection[] {
+export interface LayerFact {
+  /** 実数の文字列。空文字なら、その層に実数が無い。 */
+  value: string;
+  /** 何を数えた値かの一言。半径がバラバラな理由がここで分かる。 */
+  basis: string;
+  /** 地図に光らせられる層。数えた半径も持つ（円を描くため）。 */
+  hl?: { kind: HighlightKind; radiusM: number };
+}
+
+export function layerFact(
+  key: string,
+  row: MeshProps,
+  radius: Meta["fact_radius_m"],
+): LayerFact {
   const g = (k: string) => row[k] as number | undefined;
   const s = (k: string) => row[k] as string | undefined;
 
-  // 半径ごとに束ねる。3 層とも同じ 800m なら 1 節にまとまり、
-  // 帯域を層ごとに変えたら節が自動的に分かれる。
-  const walk: (FactItem & { r: number })[] = [];
-  if (g("f_welfare_n")) {
-    const cap = g("f_welfare_cap");
-    // 徒歩圏は区界で切っていない（エッジ効果を避けるため入力を区界の外側
-    // 2km まで拾う設計）。**その事実をカードに出す**——外周のメッシュは
-    // 「隣の市の事業所」で需要が決まっていることがある（docs/issues.md B1）。
-    const outside = g("f_welfare_outside_n") ?? 0;
-    walk.push({
-      label: "障害福祉サービス事業所",
-      r: radius.welfare,
-      hl: { kind: "welfare", radiusM: radius.welfare },
-      value:
-        `${num(g("f_welfare_n")!)}件${cap ? `（定員 ${num(cap)}人）` : ""}` +
-        (outside ? ` ※うち対象23区の外 ${num(outside)}件` : ""),
-    });
-  }
-  if (g("f_school_n")) {
-    walk.push({
-      label: "特別支援学校",
-      r: radius.school,
-      hl: { kind: "school", radiusM: radius.school },
-      value: `${num(g("f_school_n")!)}校`,
-    });
-  }
-  if (g("f_clinic_n")) {
-    walk.push({
-      label: "精神科・心療内科",
-      r: radius.clinic,
-      hl: { kind: "clinic", radiusM: radius.clinic },
-      value: `${num(g("f_clinic_n")!)}件`,
-    });
-  }
-  // **駅も件数で出す。** かつては「1,500m 以内の最寄り 1 駅」しか無く、
-  // 事業所 60 件・学校 1 校…と件数が並ぶ中で駅だけ 1 件に見えていた。
-  // スコア（`station_flow`）は最寄り 1 駅など見ておらず、帯域 600m の
-  // カーネルで**周囲の全駅を足している**。半径はその帯域に揃える
-  // （他の 3 層が 800m を出しているのと同じ規則。`meta.fact_radius_m`）。
-  if (g("f_station_n")) {
-    const sum = g("f_station_sum");
-    walk.push({
-      label: "駅",
-      r: radius.station,
-      hl: { kind: "station", radiusM: radius.station },
-      value:
-        `${num(g("f_station_n")!)}駅` +
-        (sum ? `（乗降計 ${num(sum)}人/日）` : ""),
-    });
-  }
+  // **徒歩圏の半径は、その層がスコアに使っている帯域と同じ値。**
+  // 層ごとに違うのはそのためで、表示のために選んだ数字ではない
+  // （駅だけ 1,500m の最寄り 1 駅だった名残を 2026-08-04 に直した）。
+  const walk = (r: number) => `徒歩圏 ${num(r)}m の件数`;
 
-  const nearest: FactItem[] = [];
-  if (s("f_station_name")) {
-    const r = g("f_station_riders");
-    const d = g("f_station_dist");
-    nearest.push({
-      label: s("f_station_name")!,
-      // 最寄り 1 駅なので円は描かない（半径 0 = 円なし）。
-      hl: { kind: "station_nearest", radiusM: 0 },
-      value:
-        (r ? `乗降 ${num(r)}人/日` : "乗降規模不明") +
-        (d != null ? ` / ${num(d)}m` : ""),
-    });
+  switch (key) {
+    case "welfare_capacity": {
+      const n = g("f_welfare_n");
+      if (!n) return { value: "0件", basis: walk(radius.welfare) };
+      const cap = g("f_welfare_cap");
+      // 徒歩圏は区界で切っていない（エッジ効果を避けるため入力を区界の
+      // 外側 2km まで拾う設計）。**その事実を実数の隣に出す**——外周の
+      // メッシュは「隣の市の事業所」で需要が決まっていることがある。
+      const outside = g("f_welfare_outside_n") ?? 0;
+      return {
+        value:
+          `${num(n)}件${cap ? `（定員 ${num(cap)}人）` : ""}` +
+          (outside ? ` ※うち対象23区の外 ${num(outside)}件` : ""),
+        basis: walk(radius.welfare),
+        hl: { kind: "welfare", radiusM: radius.welfare },
+      };
+    }
+    case "sped_school": {
+      const n = g("f_school_n");
+      return n
+        ? {
+            value: `${num(n)}校`,
+            basis: walk(radius.school),
+            hl: { kind: "school", radiusM: radius.school },
+          }
+        : { value: "0校", basis: walk(radius.school) };
+    }
+    case "station_flow": {
+      const n = g("f_station_n");
+      if (!n) return { value: "0駅", basis: walk(radius.station) };
+      const sum = g("f_station_sum");
+      return {
+        value: `${num(n)}駅${sum ? `（乗降計 ${num(sum)}人/日）` : ""}`,
+        basis: walk(radius.station),
+        hl: { kind: "station", radiusM: radius.station },
+      };
+    }
+    case "clinic": {
+      const n = g("f_clinic_n");
+      return n
+        ? {
+            value: `${num(n)}件`,
+            basis: walk(radius.clinic),
+            hl: { kind: "clinic", radiusM: radius.clinic },
+          }
+        : { value: "0件", basis: walk(radius.clinic) };
+    }
+    // 負荷側は 4 層とも「区画自身に与えられた値」で、周囲を数えたものではない。
+    // 需要側と基準が違うことを、行ごとの basis で言う。
+    case "zoning":
+      return { value: s("f_zoning_name") ?? "—", basis: "この区画の値（面積最大の区分）" };
+    case "noise":
+      return {
+        value: g("f_noise_db") != null ? `${g("f_noise_db")} dB (LAeq)` : "—",
+        basis: "この区画の値（測定点からの内挿）",
+      };
+    case "crowding":
+      return {
+        value: g("f_crowding") != null ? `${num(g("f_crowding")!)}人` : "—",
+        basis: "この区画の値（経済センサス 従業者数・500m メッシュ）",
+      };
+    case "green": {
+      const pct = g("f_green_pct") ?? 0;
+      return {
+        value: pct > 0 ? `${pct}%` : "0%（屋外に退避先なし）",
+        basis: "この区画の値（都市公園の面積被覆率）",
+      };
+    }
+    default:
+      return { value: "", basis: "" };
   }
+}
 
-  const own: FactItem[] = [];
-  if (s("f_zoning_name")) own.push({ label: "用途地域", value: s("f_zoning_name")! });
-  if (g("f_noise_db")) {
-    own.push({ label: "推定騒音", value: `${g("f_noise_db")} dB (LAeq)` });
-  }
-  own.push({
-    label: "緑・公園被覆",
-    value: g("f_green_pct") ? `${g("f_green_pct")}%` : "0%（屋外に退避先なし）",
-  });
+/**
+ * 順位表の見出しに使う「この区画の呼び名」。**需要の実数ではない。**
+ *
+ * 半径 1,500m はこのためだけの距離で、スコアには入らない。
+ * 帯域の 600m に揃えると 9,507 区画のうち 4,197 件（44.1%）が名前を失う。
+ */
+export function nearestStationFact(
+  row: MeshProps,
+  radius: Meta["fact_radius_m"],
+): FactItem | null {
+  const name = row.f_station_name as string | undefined;
+  if (!name) return null;
+  const r = row.f_station_riders as number | undefined;
+  const d = row.f_station_dist as number | undefined;
+  return {
+    label: name,
+    // 最寄り 1 駅なので円は描かない（半径 0 = 円なし）。
+    hl: { kind: "station_nearest", radiusM: 0 },
+    value:
+      (r ? `乗降 ${num(r)}人/日` : "乗降規模不明") +
+      (d != null ? ` / ${num(d)}m` : "") +
+      `（${num(radius.station_max)}m 以内の最寄り 1 駅）`,
+  };
+}
 
-  // 供給側について言える唯一の実数。数えているのは施設一覧の行数であって
-  // 建物の数ではない（同じ建物の別種別が別行で載っている。docs/issues.md）。
-  const host: FactItem[] = [
-    {
-      label: "区の公共施設",
-      value: g("f_host_n") ? `${num(g("f_host_n")!)}件（一覧の行数）` : "0件",
-      ...(g("f_host_n") ? { hl: { kind: "host" as const, radiusM: radius.host } } : {}),
-    },
-  ];
-
-  const walkSections: FactSection[] = [...new Set(walk.map((w) => w.r))]
-    .sort((a, b) => a - b)
-    .map((r) => ({
-      title: `徒歩圏（半径 ${num(r)}m）にあるもの`,
-      // **半径が層で違う理由を、その半径のすぐ隣で言う。**
-      // 「なぜ半径がバラバラなのか」は当然の疑問で、答えは
-      // 「各層がスコア計算で使っている帯域をそのまま出しているから」。
-      // 表示のために別の半径を選ぶと、画面の件数とスコアの根拠が
-      // 別の範囲を指すことになる（駅が実際そうなっていた）。
-      note:
-        `この区画の中心から ${num(r)}m 以内にある件数です。` +
-        "区界では切っていないため、隣の自治体の施設も含みます。" +
-        `この ${num(r)}m は、スコアがこの層に使っている帯域と同じ値です` +
-        "（層ごとに違うのはそのためで、表示のために選んだ数字ではありません）。",
-      items: walk.filter((w) => w.r === r).map(({ label, value, hl }) => ({ label, value, hl })),
-    }));
-
-  return [
-    ...walkSections,
-    {
-      title: "この区画の呼び名",
-      // **役割が違うことを書く。** ここだけ半径が 1,500m なのは、
-      // これが需要の実数ではなく**区画に付ける名前**だから
-      //（順位表の見出し「豊島区 大塚」の「大塚」がこれ）。
-      // 帯域の 600m に揃えると 9,507 区画のうち 4,197 件（44.1%）が
-      // 名前を失うので、ここは別の半径のままにしてある。
-      note:
-        `順位表の見出しに使う最寄り駅です（${num(radius.station_max)}m 以内で` +
-        "最も近い 1 駅）。これは区画に付ける名前で、需要の実数ではありません" +
-        `——需要に効いている駅は上の「徒歩圏（半径 ${num(radius.station)}m）」の方です。`,
-      items: nearest,
-    },
-    {
-      title: "この区画そのものの値",
-      note: "周囲を数えたものではなく、区画自身に与えられた値です。",
-      items: own,
-    },
-    {
-      title: `既存の公共施設（半径 ${num(radius.host)}m）`,
-      // **ここだけ「帯域」ではない。** 上の徒歩圏は各層がスコアに使っている
-      // 帯域だが、この 700m はスコアに一切入らない——「徒歩圏に 1 件も無い＝
-      // 到達不可」という**主張の定義そのもの**である。種類の違う数字なので、
-      // 揃えずに、揃っていない理由を書く。
-      note:
-        `この ${num(radius.host)}m だけは帯域ではなく、「徒歩圏に 1 件も無い＝到達不可」` +
-        "という判定の境目です（スコアには一切入りません）。" +
-        "上の徒歩圏とは種類の違う距離なので揃えていません。" +
-        "23 区が公開する公共施設一覧のみを数えており、都・国・民間の施設は入っていません。",
-      items: host,
-    },
-  ].filter((sec) => sec.items.length > 0);
+/**
+ * 供給側について言える唯一の実数。**スコアには一切入らない。**
+ *
+ * 700m だけ半径が違うのは、これが帯域ではなく
+ * 「徒歩圏に 1 件も無い＝到達不可」という主張の定義そのものだから。
+ * 数えているのは施設一覧の行数であって建物の数ではない（docs/issues.md）。
+ */
+export function hostFact(row: MeshProps, radius: Meta["fact_radius_m"]): FactItem {
+  const n = (row.f_host_n as number | undefined) ?? 0;
+  return {
+    label: "区の公共施設",
+    value: n ? `${num(n)}件（一覧の行数）` : "0件",
+    ...(n ? { hl: { kind: "host" as const, radiusM: radius.host } } : {}),
+  };
 }
 
 /**
@@ -878,7 +868,7 @@ const LIST_CAPACITY: Record<
 };
 
 /**
- * 開いている行の直下に差し込む施設一覧（`<tr>` 1 行に押し込む）。
+ * 開いている行の直下に差し込む施設一覧。
  *
  * **並べるのは `state.highlightPoints` そのもので、ここで数え直さない。**
  * 地図へ渡すのと同一の配列なので、一覧の行数・地図の点の数・表の件数が
@@ -889,7 +879,7 @@ const LIST_CAPACITY: Record<
  * 平面直角座標（x/y・mx/my）で出す**——緯度経度から測ると 800m の境界付近が
  * ずれる（CLAUDE.md「数えたものと光らせるもの」）。
  */
-function facilityListRow(state: AppState, row: MeshProps): string {
+function facilityListBlock(state: AppState, row: MeshProps): string {
   const fc = state.highlightPoints;
   if (!fc || !fc.features.length) return "";
 
@@ -943,11 +933,11 @@ function facilityListRow(state: AppState, row: MeshProps): string {
     ...new Set(fc.features.map((f) => String((f.properties as { source?: string })?.source ?? ""))),
   ].filter(Boolean);
 
-  return `<tr class="fact-list"><td colspan="2">
+  return `<div class="fact-list">
       <div class="fl-head">${fc.features.length.toLocaleString("ja-JP")} 件（地図に出ている点と同じ）・近い順</div>
       <ul class="fl-list">${rows}</ul>
       ${sources.length ? `<div class="fl-source">出典: ${escapeHtml(sources.join(" / "))}</div>` : ""}
-    </td></tr>`;
+    </div>`;
 }
 
 function renderSelected(
@@ -1002,118 +992,137 @@ function renderSelected(
   narrative.textContent = narrate(state, idx, rank, weights, meta);
   body.appendChild(narrative);
 
-  // --- 実数（スコアの根拠になる生の数字） ---
+  // --- 8 レイヤーの内訳（実数と正規化値を 1 行に並べる） ---
   //
-  // 節ごとに「どの半径で数えたか」を一度だけ書く。平らな 1 枚の表に戻すと、
-  // 半径 800m の件数・最寄り 1 件・区画自身の値・半径 700m の件数が
-  // 同じ見た目で並び、読み手が区別できない。
-  const sections = factsOf(row, meta.fact_radius_m);
-  if (sections.length) {
-    const box = document.createElement("div");
-    // **光らせられる行はクリックできることを見せる。** 「事業所 60 件」と
-    // 書いてあってもどこにあるか分からない、というのが元の指摘だった。
-    box.innerHTML =
-      "<h2>この区画の実数</h2>" +
-      '<p class="factor-source" style="margin:-4px 0 8px">' +
-      "下線のある行を選ぶと、数えた施設が<b>下に一覧で開き</b>、同時に地図にも出ます。" +
-      "<b>一覧の行数と地図の点の数は、ここの件数と必ず一致します。</b></p>" +
-      sections
-        .map(
-          (sec) =>
-            `<div class="fact-section">
-               <div class="fact-section-title">${escapeHtml(sec.title)}</div>
-               <div class="factor-source">${escapeHtml(sec.note)}</div>
-               <table class="data-table">` +
-            sec.items
-              .map((f) => {
-                const on = f.hl && state.highlight === f.hl.kind;
-                const attrs = f.hl
-                  ? ` class="is-highlightable${on ? " is-on" : ""}" data-hl="${f.hl.kind}"` +
-                    ` data-r="${f.hl.radiusM}" role="button" tabindex="0"` +
-                    ` aria-expanded="${on ? "true" : "false"}"`
-                  : "";
-                return (
-                  `<tr${attrs}><th style="text-transform:none;letter-spacing:0">${escapeHtml(f.label)}</th>` +
-                  `<td class="num">${escapeHtml(f.value)}</td></tr>` +
-                  // **開いた行の直下に一覧を差し込む。** 地図の点を押すのは
-                  // 250m 四方に 60 件が重なる場所では現実的でなく、
-                  // 「60 件」と書いてある行のすぐ下に名前が並ぶほうが早い。
-                  (on ? facilityListRow(state, row) : "")
-                );
-              })
-              .join("") +
-            "</table></div>",
-        )
-        .join("");
-
-    for (const tr of box.querySelectorAll<HTMLElement>("tr[data-hl]")) {
-      const kind = tr.dataset.hl as HighlightKind;
-      const fire = () => onHighlight(state.highlight === kind ? null : kind);
-      tr.addEventListener("click", fire);
-      tr.addEventListener("keydown", (e) => {
-        if ((e as KeyboardEvent).key === "Enter" || (e as KeyboardEvent).key === " ") {
-          e.preventDefault();
-          fire();
-        }
-      });
-    }
-
-    // 一覧の項目を押したら、その施設へ地図を寄せる。
-    // **一覧は開いた行の直下にある別の `<tr>` なので、行のクリック判定とは
-    // 別物**（同じ `<tr>` に入れていたら、一覧を触るたびに一覧が閉じる）。
-    for (const li of box.querySelectorAll<HTMLElement>(".fl-item[data-lon]")) {
-      const lon = Number(li.dataset.lon);
-      const lat = Number(li.dataset.lat);
-      const fire = () => onFocusPoint(lon, lat);
-      li.addEventListener("click", fire);
-      li.addEventListener("keydown", (e) => {
-        if ((e as KeyboardEvent).key === "Enter" || (e as KeyboardEvent).key === " ") {
-          e.preventDefault();
-          fire();
-        }
-      });
-    }
-    body.appendChild(box);
-  }
-
+  // **かつては「この区画の実数」と「需要側／負荷側の内訳」が別の節だった。**
+  // 同じ 8 層が画面の 2 箇所に、しかも別の順序で出ていた——実数の側は
+  // 半径ごと、内訳の側は寄与の大きい順。**「事業所 60件」と
+  // 「事業所 0.995」が離れた場所にあり、どちらがどちらの根拠なのか
+  // 読めなかった。** 1 行に畳んで対応を自明にする。
+  //
+  // **並び順は meta.components そのまま**（= config.py の定義順 =
+  // 左のスライダー・算出方法の一覧と同じ）。寄与の大きい順に並べ替えると、
+  // 区画を選び直すたびに行が入れ替わり、**区画どうしを見比べられない**。
+  // 大きさは棒が示すので、順序に情報を持たせる必要が無い。
   for (const side of ["demand", "load"] as const) {
+    const comps = meta.components.filter((c) => c.side === side);
     const section = document.createElement("div");
     section.className = "factors";
-    section.innerHTML = `<h2 style="margin-top:14px">${side === "demand" ? "需要側の内訳" : "負荷側の内訳"}</h2>`;
+    section.innerHTML =
+      `<h2 style="margin-top:14px">${side === "demand" ? "需要側" : "負荷側"}の内訳` +
+      `（${comps.length} レイヤー）</h2>` +
+      (side === "demand"
+        ? '<p class="factor-source" style="margin:-4px 0 8px">' +
+          "<b>下線のある行を選ぶと、数えた施設が下に一覧で開き、同時に地図にも出ます。</b>" +
+          "一覧の行数と地図の点の数は、行に書いた件数と必ず一致します。</p>"
+        : "");
 
-    const factors = topFactors(row, meta.components, side, weights, 6);
-    if (!factors.length) {
-      section.innerHTML += '<div class="empty">この側の重みがすべて 0 です。</div>';
-      body.appendChild(section);
-      continue;
-    }
+    for (const c of comps) {
+      const w = weights[c.key] ?? c.weight;
+      const normalized = (row[`n_${c.key}`] as number) ?? 0;
+      const fact = layerFact(c.key, row, meta.fact_radius_m);
+      const on = fact.hl && state.highlight === fact.hl.kind;
 
-    for (const f of factors) {
-      const negative = f.component.sign < 0;
       const el = document.createElement("div");
-      el.className = "factor";
-      // 数値のすぐ隣で「この 0.89 は何の 0.89 か」を言う。
-      // 8 層のうち 2 層（騒音・用途地域）は地域内順位ではない。
-      const tag = scaleTag(f.component);
+      el.className = "factor" + (fact.hl ? " is-highlightable" : "") + (on ? " is-on" : "");
+      if (fact.hl) {
+        el.dataset.hl = fact.hl.kind;
+        el.setAttribute("role", "button");
+        el.setAttribute("tabindex", "0");
+        el.setAttribute("aria-expanded", on ? "true" : "false");
+      }
+      // 重みが 0 の層は、スコアに効いていないことを行の側で言う。
+      // 消してしまうと「そもそも測っていない」と読めてしまう。
+      const zero = w === 0 ? '<span class="factor-zero">重み 0</span>' : "";
       el.innerHTML = `
         <div>
-          <div class="factor-label">${escapeHtml(f.component.label)} ${tag}</div>
-          <div class="factor-bar${negative ? " is-negative" : ""}">
-            <i style="width:${Math.round(f.normalized * 100)}%"></i>
+          <div class="factor-label">${escapeHtml(c.label)} ${scaleTag(c)}${zero}</div>
+          <div class="factor-fact">${escapeHtml(fact.value)}<span class="factor-basis">${escapeHtml(fact.basis)}</span></div>
+          <div class="factor-bar${c.sign < 0 ? " is-negative" : ""}">
+            <i style="width:${Math.round(normalized * 100)}%"></i>
           </div>
-          <div class="factor-source">${escapeHtml(f.component.source)}</div>
+          <div class="factor-source">出典: ${escapeHtml(c.source)}</div>
         </div>
-        <div class="factor-num">${fmt(f.normalized)}</div>`;
+        <div class="factor-num">${fmt(normalized)}</div>`;
       section.appendChild(el);
+      if (on) section.insertAdjacentHTML("beforeend", facilityListBlock(state, row));
     }
     body.appendChild(section);
   }
+
+  // --- スコアに入らない 2 つ ---
+  //
+  // **この 2 つを内訳に混ぜてはいけない。** どちらも重みを持たず、
+  // 優先度に 1 ミリも寄与しない。上の 8 行と同じ見た目で並べると、
+  // 「9 番目・10 番目のレイヤー」に見える。
+  const extra = document.createElement("div");
+  extra.className = "factors";
+  extra.innerHTML =
+    '<h2 style="margin-top:14px">スコアに入らない値</h2>' +
+    '<p class="factor-source" style="margin:-4px 0 8px">' +
+    "下の 2 つは重みを持たず、優先度に寄与しません。</p>";
+
+  const host = hostFact(row, meta.fact_radius_m);
+  const near = nearestStationFact(row, meta.fact_radius_m);
+  for (const [item, basis] of [
+    [
+      host,
+      `到達可否の境目（半径 ${num(meta.fact_radius_m.host)}m）。` +
+        "帯域ではなく「徒歩圏に 1 件も無い＝到達不可」という判定の距離です。" +
+        "23 区が公開する一覧のみで、都・国・民間の施設は入っていません。",
+    ],
+    ...(near ? [[near, "順位表の見出しに使う、この区画の呼び名です。"] as const] : []),
+  ] as [FactItem, string][]) {
+    const on = item.hl && state.highlight === item.hl.kind;
+    const el = document.createElement("div");
+    el.className = "factor" + (item.hl ? " is-highlightable" : "") + (on ? " is-on" : "");
+    if (item.hl) {
+      el.dataset.hl = item.hl.kind;
+      el.setAttribute("role", "button");
+      el.setAttribute("tabindex", "0");
+      el.setAttribute("aria-expanded", on ? "true" : "false");
+    }
+    el.innerHTML = `
+      <div>
+        <div class="factor-label">${escapeHtml(item.label)}</div>
+        <div class="factor-fact">${escapeHtml(item.value)}<span class="factor-basis">${escapeHtml(basis)}</span></div>
+      </div>
+      <div class="factor-num"></div>`;
+    extra.appendChild(el);
+    if (on) extra.insertAdjacentHTML("beforeend", facilityListBlock(state, row));
+  }
+  body.appendChild(extra);
+
+  // --- 行と一覧の配線 ---
+  //
+  // 行を押すとハイライトが切り替わり、一覧が開く／閉じる。
+  // **一覧の項目は行の外側にある別の要素**（同じ要素に入れていたら、
+  // 一覧を触るたびに一覧が閉じる）。
+  for (const el of body.querySelectorAll<HTMLElement>(".factor[data-hl]")) {
+    const kind = el.dataset.hl as HighlightKind;
+    const fire = () => onHighlight(state.highlight === kind ? null : kind);
+    el.addEventListener("click", fire);
+    el.addEventListener("keydown", (e) => {
+      if ((e as KeyboardEvent).key === "Enter" || (e as KeyboardEvent).key === " ") {
+        e.preventDefault();
+        fire();
+      }
+    });
+  }
+  for (const li of body.querySelectorAll<HTMLElement>(".fl-item[data-lon]")) {
+    const lon = Number(li.dataset.lon);
+    const lat = Number(li.dataset.lat);
+    const fire = () => onFocusPoint(lon, lat);
+    li.addEventListener("click", fire);
+    li.addEventListener("keydown", (e) => {
+      if ((e as KeyboardEvent).key === "Enter" || (e as KeyboardEvent).key === " ") {
+        e.preventDefault();
+        fire();
+      }
+    });
+  }
 }
 
-/**
- * 表形式。色に頼らずに順位を読めるようにするためのアクセシビリティ経路であり、
- * 数値をそのまま資料へ転記するための出力でもある。
- */
 /* ------------------------------------------------------------------ 補助 */
 
 export function renderBanner(meta: Meta): void {
