@@ -174,8 +174,10 @@ async function boot(): Promise<void> {
     let picked: GeoJSON.Feature[] = [];
     let radiusM = 0;
 
-    if (kind === "station") {
+    if (kind === "station_nearest") {
       // 最寄り 1 駅。Python の nearest_feature と同じ「いちばん近い 1 件」。
+      // **これは区画の呼び名で、需要の実数ではない**（半径 1,500m）。
+      // 帯域 600m の全駅は下の半径判定の側（kind === "station"）で扱う。
       let best: GeoJSON.Feature | null = null;
       let bestD2 = Infinity;
       for (const f of demandFC.features) {
@@ -192,7 +194,7 @@ async function boot(): Promise<void> {
       if (best) picked = [best];
     } else {
       radiusM = meta.fact_radius_m[
-        kind as "welfare" | "school" | "clinic" | "host"
+        kind as "welfare" | "school" | "clinic" | "host" | "station"
       ];
       const r2 = radiusM * radiusM;
       for (const f of src.features) {

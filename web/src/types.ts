@@ -61,12 +61,22 @@ export interface Meta {
    * 画面はここから節見出しを作る（半径を TypeScript に直接書くと、
    * 帯域を動かしたときにラベルだけが古い値を主張し続ける）。
    */
+  /**
+   * 実数を数えた半径。**welfare / school / clinic / station は
+   * その層がスコアに使っている帯域そのもの**で、層ごとに違うのはそのため。
+   * host だけ種類が違う（スコアに入らない。到達可否の境目）。
+   */
   fact_radius_m: {
     welfare: number;
     school: number;
     clinic: number;
+    /** 駅の帯域（600m）。他の 3 層と同じ規則で、件数を数える半径。 */
+    station: number;
     host: number;
-    /** 最寄り駅を探す上限。件数ではなく最寄り 1 件なので意味が違う。 */
+    /**
+     * 最寄り駅を探す上限。**件数の半径ではない**——順位表の見出しに使う
+     * 「この区画の呼び名」を決めるためだけの距離で、スコアには入らない。
+     */
     station_max: number;
   };
   /**

@@ -51,8 +51,21 @@ export interface AppState {
   highlightPoints: GeoJSON.FeatureCollection | null;
 }
 
-/** ハイライトできる実数の種別。etl の f_* と 1 対 1。 */
-export type HighlightKind = "welfare" | "school" | "clinic" | "host" | "station";
+/**
+ * ハイライトできる実数の種別。etl の f_* と 1 対 1。
+ *
+ * **`station` と `station_nearest` は別物。** 前者は帯域 600m 以内の全駅
+ *（＝スコアが足しているもの）、後者は 1,500m 以内の最寄り 1 駅
+ *（＝区画の呼び名）。かつては後者しか無く、`station` という名前で
+ * 1 駅だけを指していた。
+ */
+export type HighlightKind =
+  | "welfare"
+  | "school"
+  | "clinic"
+  | "host"
+  | "station"
+  | "station_nearest";
 
 // 優先度は 9,507 区画の中で 0.99〜0.17 と動く。2 桁だと上位 100 件が
 // すべて 0.99 か 1.00 になり、差が無いように見えていた（実際には在る）。
@@ -217,6 +230,22 @@ export function factsOf(row: MeshProps, radius: Meta["fact_radius_m"]): FactSect
       value: `${num(g("f_clinic_n")!)}件`,
     });
   }
+  // **駅も件数で出す。** かつては「1,500m 以内の最寄り 1 駅」しか無く、
+  // 事業所 60 件・学校 1 校…と件数が並ぶ中で駅だけ 1 件に見えていた。
+  // スコア（`station_flow`）は最寄り 1 駅など見ておらず、帯域 600m の
+  // カーネルで**周囲の全駅を足している**。半径はその帯域に揃える
+  // （他の 3 層が 800m を出しているのと同じ規則。`meta.fact_radius_m`）。
+  if (g("f_station_n")) {
+    const sum = g("f_station_sum");
+    walk.push({
+      label: "駅",
+      r: radius.station,
+      hl: { kind: "station", radiusM: radius.station },
+      value:
+        `${num(g("f_station_n")!)}駅` +
+        (sum ? `（乗降計 ${num(sum)}人/日）` : ""),
+    });
+  }
 
   const nearest: FactItem[] = [];
   if (s("f_station_name")) {
@@ -225,7 +254,7 @@ export function factsOf(row: MeshProps, radius: Meta["fact_radius_m"]): FactSect
     nearest.push({
       label: s("f_station_name")!,
       // 最寄り 1 駅なので円は描かない（半径 0 = 円なし）。
-      hl: { kind: "station", radiusM: 0 },
+      hl: { kind: "station_nearest", radiusM: 0 },
       value:
         (r ? `乗降 ${num(r)}人/日` : "乗降規模不明") +
         (d != null ? ` / ${num(d)}m` : ""),
@@ -256,17 +285,32 @@ export function factsOf(row: MeshProps, radius: Meta["fact_radius_m"]): FactSect
     .sort((a, b) => a - b)
     .map((r) => ({
       title: `徒歩圏（半径 ${num(r)}m）にあるもの`,
+      // **半径が層で違う理由を、その半径のすぐ隣で言う。**
+      // 「なぜ半径がバラバラなのか」は当然の疑問で、答えは
+      // 「各層がスコア計算で使っている帯域をそのまま出しているから」。
+      // 表示のために別の半径を選ぶと、画面の件数とスコアの根拠が
+      // 別の範囲を指すことになる（駅が実際そうなっていた）。
       note:
         `この区画の中心から ${num(r)}m 以内にある件数です。` +
-        "区界では切っていないため、隣の自治体の施設も含みます。",
+        "区界では切っていないため、隣の自治体の施設も含みます。" +
+        `この ${num(r)}m は、スコアがこの層に使っている帯域と同じ値です` +
+        "（層ごとに違うのはそのためで、表示のために選んだ数字ではありません）。",
       items: walk.filter((w) => w.r === r).map(({ label, value, hl }) => ({ label, value, hl })),
     }));
 
   return [
     ...walkSections,
     {
-      title: "最寄り駅",
-      note: `${num(radius.station_max)}m 以内で最も近い 1 駅です。件数ではありません。`,
+      title: "この区画の呼び名",
+      // **役割が違うことを書く。** ここだけ半径が 1,500m なのは、
+      // これが需要の実数ではなく**区画に付ける名前**だから
+      //（順位表の見出し「豊島区 大塚」の「大塚」がこれ）。
+      // 帯域の 600m に揃えると 9,507 区画のうち 4,197 件（44.1%）が
+      // 名前を失うので、ここは別の半径のままにしてある。
+      note:
+        `順位表の見出しに使う最寄り駅です（${num(radius.station_max)}m 以内で` +
+        "最も近い 1 駅）。これは区画に付ける名前で、需要の実数ではありません" +
+        `——需要に効いている駅は上の「徒歩圏（半径 ${num(radius.station)}m）」の方です。`,
       items: nearest,
     },
     {
@@ -276,8 +320,14 @@ export function factsOf(row: MeshProps, radius: Meta["fact_radius_m"]): FactSect
     },
     {
       title: `既存の公共施設（半径 ${num(radius.host)}m）`,
+      // **ここだけ「帯域」ではない。** 上の徒歩圏は各層がスコアに使っている
+      // 帯域だが、この 700m はスコアに一切入らない——「徒歩圏に 1 件も無い＝
+      // 到達不可」という**主張の定義そのもの**である。種類の違う数字なので、
+      // 揃えずに、揃っていない理由を書く。
       note:
-        `到達可否の判定だけ半径が ${num(radius.host)}m で、上の徒歩圏とは別の距離です。` +
+        `この ${num(radius.host)}m だけは帯域ではなく、「徒歩圏に 1 件も無い＝到達不可」` +
+        "という判定の境目です（スコアには一切入りません）。" +
+        "上の徒歩圏とは種類の違う距離なので揃えていません。" +
         "23 区が公開する公共施設一覧のみを数えており、都・国・民間の施設は入っていません。",
       items: host,
     },
@@ -331,11 +381,19 @@ function narrate(
   }
   if (row.f_school_n) demandBits.push(`特別支援学校${num(row.f_school_n as number)}校`);
   if (row.f_clinic_n) demandBits.push(`精神科・心療内科${num(row.f_clinic_n as number)}件`);
+  // **根拠文でも「最寄り 1 駅」ではなく件数で述べる。**
+  // ここが「最寄りの大塚は乗降108,702人/日」だったが、スコアが見ているのは
+  // 帯域 600m 内の全駅の合計であって最寄り 1 駅ではない。
+  // 1 駅だけ書くと、駅が 4 つある区画の需要を 1 駅で説明したことになる。
+  const stN = row.f_station_n as number | undefined;
+  const stSum = row.f_station_sum as number | undefined;
   const stName = row.f_station_name as string | undefined;
-  const stRiders = row.f_station_riders as number | undefined;
-  if (stName) {
+  if (stN) {
     demandBits.push(
-      `最寄りの${stName}は乗降${stRiders ? `${num(stRiders)}人/日` : "規模大"}`,
+      `駅${num(stN)}駅` +
+        (stSum ? `（乗降計${num(stSum)}人/日` : "") +
+        (stSum && stName ? `・最寄りは${stName}` : "") +
+        (stSum ? "）" : ""),
     );
   }
   if (demandBits.length) parts.push(`${demandBits.join("、")}。`);

@@ -70,6 +70,15 @@ const groups = [
     points: xy(demand, (p) => p.layer === "clinic"),
     radius: radius.clinic,
   },
+  // **駅を後から足した。** 以前は「1,500m 以内の最寄り 1 駅」しか出しておらず
+  // 件数が無かったので、この検査の対象外だった。件数を出すようになった以上、
+  // 他の層と同じく「表の数字 = 地図の点 = 一覧の行数」を確かめる。
+  {
+    field: "f_station_n",
+    label: "徒歩圏の駅",
+    points: xy(demand, (p) => p.layer === "station"),
+    radius: radius.station,
+  },
   {
     field: "f_host_n",
     label: "徒歩圏の区の公共施設",

@@ -248,6 +248,33 @@ def _attach_facts(mesh_gdf: gpd.GeoDataFrame, layers: dict) -> None:
         mesh_gdf, layers["hosts"], HOST_MAX_DISTANCE_M, round_decimals=r
     ).to_numpy()
 
+    # **駅も件数で数える。他の需要 3 層と同じく、半径はその層の帯域。**
+    #
+    # かつてここは「1,500m 以内の最寄り 1 駅」しか出していなかった。
+    # だが**スコアは最寄り 1 駅など見ていない**——`station_flow` は他の層と
+    # 同じカーネル集計で、帯域 600m の重みで**周囲の全駅を足している**。
+    # 画面だけが 1 駅を指しており、
+    #
+    #   - 事業所 60 件・学校 1 校…と件数が並ぶ中で駅だけ 1 件に見える
+    #   - 駅が 2 つ以上あって人が多い区画を、画面が表現できない
+    #     （実際 600m 以内に 2 駅以上ある区画が 1,992 件・21.0% ある）
+    #   - 1,500m という半径がスコアのどの数字とも対応しない
+    #     （帯域 600m でもカットオフ 1,200m でもない）
+    #
+    # という 3 つが同時に起きていた。**表示半径はその層の帯域に揃える**
+    # （事業所・学校・クリニックが 800m を出しているのと同じ規則）。
+    walk_station = BANDWIDTH_M["station_flow"]
+    mesh_gdf["f_station_n"] = aggregate.count_within(
+        mesh_gdf, layers["stations"], walk_station, round_decimals=r
+    ).to_numpy()
+    mesh_gdf["f_station_sum"] = aggregate.count_within(
+        mesh_gdf, layers["stations"], walk_station, "capacity", round_decimals=r
+    ).to_numpy()
+
+    # **最寄り 1 駅は残す。役割が違う**——順位表の見出し「豊島区 大塚」の
+    # 「大塚」がこれで、**区画の呼び名**である。需要の実数ではない。
+    # 半径 1,500m はそのための到達範囲で、これを帯域に揃えて 600m にすると
+    # 9,507 区画のうち 4,197 件（44.1%）が呼び名を失う。
     station = aggregate.nearest_feature(
         mesh_gdf,
         layers["stations"],
@@ -311,6 +338,8 @@ def _feature_properties(row: pd.Series, xy: tuple[float, float] | None = None) -
         ("f_welfare_outside_n", int),
         ("f_school_n", int),
         ("f_clinic_n", int),
+        ("f_station_n", int),
+        ("f_station_sum", int),
         ("f_station_riders", int),
         ("f_station_dist", int),
         ("f_host_n", int),
@@ -483,7 +512,10 @@ def write_outputs(
             "welfare": BANDWIDTH_M["welfare_capacity"],
             "school": BANDWIDTH_M["sped_school"],
             "clinic": BANDWIDTH_M["clinic"],
+            # 駅も他の需要 3 層と同じ規則——その層の帯域を出す。
+            "station": BANDWIDTH_M["station_flow"],
             "host": HOST_MAX_DISTANCE_M,
+            # 最寄り 1 駅（＝区画の呼び名）を探す上限。件数の半径ではない。
             "station_max": STATION_MAX_DISTANCE_M,
         },
         # 提言リスト（＝順位表）に出す件数。TypeScript 側に重複定義を作らない
