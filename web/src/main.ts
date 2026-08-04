@@ -64,6 +64,7 @@ async function boot(): Promise<void> {
     weights,
     score: { demand: new Float64Array(), load: new Float64Array(), priority: new Float64Array(), order: [] },
     selected: null,
+    highlightPoints: null,
     tab: "ranking",
     activePreset: "default",
     displayMode: "priority",
@@ -125,8 +126,16 @@ async function boot(): Promise<void> {
       // 顔ぶれが変わったのに枠だけ残ると、画面が古い隣接を主張し続ける。
       handles.setCluster(clusterOf(state, state.selected));
       renderStat(state);
-      renderDetail(state, onPickMesh, applyHighlight);
-      handles.setHighlight(highlightFor(state));
+
+      // **1 回だけ数えて、地図と一覧の両方へ同じ配列を配る。**
+      // 一覧を別に組み立てると「表の件数・地図の点・一覧の行数」が
+      // 3 者ばらばらにずれ得るものになる。同じものを配れば、
+      // ずれる余地が構造的に無い（tools/facility_parity.mjs は
+      // 表と地図の一致を検査していて、一覧はその地図側と同一物）。
+      const hl = highlightFor(state);
+      state.highlightPoints = hl?.points ?? null;
+      renderDetail(state, onPickMesh, applyHighlight, onFocusPoint);
+      handles.setHighlight(hl);
     });
   }
 
@@ -214,6 +223,19 @@ async function boot(): Promise<void> {
   function applyHighlight(kind: HighlightKind | null): void {
     state.highlight = kind;
     render(false);
+  }
+
+  /**
+   * 一覧の項目から、その施設へ地図を寄せる。
+   *
+   * **区画の選択は変えない。** 変えると、寄せた先の区画が選択され、
+   * いま開いている一覧そのものが別の区画のものへ入れ替わる
+   *（「近くを見たい」だけの操作で文脈が飛ぶ）。
+   * ズームは点が押せる程度まで——ここまで来れば地図側の
+   * ポップアップで同じ情報が出る。
+   */
+  function onFocusPoint(lon: number, lat: number): void {
+    handles.flyTo(lon, lat, 16.2);
   }
 
   function select(meshCode: string | null): void {

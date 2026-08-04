@@ -38,6 +38,17 @@ export interface AppState {
    *（tools/facility_parity.mjs が全 9,507 区画で検査している）。
    */
   highlight: HighlightKind | null;
+  /**
+   * いま光らせている点そのもの。一覧をここから作る。
+   *
+   * **main.ts の highlightFor() が唯一の出所で、地図に渡すのと同じ配列を
+   * そのまま受け取る。** ここで数え直したり絞り直したりしてはいけない——
+   * そうした瞬間に「表の件数・地図の点・一覧の行数」が 3 者ばらばらに
+   * ずれ得るものになる。同じ配列を配れば、ずれる余地が構造的に無い
+   *（`tools/facility_parity.mjs` が表と地図の一致を検査しており、
+   * 一覧はその地図側と同一物である）。
+   */
+  highlightPoints: GeoJSON.FeatureCollection | null;
 }
 
 /** ハイライトできる実数の種別。etl の f_* と 1 対 1。 */
@@ -701,12 +712,13 @@ export function renderDetail(
   state: AppState,
   onPick: (meshCode: string, lon?: number, lat?: number) => void,
   onHighlight: (kind: HighlightKind | null) => void,
+  onFocusPoint: (lon: number, lat: number) => void = () => {},
 ): void {
   const body = document.getElementById("detail-body")!;
   body.innerHTML = "";
 
   if (state.tab === "ranking") renderRanking(body, state, onPick);
-  else renderSelected(body, state, onHighlight);
+  else renderSelected(body, state, onHighlight, onFocusPoint);
 }
 
 function renderRanking(
@@ -790,10 +802,101 @@ function renderRanking(
   body.appendChild(note);
 }
 
+/**
+ * 規模の欄の書き分け。map.ts の CAPACITY_LABEL と対になっている。
+ *
+ * **同じ `capacity` という列に、在籍者数（人）・定員（人）・
+ * 乗降客数（人/日）が入っている。** 単位を落とすと「規模 131」になり、
+ * 何の 131 なのかが消える。クリニックは全件 1（存在フラグ）なので出さない。
+ */
+const LIST_CAPACITY: Record<
+  string,
+  { label: string; unit: string; assumed?: string } | null
+> = {
+  school: { label: "在籍者数", unit: "人", assumed: "在籍者数が未公表・既定値" },
+  welfare: { label: "定員", unit: "人", assumed: "届出に定員の記載なし・種別ごとの既定値" },
+  station: { label: "乗降客数", unit: "人/日" },
+  clinic: null,
+};
+
+/**
+ * 開いている行の直下に差し込む施設一覧（`<tr>` 1 行に押し込む）。
+ *
+ * **並べるのは `state.highlightPoints` そのもので、ここで数え直さない。**
+ * 地図へ渡すのと同一の配列なので、一覧の行数・地図の点の数・表の件数が
+ * 構造的にずれ得ない（`tools/facility_parity.mjs` が後ろ 2 つの一致を
+ * 全 9,507 区画で検査しており、一覧はその地図側と同じもの）。
+ *
+ * 並び順は区画の中心からの距離の昇順。**距離は Python が数えるのと同じ
+ * 平面直角座標（x/y・mx/my）で出す**——緯度経度から測ると 800m の境界付近が
+ * ずれる（CLAUDE.md「数えたものと光らせるもの」）。
+ */
+function facilityListRow(state: AppState, row: MeshProps): string {
+  const fc = state.highlightPoints;
+  if (!fc || !fc.features.length) return "";
+
+  const mx = row.mx as number | undefined;
+  const my = row.my as number | undefined;
+
+  const items = fc.features
+    .map((f) => {
+      const p = (f.properties ?? {}) as Record<string, unknown>;
+      const x = p.x as number | undefined;
+      const y = p.y as number | undefined;
+      const d =
+        typeof mx === "number" && typeof my === "number" &&
+        typeof x === "number" && typeof y === "number"
+          ? Math.hypot(x - mx, y - my)
+          : null;
+      const g = f.geometry;
+      const c = g && g.type === "Point" ? (g.coordinates as number[]) : null;
+      return { p, d, lon: c?.[0] ?? null, lat: c?.[1] ?? null };
+    })
+    .sort((a, b) => (a.d ?? Infinity) - (b.d ?? Infinity));
+
+  const rows = items
+    .map(({ p, d, lon, lat }) => {
+      const spec = LIST_CAPACITY[String(p.layer ?? "")];
+      let size = "";
+      if (spec && p.capacity != null) {
+        const n = Number(p.capacity).toLocaleString("ja-JP");
+        // 仮の値であることを、値と同じ行に書く。
+        // 一覧で落とすと、60 行のうちどれが実測か分からなくなる。
+        const mark =
+          p.assumed && spec.assumed
+            ? `<span class="fl-assumed">仮（${escapeHtml(spec.assumed)}）</span>`
+            : "";
+        size = `<span class="fl-size">${escapeHtml(spec.label)} ${n}${escapeHtml(spec.unit)}</span>${mark}`;
+      }
+      const focus =
+        lon != null && lat != null ? ` data-lon="${lon}" data-lat="${lat}"` : "";
+      return `<li class="fl-item"${focus} role="button" tabindex="0">
+          <div class="fl-name">${escapeHtml(String(p.name ?? ""))}</div>
+          <div class="fl-meta">${escapeHtml(String(p.host_kind ?? p.kind ?? ""))}${
+            d != null ? ` ・ ${Math.round(d).toLocaleString("ja-JP")}m` : ""
+          }</div>
+          ${size ? `<div class="fl-size-row">${size}</div>` : ""}
+        </li>`;
+    })
+    .join("");
+
+  // 出典は一覧の末尾に一度だけ。行ごとに繰り返すと 60 回同じ文字列が並ぶ。
+  const sources = [
+    ...new Set(fc.features.map((f) => String((f.properties as { source?: string })?.source ?? ""))),
+  ].filter(Boolean);
+
+  return `<tr class="fact-list"><td colspan="2">
+      <div class="fl-head">${fc.features.length.toLocaleString("ja-JP")} 件（地図に出ている点と同じ）・近い順</div>
+      <ul class="fl-list">${rows}</ul>
+      ${sources.length ? `<div class="fl-source">出典: ${escapeHtml(sources.join(" / "))}</div>` : ""}
+    </td></tr>`;
+}
+
 function renderSelected(
   body: HTMLElement,
   state: AppState,
   onHighlight: (kind: HighlightKind | null) => void,
+  onFocusPoint: (lon: number, lat: number) => void,
 ): void {
   const { rows, score, meta, selected, weights } = state;
   if (!selected) {
@@ -854,8 +957,8 @@ function renderSelected(
     box.innerHTML =
       "<h2>この区画の実数</h2>" +
       '<p class="factor-source" style="margin:-4px 0 8px">' +
-      "下線のある行を選ぶと、数えた施設を地図に表示します。" +
-      "<b>地図に出る点の数は、ここの件数と必ず一致します。</b></p>" +
+      "下線のある行を選ぶと、数えた施設が<b>下に一覧で開き</b>、同時に地図にも出ます。" +
+      "<b>一覧の行数と地図の点の数は、ここの件数と必ず一致します。</b></p>" +
       sections
         .map(
           (sec) =>
@@ -868,11 +971,16 @@ function renderSelected(
                 const on = f.hl && state.highlight === f.hl.kind;
                 const attrs = f.hl
                   ? ` class="is-highlightable${on ? " is-on" : ""}" data-hl="${f.hl.kind}"` +
-                    ` data-r="${f.hl.radiusM}" role="button" tabindex="0"`
+                    ` data-r="${f.hl.radiusM}" role="button" tabindex="0"` +
+                    ` aria-expanded="${on ? "true" : "false"}"`
                   : "";
                 return (
                   `<tr${attrs}><th style="text-transform:none;letter-spacing:0">${escapeHtml(f.label)}</th>` +
-                  `<td class="num">${escapeHtml(f.value)}</td></tr>`
+                  `<td class="num">${escapeHtml(f.value)}</td></tr>` +
+                  // **開いた行の直下に一覧を差し込む。** 地図の点を押すのは
+                  // 250m 四方に 60 件が重なる場所では現実的でなく、
+                  // 「60 件」と書いてある行のすぐ下に名前が並ぶほうが早い。
+                  (on ? facilityListRow(state, row) : "")
                 );
               })
               .join("") +
@@ -885,6 +993,22 @@ function renderSelected(
       const fire = () => onHighlight(state.highlight === kind ? null : kind);
       tr.addEventListener("click", fire);
       tr.addEventListener("keydown", (e) => {
+        if ((e as KeyboardEvent).key === "Enter" || (e as KeyboardEvent).key === " ") {
+          e.preventDefault();
+          fire();
+        }
+      });
+    }
+
+    // 一覧の項目を押したら、その施設へ地図を寄せる。
+    // **一覧は開いた行の直下にある別の `<tr>` なので、行のクリック判定とは
+    // 別物**（同じ `<tr>` に入れていたら、一覧を触るたびに一覧が閉じる）。
+    for (const li of box.querySelectorAll<HTMLElement>(".fl-item[data-lon]")) {
+      const lon = Number(li.dataset.lon);
+      const lat = Number(li.dataset.lat);
+      const fire = () => onFocusPoint(lon, lat);
+      li.addEventListener("click", fire);
+      li.addEventListener("keydown", (e) => {
         if ((e as KeyboardEvent).key === "Enter" || (e as KeyboardEvent).key === " ") {
           e.preventDefault();
           fire();

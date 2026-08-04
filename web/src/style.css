@@ -510,6 +510,75 @@ p {
   color: var(--text-muted);
 }
 
+/* ------------------------------------------------ 開いた行の下に出る施設一覧 */
+
+/* **60 件を超えることがある**（上位区画の事業所は 71 件）。
+   全部出したうえで枠を切って中だけ送る——件数を減らすと
+   「地図の点と同じ」ではなくなる。 */
+.fact-list > td {
+  padding: 0 0 10px;
+  background: var(--surface-2);
+}
+
+.fl-head {
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 7px 10px 5px;
+}
+
+.fl-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 260px;
+  overflow-y: auto;
+  border-top: 1px solid var(--border);
+}
+
+.fl-item {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+
+.fl-item:last-child {
+  border-bottom: none;
+}
+
+.fl-item:hover,
+.fl-item:focus-visible {
+  background: var(--surface-raised);
+  outline: none;
+}
+
+.fl-name {
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.fl-meta,
+.fl-size-row {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.fl-size {
+  color: var(--text-primary);
+}
+
+/* 仮の値は 60 行の中で見分けが付かないといけない。 */
+.fl-assumed {
+  margin-left: 6px;
+}
+
+.fl-source {
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 7px 10px 0;
+  border-top: 1px solid var(--border);
+}
+
 .popup-source {
   margin-top: 6px;
   padding-top: 5px;

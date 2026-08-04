@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 from datetime import datetime, timezone
+from functools import lru_cache
 
 import geopandas as gpd
 import numpy as np
@@ -602,6 +603,27 @@ def _write_json(path, obj) -> None:
     print(f"[write] {path.relative_to(path.parents[3])} ({path.stat().st_size:,} B)")
 
 
+@lru_cache(maxsize=1)
+def _source_alias_map() -> dict[str, str]:
+    """旧 label → 現在の label。SOURCES から組み立てる。"""
+    out: dict[str, str] = {}
+    for src in SOURCES.values():
+        for old in src.aliases:
+            out[old] = src.label
+    return out
+
+
+def _current_source_label(stored: str) -> str:
+    """`data/processed` に焼き付いた出典名を、現在の label へ寄せる。
+
+    **一致しないものはそのまま返す。** 学校の規模には
+    「愛育学園 公表値（令和7年度4月1日現在）」「規模不明」のように
+    レジストリに無い出典が正当に入っており、ここで止めると
+    **出典を個別に書いたことそのものが罰になる**。
+    """
+    return _source_alias_map().get(stored, stored)
+
+
 def _write_geojson(
     path, gdf: gpd.GeoDataFrame, cols: list[str], with_xy: bool = False
 ) -> None:
@@ -625,6 +647,10 @@ def _write_geojson(
             v = row[c]
             if pd.isna(v):
                 continue
+            # 出典名は config が唯一の出所。processed に焼き付いている
+            # 旧 label を現在の label へ寄せる（Source.aliases）。
+            if c == "source":
+                v = _current_source_label(str(v))
             props[c] = v.item() if hasattr(v, "item") else v
         if xy is not None:
             g = xy.iloc[i]

@@ -569,6 +569,21 @@ class Source:
     # 空文字は「ページ内から機械的に確かめる手掛かりが無い」の意（API・検索）。
     file_hint: str = ""
 
+    # **この出典が過去に名乗っていた label。**
+    #
+    # `data/processed/*.geojson` の `source` 列は、正規化した時点の label を
+    # 焼き付けたスナップショットである（`fetch.py` が `SOURCES[...].label` を
+    # 書き込む）。つまり **label を直しても、既に正規化済みのデータは古い名前を
+    # 持ち回る**。実際 2026-08-04 に公共施設一覧の label を直したところ、
+    # 出典一覧は新しい名前・施設をクリックしたときの出典は古い名前、という
+    # **同じ出典が画面で 2 つの名前を名乗る**状態になった
+    # （施設一覧を出すようにして初めて見えた）。
+    #
+    # 30 本のファイルを正規化し直すのが本筋だが、**名前を直すたびに
+    # 再正規化が要るのはおかしい**——出典の名前は config が唯一の出所である。
+    # ここに旧 label を残し、配信時に現在の label へ寄せる（build.py）。
+    aliases: tuple[str, ...] = ()
+
 
 SOURCES: dict[str, Source] = {
     # --- 対象地域そのもの ---
@@ -726,6 +741,7 @@ SOURCES: dict[str, Source] = {
         layer="noise",
         vintage="平成25年度（2013）",
         file_hint="H25_kekka.csv",
+        aliases=("自動車騒音 要請限度測定結果",),
     ),
     "tokyo_rail_noise": Source(
         key="tokyo_rail_noise",
@@ -789,6 +805,7 @@ SOURCES: dict[str, Source] = {
         "北区は区が一覧を公開しておらず、P14 の児童館しか入っていない。",
         layer="hosts",
         vintage="2025年時点で各区が公開",
+        aliases=("公共施設一覧（図書館・文化施設・区民センター等）",),
     ),
     # --- Phase 2 ---
     "existing_calmdown": Source(
