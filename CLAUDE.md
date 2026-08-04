@@ -31,9 +31,10 @@ source .venv/bin/activate      # geopandas pandas numpy shapely pyproj requests
 ## 変更したら必ず通す
 
 ```bash
-python -m etl.selftest         # 62 件。不変条件と「間違いが黙って通らないこと」
-node tools/parity_check.mjs    # Python と TypeScript のスコア一致（全メッシュ）
-python tools/doc_numbers.py    # docs/status.md の現況値が配信データと合っているか
+python -m etl.selftest           # 62 件。不変条件と「間違いが黙って通らないこと」
+node tools/parity_check.mjs      # Python と TypeScript のスコア一致（全メッシュ）
+node tools/facility_parity.mjs   # 徒歩圏の件数と、地図に光る点の数の一致（全メッシュ）
+python tools/doc_numbers.py      # docs/status.md の現況値が配信データと合っているか
 ```
 
 `parity_check.mjs` は `web/public/data/` を読む。**模擬・実データの両モードで
@@ -55,6 +56,16 @@ python -m etl.build --live --sensitivity   # 重み 8 個と、重み以外の�
 `build_ranking`・`cluster_adjacent` と `web/src/ui.ts` の `rankingRows`・
 `web/src/area.ts`。`parity_check` の対象外なので食い違っても静かに通る。
 片方を触ったら必ず両方（`selftest` が Python 側を検査する）。
+
+**「数えたもの」と「光らせるもの」は同じ座標で判定する。** 画面は
+「徒歩圏に事業所 60 件」と書いた隣で、その 60 点を地図に光らせる。
+**表示される点の数と表の数字が一致しなければ、ハイライトは説明ではなく矛盾になる。**
+ブラウザで緯度経度から距離を測ると 800m の境界付近でズレるので、
+Python が数えるのと同じ平面直角座標（EPSG:6677）を `x`/`y`・`mx`/`my` として配信し、
+**Python 側も配信するのと同じ丸めた座標で数える**（`config.PUBLISH_XY_DECIMALS`）。
+丸めていない座標で数えて丸めた座標を配ったときは、境界に載る 3 点が
+内と外をまたいで実際にズレた（Python 13 件・ブラウザ 16 件）。
+`tools/facility_parity.mjs` が全 9,507 区画 × 4 層で一致を検査する。
 
 **同じ数式が Python と TypeScript に 2 つある。** 重みスライダーのため。
 `etl/score.py` の `compose()` と `web/src/score.ts` の `compose()` は

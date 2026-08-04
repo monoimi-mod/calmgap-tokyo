@@ -13,6 +13,7 @@ import { initMap, setPointData, type MapHandles } from "./map";
 import type { Meta, MeshProps, Sensitivity, Weights } from "./types";
 import {
   clusterOf,
+  type HighlightKind,
   recompute,
   renderBanner,
   renderDetail,
@@ -21,6 +22,7 @@ import {
   renderLimitations,
   renderMethodology,
   renderSensitivity,
+  renderPresetAgreement,
   renderPresets,
   renderRankingN,
   renderSliders,
@@ -66,6 +68,7 @@ async function boot(): Promise<void> {
     activePreset: "default",
     displayMode: "priority",
     rankingN: meta.ranking_default_n,
+    highlight: null,
   };
   state.score = recompute(state);
 
@@ -78,8 +81,14 @@ async function boot(): Promise<void> {
   // 感度分析は --sensitivity を付けたビルドでのみ出力される。
   // 無くても地図は動くので、失敗しても起動は止めない。
   loadJSON<Sensitivity>("sensitivity.json")
-    .then((s) => renderSensitivity(s, meta))
-    .catch(() => renderSensitivity(null));
+    .then((s) => {
+      renderSensitivity(s, meta);
+      renderPresetAgreement(s, meta);
+    })
+    .catch(() => {
+      renderSensitivity(null);
+      renderPresetAgreement(null, meta);
+    });
 
   const handles: MapHandles = await initMap("map", meta, (meshCode) => {
     select(meshCode);
@@ -116,8 +125,95 @@ async function boot(): Promise<void> {
       // 画面が古い地区を主張し続けることになる。
       handles.setCluster(clusterOf(state, state.selected));
       renderStat(state);
-      renderDetail(state, onPickMesh);
+      renderDetail(state, onPickMesh, applyHighlight);
+      handles.setHighlight(highlightFor(state));
     });
+  }
+
+  /**
+   * 「徒歩圏に在るもの」を光らせる。
+   *
+   * **距離の判定は Python と同じ投影座標（x/y・mx/my）で行う。**
+   * 緯度経度から測ると 800m の境界付近で 1〜2 件ズレ、「60 件」と書いた
+   * 隣で 59 点しか光らないことになる（tools/facility_parity.mjs）。
+   */
+  function highlightFor(st: AppState): {
+    points: GeoJSON.FeatureCollection;
+    center: [number, number];
+    radiusM: number;
+  } | null {
+    if (!st.highlight || !st.selected) return null;
+    const row = st.rows.find((r) => r.c === st.selected);
+    const feature = meshFC.features.find(
+      (f) => (f.properties as unknown as MeshProps).c === st.selected,
+    );
+    if (!row || !feature) return null;
+    const mx = row.mx as number | undefined;
+    const my = row.my as number | undefined;
+    if (typeof mx !== "number" || typeof my !== "number") return null;
+
+    const kind = st.highlight;
+    const isHost = kind === "host";
+    const src = isHost ? hostsFC : demandFC;
+    const layerOf: Record<string, string> = {
+      welfare: "welfare",
+      school: "school",
+      clinic: "clinic",
+      station: "station",
+    };
+
+    let picked: GeoJSON.Feature[] = [];
+    let radiusM = 0;
+
+    if (kind === "station") {
+      // 最寄り 1 駅。Python の nearest_feature と同じ「いちばん近い 1 件」。
+      let best: GeoJSON.Feature | null = null;
+      let bestD2 = Infinity;
+      for (const f of demandFC.features) {
+        const p = f.properties as Record<string, unknown>;
+        if (p.layer !== "station") continue;
+        const dx = (p.x as number) - mx;
+        const dy = (p.y as number) - my;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < bestD2) {
+          bestD2 = d2;
+          best = f;
+        }
+      }
+      if (best) picked = [best];
+    } else {
+      radiusM = meta.fact_radius_m[
+        kind as "welfare" | "school" | "clinic" | "host"
+      ];
+      const r2 = radiusM * radiusM;
+      for (const f of src.features) {
+        const p = f.properties as Record<string, unknown>;
+        if (!isHost && p.layer !== layerOf[kind]) continue;
+        const dx = (p.x as number) - mx;
+        const dy = (p.y as number) - my;
+        if (dx * dx + dy * dy <= r2) picked.push(f);
+      }
+    }
+
+    const side = isHost ? "host" : "demand";
+    const centroid = centroidOf(feature);
+    if (!centroid) return null;
+    return {
+      points: {
+        type: "FeatureCollection",
+        features: picked.map((f) => ({
+          ...f,
+          properties: { ...(f.properties ?? {}), side },
+        })),
+      },
+      center: centroid,
+      radiusM,
+    };
+  }
+
+  function applyHighlight(kind: HighlightKind | null): void {
+    state.highlight = kind;
+    render(false);
   }
 
   function select(meshCode: string | null): void {
@@ -214,6 +310,21 @@ async function boot(): Promise<void> {
   }
 
   render();
+}
+
+/** ポリゴンの外環から重心を求める（メッシュは矩形なので平均で足りる）。 */
+function centroidOf(f: GeoJSON.Feature): [number, number] | null {
+  const g = f.geometry;
+  if (g.type !== "Polygon" || !g.coordinates[0]?.length) return null;
+  const ring = g.coordinates[0].slice(0, -1);
+  if (!ring.length) return null;
+  let x = 0;
+  let y = 0;
+  for (const [lon, lat] of ring) {
+    x += lon;
+    y += lat;
+  }
+  return [x / ring.length, y / ring.length];
 }
 
 /** 指定したメッシュ群を囲む矩形。1 件でも複数でも同じ経路で出す。 */

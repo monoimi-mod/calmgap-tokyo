@@ -32,7 +32,16 @@ export interface AppState {
    * 無いことを隠さないため**（優先度は連続していて、どこにも切れ目が無い）。
    */
   rankingN: number;
+  /**
+   * 地図に光らせている「徒歩圏に在るもの」の種別。null なら消灯。
+   * **数えたものと光らせるものが同じであることが前提**
+   *（tools/facility_parity.mjs が全 9,507 区画で検査している）。
+   */
+  highlight: HighlightKind | null;
 }
+
+/** ハイライトできる実数の種別。etl の f_* と 1 対 1。 */
+export type HighlightKind = "welfare" | "school" | "clinic" | "host" | "station";
 
 // 優先度は 9,507 区画の中で 0.99〜0.17 と動く。2 桁だと上位 100 件が
 // すべて 0.99 か 1.00 になり、差が無いように見えていた（実際には在る）。
@@ -131,11 +140,18 @@ export function clusterOf(state: AppState, meshCode: string | null): string[] {
 
 const num = (n: number) => n.toLocaleString("ja-JP");
 
+export interface FactItem {
+  label: string;
+  value: string;
+  /** 地図に光らせられる行。数えた半径も一緒に持つ（円を描くため）。 */
+  hl?: { kind: HighlightKind; radiusM: number };
+}
+
 export interface FactSection {
   title: string;
   /** その節の値が何を数えたものかを一度だけ言う。行ごとに繰り返さない。 */
   note: string;
-  items: { label: string; value: string }[];
+  items: FactItem[];
 }
 
 /**
@@ -158,7 +174,7 @@ export function factsOf(row: MeshProps, radius: Meta["fact_radius_m"]): FactSect
 
   // 半径ごとに束ねる。3 層とも同じ 800m なら 1 節にまとまり、
   // 帯域を層ごとに変えたら節が自動的に分かれる。
-  const walk: (FactSection["items"][number] & { r: number })[] = [];
+  const walk: (FactItem & { r: number })[] = [];
   if (g("f_welfare_n")) {
     const cap = g("f_welfare_cap");
     // 徒歩圏は区界で切っていない（エッジ効果を避けるため入力を区界の外側
@@ -168,6 +184,7 @@ export function factsOf(row: MeshProps, radius: Meta["fact_radius_m"]): FactSect
     walk.push({
       label: "障害福祉サービス事業所",
       r: radius.welfare,
+      hl: { kind: "welfare", radiusM: radius.welfare },
       value:
         `${num(g("f_welfare_n")!)}件${cap ? `（定員 ${num(cap)}人）` : ""}` +
         (outside ? ` ※うち対象23区の外 ${num(outside)}件` : ""),
@@ -177,6 +194,7 @@ export function factsOf(row: MeshProps, radius: Meta["fact_radius_m"]): FactSect
     walk.push({
       label: "特別支援学校",
       r: radius.school,
+      hl: { kind: "school", radiusM: radius.school },
       value: `${num(g("f_school_n")!)}校`,
     });
   }
@@ -184,23 +202,26 @@ export function factsOf(row: MeshProps, radius: Meta["fact_radius_m"]): FactSect
     walk.push({
       label: "精神科・心療内科",
       r: radius.clinic,
+      hl: { kind: "clinic", radiusM: radius.clinic },
       value: `${num(g("f_clinic_n")!)}件`,
     });
   }
 
-  const nearest: FactSection["items"] = [];
+  const nearest: FactItem[] = [];
   if (s("f_station_name")) {
     const r = g("f_station_riders");
     const d = g("f_station_dist");
     nearest.push({
       label: s("f_station_name")!,
+      // 最寄り 1 駅なので円は描かない（半径 0 = 円なし）。
+      hl: { kind: "station", radiusM: 0 },
       value:
         (r ? `乗降 ${num(r)}人/日` : "乗降規模不明") +
         (d != null ? ` / ${num(d)}m` : ""),
     });
   }
 
-  const own: FactSection["items"] = [];
+  const own: FactItem[] = [];
   if (s("f_zoning_name")) own.push({ label: "用途地域", value: s("f_zoning_name")! });
   if (g("f_noise_db")) {
     own.push({ label: "推定騒音", value: `${g("f_noise_db")} dB (LAeq)` });
@@ -212,10 +233,11 @@ export function factsOf(row: MeshProps, radius: Meta["fact_radius_m"]): FactSect
 
   // 供給側について言える唯一の実数。数えているのは施設一覧の行数であって
   // 建物の数ではない（同じ建物の別種別が別行で載っている。docs/issues.md）。
-  const host: FactSection["items"] = [
+  const host: FactItem[] = [
     {
       label: "区の公共施設",
       value: g("f_host_n") ? `${num(g("f_host_n")!)}件（一覧の行数）` : "0件",
+      ...(g("f_host_n") ? { hl: { kind: "host" as const, radiusM: radius.host } } : {}),
     },
   ];
 
@@ -226,7 +248,7 @@ export function factsOf(row: MeshProps, radius: Meta["fact_radius_m"]): FactSect
       note:
         `この区画の中心から ${num(r)}m 以内にある件数です。` +
         "区界では切っていないため、隣の自治体の施設も含みます。",
-      items: walk.filter((w) => w.r === r).map(({ label, value }) => ({ label, value })),
+      items: walk.filter((w) => w.r === r).map(({ label, value, hl }) => ({ label, value, hl })),
     }));
 
   return [
@@ -445,9 +467,7 @@ export function renderSliders(
       // 読めないうえ、8 本のスライダーが「データの層」であることが
       // 画面のどこにも書かれていない**状態になっていた（点の重畳表示の方が
       // レイヤーらしく見える、という取り違えが実際に起きた）。
-      const tag = c.absolute
-        ? `<span class="scale-tag is-absolute" title="${escapeAttr(c.absolute.basis)}">絶対尺度</span>`
-        : '<span class="scale-tag" title="対象地域内での順位。対象地域を変えれば値も変わる。">地域内順位</span>';
+      const tag = scaleTag(c);
       wrap.innerHTML = `
         <div class="slider-head">
           <label for="${id}" title="${escapeAttr(c.rationale)}&#10;&#10;出典: ${escapeAttr(c.source)}">${escapeHtml(c.label)} ${tag}</label>
@@ -593,8 +613,69 @@ export function renderPresets(
     b.addEventListener("click", () => onPick(p.id));
     host.appendChild(b);
   }
-  const note = meta.presets.find((p) => p.id === active)?.note ?? "";
-  document.getElementById("preset-note")!.textContent = note;
+  const preset = meta.presets.find((p) => p.id === active);
+  const noteEl = document.getElementById("preset-note")!;
+  if (!preset) {
+    noteEl.textContent = "";
+    return;
+  }
+  // note には **強調** を書ける（etl/config.py 側で書きやすいため）。
+  // エスケープしてから太字だけ戻す。
+  const note = escapeHtml(preset.note).replace(
+    /\*\*(.+?)\*\*/g,
+    "<b>$1</b>",
+  );
+
+  // **既定から何がどれだけ動くかを見せる。** かつてはプリセットを押すと
+  // 8 本のスライダーが黙って入れ替わるだけで、「立場が変われば重みも変わる」
+  // という主張のうち **変わったこと自体**が画面に出ていなかった。
+  const diff = meta.components
+    .map((c) => ({
+      label: c.label.split("（")[0],
+      from: c.weight,
+      to: preset.weights[c.key] ?? c.weight,
+    }))
+    .filter((d) => Math.abs(d.to - d.from) > 1e-9)
+    .sort((a, b) => Math.abs(b.to - b.from) - Math.abs(a.to - a.from));
+
+  const diffHtml = diff.length
+    ? '<div class="preset-diff">既定からの変更:' +
+      diff
+        .map(
+          (d) =>
+            `<span><i class="${d.to > d.from ? "up" : "down"}">${
+              d.to > d.from ? "↑" : "↓"
+            }</i>${escapeHtml(d.label)} ${fmt(d.from, 1)}→${fmt(d.to, 1)}</span>`,
+        )
+        .join("") +
+      "</div>"
+    : "";
+
+  noteEl.innerHTML = note + diffHtml;
+}
+
+/**
+ * 「立場を変えると上位が入れ替わる」ことを、プリセットのすぐ隣で数値にする。
+ *
+ * 感度分析の中に埋もれていると、プリセットを押した人はそこまで辿り着かない。
+ * **値は sensitivity.json から取る**（TypeScript に書くと古くなる）。
+ */
+export function renderPresetAgreement(s: Sensitivity | null, meta: Meta): void {
+  const el = document.getElementById("preset-agreement");
+  if (!el) return;
+  if (!s || (s.generated_at && s.generated_at !== meta.generated_at)) {
+    el.hidden = true;
+    return;
+  }
+  const pa = s.preset_agreement;
+  el.hidden = false;
+  el.innerHTML =
+    `この ${pa.preset_ids.length} つ全てで上位${pa.top_k}件に入った区画は ` +
+    `<b>${pa.common_count} 件</b>。` +
+    (pa.common_count > 0
+      ? "重みの選び方に関係なく上位に来る場所がある、ということです。"
+      : "<b>重みの選び方に関係なく上位に来る場所はありません</b>——" +
+        "どこを優先すべきかは、何を重視するかに依存します。");
 }
 
 /* ------------------------------------------------------------------ 詳細パネル */
@@ -602,12 +683,13 @@ export function renderPresets(
 export function renderDetail(
   state: AppState,
   onPick: (meshCode: string, lon?: number, lat?: number) => void,
+  onHighlight: (kind: HighlightKind | null) => void,
 ): void {
   const body = document.getElementById("detail-body")!;
   body.innerHTML = "";
 
   if (state.tab === "ranking") renderRanking(body, state, onPick);
-  else renderSelected(body, state);
+  else renderSelected(body, state, onHighlight);
 }
 
 function renderRanking(
@@ -691,7 +773,11 @@ function renderRanking(
   body.appendChild(note);
 }
 
-function renderSelected(body: HTMLElement, state: AppState): void {
+function renderSelected(
+  body: HTMLElement,
+  state: AppState,
+  onHighlight: (kind: HighlightKind | null) => void,
+): void {
   const { rows, score, meta, selected, weights } = state;
   if (!selected) {
     body.innerHTML =
@@ -715,7 +801,21 @@ function renderSelected(body: HTMLElement, state: AppState): void {
       <span>優先度 <b>${fmt(score.priority[idx])}</b></span>
       <span>需要 <b>${fmt(score.demand[idx])}</b></span>
       <span>負荷 <b>${fmt(score.load[idx])}</b></span>
-    </div>`;
+    </div>
+    <!--
+      **合成後の 2 値にも尺度の札を出す。** 各レイヤーには「地域内順位／
+      絶対尺度」の札を出していたのに、ここだけ無かった（docs/issues.md B5）。
+      需要と負荷は重み付き和をもう一度パーセンタイル順位に変換した値で、
+      **量ではなく順位**である。優先度だけがその掛け算の生値。
+    -->
+    <p class="scale-note">
+      <span class="scale-tag" title="重み付き和を 9,507 区画の中での順位に変換した値。対象地域を変えれば値も変わる。">地域内順位</span>
+      需要と負荷は<b>順位であって量ではありません</b>。
+      「需要 0.99」は「9,507 区画の中で上位 1%」という意味で、
+      当事者が何人いるかを表す数ではありません。
+      <span class="scale-tag is-absolute" title="需要 × 負荷。順位化していない生値。">需要 × 負荷</span>
+      優先度はこの 2 つを掛けた値です（順位化していません）。
+    </p>`;
   body.appendChild(head);
 
   const narrative = document.createElement("p");
@@ -732,8 +832,13 @@ function renderSelected(body: HTMLElement, state: AppState): void {
   const sections = factsOf(row, meta.fact_radius_m);
   if (sections.length) {
     const box = document.createElement("div");
+    // **光らせられる行はクリックできることを見せる。** 「事業所 60 件」と
+    // 書いてあってもどこにあるか分からない、というのが元の指摘だった。
     box.innerHTML =
       "<h2>この区画の実数</h2>" +
+      '<p class="factor-source" style="margin:-4px 0 8px">' +
+      "下線のある行を選ぶと、数えた施設を地図に表示します。" +
+      "<b>地図に出る点の数は、ここの件数と必ず一致します。</b></p>" +
       sections
         .map(
           (sec) =>
@@ -742,15 +847,33 @@ function renderSelected(body: HTMLElement, state: AppState): void {
                <div class="factor-source">${escapeHtml(sec.note)}</div>
                <table class="data-table">` +
             sec.items
-              .map(
-                (f) =>
-                  `<tr><th style="text-transform:none;letter-spacing:0">${escapeHtml(f.label)}</th>` +
-                  `<td class="num">${escapeHtml(f.value)}</td></tr>`,
-              )
+              .map((f) => {
+                const on = f.hl && state.highlight === f.hl.kind;
+                const attrs = f.hl
+                  ? ` class="is-highlightable${on ? " is-on" : ""}" data-hl="${f.hl.kind}"` +
+                    ` data-r="${f.hl.radiusM}" role="button" tabindex="0"`
+                  : "";
+                return (
+                  `<tr${attrs}><th style="text-transform:none;letter-spacing:0">${escapeHtml(f.label)}</th>` +
+                  `<td class="num">${escapeHtml(f.value)}</td></tr>`
+                );
+              })
               .join("") +
             "</table></div>",
         )
         .join("");
+
+    for (const tr of box.querySelectorAll<HTMLElement>("tr[data-hl]")) {
+      const kind = tr.dataset.hl as HighlightKind;
+      const fire = () => onHighlight(state.highlight === kind ? null : kind);
+      tr.addEventListener("click", fire);
+      tr.addEventListener("keydown", (e) => {
+        if ((e as KeyboardEvent).key === "Enter" || (e as KeyboardEvent).key === " ") {
+          e.preventDefault();
+          fire();
+        }
+      });
+    }
     body.appendChild(box);
   }
 
@@ -772,10 +895,7 @@ function renderSelected(body: HTMLElement, state: AppState): void {
       el.className = "factor";
       // 数値のすぐ隣で「この 0.89 は何の 0.89 か」を言う。
       // 8 層のうち 2 層（騒音・用途地域）は地域内順位ではない。
-      const abs = f.component.absolute;
-      const tag = abs
-        ? `<span class="scale-tag is-absolute" title="${escapeAttr(abs.label)}&#10;根拠: ${escapeAttr(abs.basis)}">絶対尺度</span>`
-        : `<span class="scale-tag" title="${escapeAttr(`${meta.mesh_count.toLocaleString("ja-JP")}区画の中での順位。対象地域を変えれば値も変わる。`)}">地域内順位</span>`;
+      const tag = scaleTag(f.component);
       el.innerHTML = `
         <div>
           <div class="factor-label">${escapeHtml(f.component.label)} ${tag}</div>
@@ -1060,6 +1180,32 @@ function renderFixedValues(s: Sensitivity): string {
 }
 
 /**
+ * 尺度の札。**「対象地域を変えれば値も変わる」だけでは伝わらない。**
+ *
+ * 何と比べているのか（母数）と、変えるとはどういうことか（多摩地域まで
+ * 広げて計算し直す、など）を具体で書く。母数は層ごとに違う——値 0 は
+ * 「存在しない」として厳密に 0 に固定し、正の値を持つ区画の中だけで
+ * 順位を付けているため（特別支援学校 3,626 / 障害福祉事業所 9,168）。
+ */
+function scaleTag(c: ComponentDef): string {
+  if (c.absolute) {
+    return (
+      `<span class="scale-tag is-absolute" title="${escapeAttr(
+        "法令が決めた物差しなので、比べる相手に左右されません。" +
+          `${c.absolute.label}。根拠: ${c.absolute.basis}`,
+      )}">絶対尺度</span>`
+    );
+  }
+  const n = c.rank_denominator;
+  const label = n ? `地域内順位（${num(n)}区画中）` : "地域内順位";
+  return `<span class="scale-tag" title="${escapeAttr(
+    "順位なので、比べる相手が変わると値も変わります。" +
+      (n ? `いま比べているのは、この層の値が 0 でない ${num(n)} 区画。` : "") +
+      "たとえば多摩地域まで広げて計算し直すと、同じ区画でも値が変わります。",
+  )}">${escapeHtml(label)}</span>`;
+}
+
+/**
  * 各層が「対象地域内の順位」か「外部の基準に固定した絶対尺度」かを示す札。
  *
  * **ここは以前、画面が実装と違うことを断言していた箇所である。**
@@ -1071,15 +1217,22 @@ function renderFixedValues(s: Sensitivity): string {
 function scaleBadge(c: ComponentDef): string {
   if (c.absolute) {
     return (
-      `<span class="scale-tag is-absolute" title="${escapeAttr(c.absolute.basis)}">絶対尺度</span>` +
+      scaleTag(c) +
       `<span class="factor-source">${escapeHtml(c.absolute.label)}` +
-      `（根拠: ${escapeHtml(c.absolute.basis)}）。対象地域を変えても値が変わりません。</span>`
+      `（根拠: ${escapeHtml(c.absolute.basis)}）。` +
+      "<b>比べる相手に左右されません</b>——多摩地域まで広げて計算し直しても、" +
+      "大阪で計算しても、同じ場所は同じ値です。</span>"
     );
   }
+  const n = c.rank_denominator;
   return (
-    '<span class="scale-tag">地域内順位</span>' +
-    '<span class="factor-source">対象地域内での順位を 0〜1 に配分。' +
-    "<b>対象地域を変えれば値も変わります。</b></span>"
+    scaleTag(c) +
+    '<span class="factor-source">' +
+    (n
+      ? `この層の値が 0 でない ${num(n)} 区画の中で、何番目かを 0〜1 に配分。`
+      : "対象地域内での順位を 0〜1 に配分。") +
+    "<b>比べる相手が変われば、値も変わります</b>——" +
+    "たとえば多摩地域まで広げて計算し直すと、同じ区画でも違う値になります。</span>"
   );
 }
 
@@ -1122,9 +1275,38 @@ export function renderMethodology(meta: Meta): void {
     <p class="card-narrative">
       正規化は層によって違います。<b>${meta.components.length - absolute.length} 層</b>は
       対象地域（${n} 区画）内のパーセンタイル順位で 0〜1 に配分するので、
-      <b>対象地域を変えれば値も変わります</b>。残る
+      <b>比べる相手が変われば値も変わります</b>（下で説明します）。残る
       <b>${absolute.length} 層</b>（${absolute.map((c) => escapeHtml(c.label.split("（")[0])).join("・")}）は
       法令・告示に 0 と 1 を固定した<b>絶対尺度</b>で、対象地域を変えても値は変わりません。
+    </p>
+    <p class="card-narrative">
+      <b>「比べる相手が変わる」とは。</b>この地図はいま東京 23 区の ${n} 区画で
+      計算しています。順位の層は「その中で何番目か」なので、
+      <b>もし多摩地域まで広げて計算し直せば、同じ区画でも値が変わります</b>
+      （周りの顔ぶれが変わるため）。絶対尺度の層は変わりません——
+      騒音 70dB は 23 区で計算しても多摩を入れて計算しても 0.75 のままです。
+    </p>
+    <p class="card-narrative">
+      <b>順位の母数は層ごとに違います。</b>値 0 は「そこに無い」として厳密に 0 に
+      固定し、<b>正の値を持つ区画の中だけで</b>順位を付けているためです。
+      たとえば特別支援学校は ${meta.components.find((c) => c.key === "sped_school")?.rank_denominator?.toLocaleString("ja-JP") ?? "—"} 区画、
+      障害福祉サービス事業所は ${meta.components.find((c) => c.key === "welfare_capacity")?.rank_denominator?.toLocaleString("ja-JP") ?? "—"} 区画が母数で、
+      「特別支援学校 0.5」は ${n} 区画の真ん中ではなく
+      <b>「学校の徒歩圏に入っている区画の中で真ん中」</b>という意味です。
+    </p>
+    <p class="card-narrative">
+      <b>層を重み付きで足したあと、需要スコアと負荷スコアにもう一度この順位化を
+      掛けています。</b>したがって「需要 0.99」は<b>順位であって量ではありません</b>
+      （9,507 区画の中で上位 1%、という意味）。重みの合計が変わっても色のスケールが
+      動かないようにするための処理ですが、分布の広さを捨てているのは各層と同じです。
+      <b>優先度だけは順位化していません</b>——需要 × 負荷の生値をそのまま出しています
+      （2026-08-03 に 3 回目の順位化を除去。順位は 1 つも動いていません）。
+    </p>
+    <p class="card-narrative">
+      <b>絶対尺度の「変わらない」は、最終スコアまでは残りません。</b>
+      層の値を足したあとに順位化しているので、画面に出る需要・負荷の 2 値は
+      対象地域に依存します。絶対尺度が保証しているのは
+      <b>「その層が足し算に持ち込む値」まで</b>です。
     </p>
     <ul class="sources">${rows}</ul>
 

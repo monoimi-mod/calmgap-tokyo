@@ -292,6 +292,59 @@ p {
   color: var(--text-secondary);
   margin-top: 8px;
   min-height: 2.6em;
+  line-height: 1.55;
+}
+
+.preset-note b {
+  color: var(--text-primary);
+}
+
+/*
+ * 既定から何がどれだけ動いたか。**押した瞬間に 8 本のスライダーが
+ * 黙って入れ替わるだけ**だと、「立場が変われば重みも変わる」という
+ * この作品の主張のうち、変わったこと自体が画面に出ない。
+ */
+.preset-diff {
+  margin-top: 7px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+  font-size: 10.5px;
+  color: var(--text-muted);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 9px;
+}
+
+.preset-diff span {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.preset-diff i {
+  font-style: normal;
+  margin-right: 1px;
+}
+
+.preset-diff i.up {
+  color: var(--accent);
+}
+
+.preset-diff i.down {
+  color: var(--text-muted);
+}
+
+.preset-agreement {
+  margin-top: 8px;
+  padding: 7px 9px;
+  background: var(--surface-2);
+  border-radius: var(--radius);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.preset-agreement b {
+  color: var(--text-primary);
 }
 
 /* ---------------------------------------------------------------- スライダー */
@@ -490,6 +543,33 @@ p {
   font-weight: 600;
 }
 
+/*
+ * 地図に光らせられる実数の行。**「事業所 60 件」と書いてあっても
+ * どこにあるか分からない**、というのが元の指摘だった。
+ */
+tr.is-highlightable {
+  cursor: pointer;
+}
+
+tr.is-highlightable th {
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+}
+
+tr.is-highlightable:hover {
+  background: var(--surface-2);
+}
+
+tr.is-highlightable.is-on {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+tr.is-highlightable.is-on th {
+  color: var(--accent);
+  font-weight: 700;
+}
+
 /* 順位表の件数切り替え。タブ列の右端に小さく置く。 */
 .ranking-n {
   margin-left: auto;
@@ -666,6 +746,18 @@ p {
 .scale-tag.is-absolute {
   border-color: var(--accent);
   color: var(--accent);
+}
+
+/* 合成後の 2 値（需要・負荷）が順位であることの但し書き。issues.md B5。 */
+.scale-note {
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+  margin: 8px 0 0;
+}
+
+.scale-note b {
+  color: var(--text-primary);
 }
 
 /* ---------------------------------------------------------------- 表 */

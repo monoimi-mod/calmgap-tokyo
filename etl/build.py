@@ -45,6 +45,8 @@ from .config import (
     RANKING_DEFAULT_N,
     RANKING_OPTIONS,
     CRS_GEOGRAPHIC,
+    CRS_PROJECTED,
+    PUBLISH_XY_DECIMALS,
     SOURCES,
     STUDY_BBOX,
     TARGET_WARDS,
@@ -207,17 +209,20 @@ def _attach_facts(mesh_gdf: gpd.GeoDataFrame, layers: dict) -> None:
     """
     walk = BANDWIDTH_M["welfare_capacity"]
 
+    # round_decimals は配信する座標と揃える。**画面がこの件数の点を
+    # 地図に光らせるため**、両者が別の座標で距離を測ってはいけない。
+    r = PUBLISH_XY_DECIMALS
     mesh_gdf["f_welfare_n"] = aggregate.count_within(
-        mesh_gdf, layers["welfare"], walk
+        mesh_gdf, layers["welfare"], walk, round_decimals=r
     ).to_numpy()
     mesh_gdf["f_welfare_cap"] = aggregate.count_within(
-        mesh_gdf, layers["welfare"], walk, "capacity"
+        mesh_gdf, layers["welfare"], walk, "capacity", round_decimals=r
     ).to_numpy()
     mesh_gdf["f_school_n"] = aggregate.count_within(
-        mesh_gdf, layers["schools"], BANDWIDTH_M["sped_school"]
+        mesh_gdf, layers["schools"], BANDWIDTH_M["sped_school"], round_decimals=r
     ).to_numpy()
     mesh_gdf["f_clinic_n"] = aggregate.count_within(
-        mesh_gdf, layers["clinics"], walk
+        mesh_gdf, layers["clinics"], walk, round_decimals=r
     ).to_numpy()
 
     # 徒歩圏の事業所のうち、対象 23 区の外にあるものの件数。
@@ -239,7 +244,7 @@ def _attach_facts(mesh_gdf: gpd.GeoDataFrame, layers: dict) -> None:
     # 数えているのは施設一覧の行数であって建物の数ではない（100m 以内に
     # 別種別の行が並ぶ組が残っている。docs/issues.md）。
     mesh_gdf["f_host_n"] = aggregate.count_within(
-        mesh_gdf, layers["hosts"], HOST_MAX_DISTANCE_M
+        mesh_gdf, layers["hosts"], HOST_MAX_DISTANCE_M, round_decimals=r
     ).to_numpy()
 
     station = aggregate.nearest_feature(
@@ -269,9 +274,15 @@ def _attach_facts(mesh_gdf: gpd.GeoDataFrame, layers: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _feature_properties(row: pd.Series) -> dict:
+def _feature_properties(row: pd.Series, xy: tuple[float, float] | None = None) -> dict:
     """配信サイズを抑えるため、必要な列だけを丸めて出す。"""
     props = {"c": row["mesh_code"]}
+    # 平面直角座標系（EPSG:6677）での重心。**Python が徒歩圏の件数を
+    # 数えているのと同じ座標**を配ることで、画面が「この 60 件」を
+    # 光らせたときに表の数字とズレない（`_write_geojson` の with_xy 参照）。
+    if xy is not None:
+        props["mx"] = round(xy[0], PUBLISH_XY_DECIMALS)
+        props["my"] = round(xy[1], PUBLISH_XY_DECIMALS)
     # 区名は文字列で持つと 9,507 件で無視できない量になるので、
     # meta.json の target_wards への添字で渡す。一覧に無い区名なら省く
     # （ブラウザ側は区名なしとして地区の見出しを組む）。
@@ -368,14 +379,18 @@ def write_outputs(
     WEB_DATA.mkdir(parents=True, exist_ok=True)
 
     # --- mesh.geojson ---
+    # 重心は投影座標で取る。aggregate.count_within が使っているものと同じ。
+    centroids = mesh_gdf.to_crs(CRS_PROJECTED).geometry.centroid
     features = [
         {
             "type": "Feature",
             "geometry": _round_geometry(geom),
-            "properties": _feature_properties(row),
+            "properties": _feature_properties(row, (float(c.x), float(c.y))),
         }
-        for geom, (_, row) in zip(
-            mesh_gdf.geometry.map(lambda g: g.__geo_interface__), scored.iterrows()
+        for geom, (_, row), c in zip(
+            mesh_gdf.geometry.map(lambda g: g.__geo_interface__),
+            scored.iterrows(),
+            centroids,
         )
     ]
     _write_json(
@@ -387,6 +402,7 @@ def write_outputs(
         WEB_DATA / "hosts.geojson",
         layers["hosts"],
         ["name", "host_kind", "source"],
+        with_xy=True,
     )
 
     demand_points = pd.concat(
@@ -402,6 +418,7 @@ def write_outputs(
         WEB_DATA / "demand_points.geojson",
         gpd.GeoDataFrame(demand_points, crs=layers["welfare"].crs),
         ["name", "kind", "capacity", "layer", "source"],
+        with_xy=True,
     )
 
     _write_json(WEB_DATA / "cards.json", cards)
@@ -471,6 +488,22 @@ def write_outputs(
                 "zeroIsAbsence": c.zero_is_absence,
                 "source": c.source,
                 "rationale": c.rationale,
+                # **順位の母数。** 「地域内順位」と書くだけでは足りない——
+                # 値 0 は「存在しない」として厳密に 0 に固定し、**正の値を持つ
+                # 区画の中だけで順位を付けている**ので、母数は層ごとに違う。
+                # 特別支援学校は 5,881 区画が 0 なので母数 3,626 で、
+                # 「0.5」は 9,507 区画の真ん中ではなく「学校の徒歩圏に入っている
+                # 3,626 区画の真ん中」を意味する。画面がここを出していなかった。
+                # 絶対尺度の層は順位を使わないので None。
+                "rank_denominator": (
+                    None
+                    if c.absolute is not None
+                    else int(
+                        (pd.to_numeric(scored[c.key], errors="coerce").fillna(0.0) > 0).sum()
+                    )
+                    if c.zero_is_absence
+                    else len(scored)
+                ),
                 # 絶対尺度の層は「対象地域内の相対順位」という但し書きが要らない。
                 # 画面でそこを区別して見せるために配信する（docs/issues.md B2）。
                 "absolute": (
@@ -548,16 +581,36 @@ def _write_json(path, obj) -> None:
     print(f"[write] {path.relative_to(path.parents[3])} ({path.stat().st_size:,} B)")
 
 
-def _write_geojson(path, gdf: gpd.GeoDataFrame, cols: list[str]) -> None:
+def _write_geojson(
+    path, gdf: gpd.GeoDataFrame, cols: list[str], with_xy: bool = False
+) -> None:
+    """点・面を GeoJSON で書き出す。
+
+    with_xy=True なら平面直角座標系（EPSG:6677）の x / y も props に載せる。
+
+    **これは装飾ではない。** 画面が「徒歩圏の事業所 60 件」を地図上で
+    光らせるとき、**表示される点の数と表の数字が一致しなければ意味がない**。
+    ブラウザで緯度経度から距離を出すと、投影の違いで 800m の境界付近が
+    1〜2 件ズレる。Python が数えているのと同じ平面座標を配ってしまえば、
+    両者は同じ引き算をすることになり、ズレる余地が無くなる
+    （`tools/facility_parity.mjs` が全 9,507 区画で一致を検査する）。
+    """
     cols = [c for c in cols if c in gdf.columns]
+    xy = gdf.to_crs(CRS_PROJECTED).geometry if with_xy else None
     features = []
-    for _, row in gdf.iterrows():
+    for i, (_, row) in enumerate(gdf.iterrows()):
         props = {}
         for c in cols:
             v = row[c]
             if pd.isna(v):
                 continue
             props[c] = v.item() if hasattr(v, "item") else v
+        if xy is not None:
+            g = xy.iloc[i]
+            # cm 精度。距離の誤差は 1cm 未満で、半径の境界に 1cm 以内で
+            # 載る点はこのデータには 1 件も無い（facility_parity が検査する）。
+            props["x"] = round(float(g.x), PUBLISH_XY_DECIMALS)
+            props["y"] = round(float(g.y), PUBLISH_XY_DECIMALS)
         features.append(
             {
                 "type": "Feature",

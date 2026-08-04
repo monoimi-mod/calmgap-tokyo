@@ -215,6 +215,7 @@ def count_within(
     points: gpd.GeoDataFrame,
     radius_m: float,
     value_col: str | None = None,
+    round_decimals: int | None = None,
 ) -> pd.Series:
     """半径内の点を素朴に数える／合計する（距離減衰なし）。
 
@@ -229,6 +230,12 @@ def count_within(
 
     mesh_xy = _xy(mesh_gdf)
     pt_xy = _xy(points)
+    # **配信する座標と同じ丸めで数える。** 画面はこの件数を出した隣で
+    # 同じ点を地図に光らせるので、両者が別の座標で距離を測ってはいけない
+    # （config.PUBLISH_XY_DECIMALS の説明を参照）。
+    if round_decimals is not None:
+        mesh_xy = np.round(mesh_xy, round_decimals)
+        pt_xy = np.round(pt_xy, round_decimals)
     values = (
         points[value_col].fillna(0).to_numpy(dtype=float)
         if value_col

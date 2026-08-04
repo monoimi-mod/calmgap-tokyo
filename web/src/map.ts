@@ -70,6 +70,10 @@ function baseStyle(): StyleSpecification {
       mesh: emptySource(),
       "demand-points": emptySource(),
       "host-points": emptySource(),
+      // 選択中の区画の「徒歩圏に在るもの」を光らせる層。
+      // 数字の隣で同じものを見せるためにある（tools/facility_parity.mjs）。
+      "highlight-ring": emptySource(),
+      "highlight-points": emptySource(),
     },
     layers: [
       { id: "bg", type: "background", paint: { "background-color": "#eceae4" } },
@@ -107,6 +111,23 @@ function baseStyle(): StyleSpecification {
             0.85, 0.72,
             1.0, 0.86,
           ],
+        },
+      },
+
+      // --- 徒歩圏の円（ハイライト時のみ） ---
+      //
+      // **塗りつぶさない。** 中を塗ると「この円の中が均等に効いている」と
+      // 読めるが、スコアは距離減衰カーネルで重み付けしている。
+      // 円は「どこまでを数えたか」だけを示す。
+      {
+        id: "highlight-ring",
+        type: "line",
+        source: "highlight-ring",
+        paint: {
+          "line-color": "#0b0b0b",
+          "line-width": 1.6,
+          "line-dasharray": [3, 2],
+          "line-opacity": 0.8,
         },
       },
 
@@ -168,6 +189,26 @@ function baseStyle(): StyleSpecification {
           "circle-stroke-color": "#ffffff",
         },
       },
+      // --- ハイライトした施設（最前面） ---
+      {
+        id: "highlight-points",
+        type: "circle",
+        source: "highlight-points",
+        paint: {
+          "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 3.5, 16, 8],
+          // 需要側か供給側かで、既存の点レイヤーと同じ色を使う。
+          // ハイライト用に 3 つ目の色を作らない。
+          "circle-color": [
+            "case",
+            ["==", ["get", "side"], "host"],
+            CAT_HOST,
+            CAT_DEMAND,
+          ],
+          "circle-opacity": 1,
+          "circle-stroke-width": 2,
+          "circle-stroke-color": "#0b0b0b",
+        },
+      },
       {
         id: "host-points",
         type: "circle",
@@ -187,7 +228,12 @@ function baseStyle(): StyleSpecification {
   };
 }
 
-type SourceId = "mesh" | "demand-points" | "host-points";
+type SourceId =
+  | "mesh"
+  | "demand-points"
+  | "host-points"
+  | "highlight-ring"
+  | "highlight-points";
 
 /**
  * スタイル確定前に届いたデータの保留箱（地図インスタンスごと）。
@@ -214,6 +260,16 @@ export interface MapHandles {
   setSelected: (meshCode: string | null) => void;
   /** 提言の地区に含まれる区画すべてを輪郭で囲む。空配列で消える。 */
   setCluster: (meshCodes: string[]) => void;
+  /**
+   * 「徒歩圏に在るもの」を光らせる。null で消える。
+   * **数えたものと光らせるものは同じでなければならない**
+   * （tools/facility_parity.mjs が全区画で検査する）。
+   */
+  setHighlight: (h: {
+    points: GeoJSON.FeatureCollection;
+    center: [number, number];
+    radiusM: number;
+  } | null) => void;
   toggleLayer: (id: "demand-points" | "host-points", visible: boolean) => void;
   flyTo: (lon: number, lat: number, zoom?: number) => void;
   /** 地区全体が画面に入るように寄せる。1 区画だけのときは flyTo で足りる。 */
@@ -352,6 +408,22 @@ export async function initMap(
     setCluster: (meshCodes) => {
       map.setFilter("mesh-cluster", ["in", ["get", "c"], ["literal", meshCodes]]);
     },
+    setHighlight: (h) => {
+      const empty: GeoJSON.FeatureCollection = {
+        type: "FeatureCollection",
+        features: [],
+      };
+      if (!h) {
+        setSourceData(map, "highlight-points", empty);
+        setSourceData(map, "highlight-ring", empty);
+        return;
+      }
+      setSourceData(map, "highlight-points", h.points);
+      setSourceData(map, "highlight-ring", {
+        type: "FeatureCollection",
+        features: [circleFeature(h.center, h.radiusM)],
+      });
+    },
     toggleLayer: (id, visible) => {
       map.setLayoutProperty(id, "visibility", visible ? "visible" : "none");
     },
@@ -398,4 +470,31 @@ export function setPointData(
   data: GeoJSON.FeatureCollection,
 ): void {
   setSourceData(map, id, data);
+}
+
+/**
+ * 半径 m の円をポリゴンで近似する（測地線ではなく、東京での局所近似）。
+ *
+ * **これは「どこまでを数えたか」を示す飾りで、判定には使わない。**
+ * 判定は投影座標での引き算で、Python と同じ（config.PUBLISH_XY_DECIMALS）。
+ * ここで多少ズレても件数は変わらない。
+ */
+function circleFeature(
+  center: [number, number],
+  radiusM: number,
+  steps = 96,
+): GeoJSON.Feature {
+  const [lon, lat] = center;
+  const dLat = radiusM / 110574;
+  const dLon = radiusM / (111320 * Math.cos((lat * Math.PI) / 180));
+  const ring: [number, number][] = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = (i / steps) * Math.PI * 2;
+    ring.push([lon + dLon * Math.cos(t), lat + dLat * Math.sin(t)]);
+  }
+  return {
+    type: "Feature",
+    properties: {},
+    geometry: { type: "Polygon", coordinates: [ring] },
+  };
 }
