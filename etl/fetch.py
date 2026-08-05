@@ -29,6 +29,7 @@ import os
 import re
 import sys
 import time
+import unicodedata
 import zipfile
 from pathlib import Path
 
@@ -186,7 +187,20 @@ COLUMN_MAP: dict[str, dict[str, tuple[str, ...]]] = {
         # 無駄に回した上、ログが「住所から座標化」と誤解を招く形で出るため。
         "lat": ("緯度", "Y座標"),
         "lon": ("経度", "X座標"),
-        "name": ("測定地点住所", "測定地点", "地点名"),
+        "name": ("測定地点の住所", "測定地点住所", "測定地点", "地点名"),
+        # 常時監視の測定地点は**緯度経度を持たない**。住所しか無いので
+        # `etl/geocode.py`（位置参照情報）で座標化する。名称の列と同じものだが、
+        # 役割が違うので別の欄にしてある——`name` を取り違えても表示が
+        # 崩れるだけだが、`address` を取り違えると座標が全件外れる。
+        "address": ("測定地点の住所", "測定地点住所", "測定地点"),
+        # 環境基準の地域類型（A/AA/B/C）。**この列は表示に使わない**——
+        # 「読ませようとしている表が常時監視か」を中身で確かめるためだけに引く
+        # （`_pick_monitoring_table`）。
+        "area_type": ("環境基準類型", "区域の区分"),
+        # 測定年度を中身から取るための列。**ファイル名から年度を当てない**
+        # （手元のファイル名は `cyousakekka$300500a...files$2019monitoring.csv`
+        #  のようにブラウザが化けさせた形で届く）。
+        "surveyed": ("測定開始年月日", "測定年月日開始", "測定期間開始"),
     },
     "tokyo_public_facility": {
         # 「事業所名」は渋谷区（SHIBUYA OPEN DATA の施設・事業所一覧）、
@@ -2393,14 +2407,250 @@ def normalize_parks(path: Path, clip: bool = True) -> gpd.GeoDataFrame:
     return out.reset_index(drop=True)
 
 
+# 常時監視の表を見分けるための、中身の手掛かり。
+#
+# **年度フォルダには常時監視と要請限度が並んで入っている。** どちらも
+# 「幹線道路の道路端で測った昼間 LAeq」だが、**測定点の選ばれ方が違う**:
+# 常時監視は騒音規制法第18条の常時監視で、幹線道路を年度ごとに
+# ローテーションして系統的に測る。要請限度は苦情の出た道路を測る調査で、
+# 平均が 1.3dB 高く、区ごとの点数も偏る（文京区・渋谷区は 0 点、練馬区は 48 点）。
+# **混ぜると `docs/issues.md` A1（測定点の選ばれ方が区に依存する）を
+# そのまま持ち込む**ので、常時監視だけを採る。
+#
+# **ファイル名でもシート名でも判定しない。** 手元に届くファイル名は
+# `cyousakekka$300500a20210401153420268.files$2019monitoring.csv` のように
+# ブラウザが化けさせた形で、`monitoring` が入っている年と入っていない年がある。
+# 中身で判定する。手掛かりは 2 つで、どちらも 5 年分すべてで確認した:
+#
+#   1. **環境基準の地域類型が大文字 A/AA/B/C**。要請限度の「区域の区分」は
+#      小文字 a/b/c で入る。これは表記のゆれではなく、環境基本法の地域類型と
+#      騒音規制法の区域区分という**別の法概念**の書き分けである。
+#   2. **遮音壁等の有無・低騒音舗装の有無（○/×）の列がある**。
+#      要請限度の表には無い。
+#
+# 1 だけだと判定が 1 文字の大小に乗るので、2 つとも要求する。
+# どちらが欠けたのかは例外に書く。
+_AREA_TYPE_VALUES = ("A", "AA", "B", "C")
+_YESNO_MARKS = ("○", "〇", "◯", "×", "✕")
+
+# 位置参照情報が配る緯度経度の桁数。同じ街区なら完全に同じ値が返るので、
+# この桁で束ねれば「同じ地点の別年度」だけがまとまる。
+_ISJ_DECIMALS = 6
+
+
+def _clean_label(value: object) -> str:
+    """見出しのセルを 1 語にする。全角空白と改行を落として NFKC で揃える。"""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ""
+    text = unicodedata.normalize("NFKC", str(value))
+    return re.sub(r"\s+", "", text)
+
+
+def _flatten_header(raw: pd.DataFrame) -> pd.DataFrame | None:
+    """複数行にまたがる見出しを 1 行にたたむ。たためなければ None。
+
+    **都環境局の調査結果は見出しが 2〜3 行ある。** 常時監視は
+    「等価騒音レベル(dB)」が 1 行目、「昼間 / 夜間」が 3 行目にあり、
+    1 行目だけを見出しとして読むと**昼夜の区別が列名から消える**。
+    そうなると `require_column` の `name_hint=r"昼"` が効かず、
+    値域だけで選ぶことになって夜間を掴み得る（実測で 3〜4dB 低い）。
+
+    見出しが何行あるかは**行の中身で決める**。データ行は数値のセルを
+    複数持ち、見出し行は持たない（単位だけの行 `(m) (m) (m)` も
+    数値ではないので見出し側に入る）。行数で決め打ちすると、
+    年度ごとに違う様式で静かにずれる。
+    """
+    numeric = [
+        int(pd.to_numeric(pd.Series(list(raw.iloc[i])), errors="coerce").notna().sum())
+        for i in range(min(len(raw), 12))
+    ]
+    start = next((i for i, n in enumerate(numeric) if n >= 2), None)
+    if not start:  # 0（見出しが無い）と None（データ行が無い）はどちらも扱えない
+        return None
+
+    header, body = raw.iloc[:start], raw.iloc[start:].reset_index(drop=True)
+    names: list[str] = []
+    seen: dict[str, int] = {}
+    for i, col in enumerate(raw.columns):
+        parts: list[str] = []
+        for cell in header[col]:
+            text = _clean_label(cell)
+            if text and text not in parts:
+                parts.append(text)
+        # 見出しの空欄は上の行から埋めない。埋めると「車道端からの距離」に
+        # 隣の「評価対象道路②」が乗るなど、無関係な語が混ざる。
+        # 埋めなくても昼夜は区別できる（夜間の列は見出しが「夜間」だけになる）。
+        name = "".join(parts) or f"列{i + 1}"
+        seen[name] = seen.get(name, 0) + 1
+        # 「車線数」「道路種別」は評価対象道路①と②で 2 回出る。
+        # 重複したままだと df[col] が DataFrame を返し、列の中身を見る
+        # 経路がまとめて壊れる。
+        names.append(name if seen[name] == 1 else f"{name}_{seen[name]}")
+    body.columns = names
+    return body
+
+
+def _read_noise_tables(path: Path) -> list[tuple[str, pd.DataFrame]]:
+    """騒音調査結果のファイルから、表になりそうなものを全部読む。
+
+    Excel は 1 冊に「項目説明」「常時監視測定地点」「要請限度測定地点」が
+    入っている。**どれを読むかはシート名で決めない**（年度ごとに
+    「常時監視地点別測定結果(R01年度)」「常時監視測定地点（R02年度）」と揺れる）。
+    全部読んで `_pick_monitoring_table` が中身で選ぶ。
+    """
+    if path.suffix.lower() in (".xlsx", ".xlsm", ".xls"):
+        book = pd.ExcelFile(path)
+        raws = [
+            (sheet, book.parse(sheet, header=None, dtype=object))
+            for sheet in book.sheet_names
+        ]
+    else:
+        raws = [(path.name, read_csv_japanese(path, header=None, dtype=str))]
+
+    tables: list[tuple[str, pd.DataFrame]] = []
+    for name, raw in raws:
+        flat = _flatten_header(raw)
+        if flat is not None and len(flat):
+            tables.append((name, flat))
+    return tables
+
+
+def _monitoring_markers(df: pd.DataFrame) -> tuple[str | None, list[str]]:
+    """(地域類型の列, ○×の列) を中身から探す。見つからなければ None / 空。"""
+
+    def cleaned(s: pd.Series) -> pd.Series:
+        return s.dropna().astype(str).map(_clean_label)
+
+    area_type = None
+    marks: list[str] = []
+    for col in df.columns:
+        values = cleaned(df[col])
+        if len(values) < 5:
+            continue
+        # 大文字と小文字を区別する。ここが常時監視と要請限度の分かれ目。
+        if area_type is None and values.isin(_AREA_TYPE_VALUES).mean() >= 0.9:
+            area_type = str(col)
+        if values.isin(_YESNO_MARKS).mean() >= 0.9:
+            marks.append(str(col))
+    return area_type, marks
+
+
+def _pick_monitoring_table(
+    tables: list[tuple[str, pd.DataFrame]], path: Path
+) -> pd.DataFrame:
+    """常時監視の表を中身で選ぶ。選べなければ実際の値を添えて止まる。"""
+    hits = [
+        (name, df, area_type, marks)
+        for name, df in tables
+        for area_type, marks in [_monitoring_markers(df)]
+        if area_type is not None and marks
+    ]
+    if len(hits) == 1:
+        name, df, area_type, marks = hits[0]
+        print(
+            f"[noise] 常時監視の表を中身から特定: {name}"
+            f"（地域類型 {area_type} が大文字 A/B/C・"
+            f"○×の列 {', '.join(marks)}・{len(df):,}行）"
+        )
+        return df
+
+    detail = []
+    for name, df in tables:
+        area_type, marks = _monitoring_markers(df)
+        detail.append(
+            f"  {name}: {len(df):,}行 / "
+            f"地域類型（大文字 A/B/C）{area_type or '無し'} / "
+            f"○×の列 {', '.join(marks) or '無し'}"
+        )
+    if not hits:
+        raise ValueError(
+            "\n".join(
+                [
+                    f"{path.name} に常時監視測定地点の表が無い。",
+                    "このレイヤーは**常時監視だけ**を読む。要請限度測定地点は"
+                    "苦情の出た道路を測る調査で、測定点の選ばれ方が区に依存する"
+                    "（docs/issues.md A1）ため混ぜない。",
+                    "常時監視の表は環境基準の地域類型を**大文字 A/AA/B/C** で持ち、"
+                    "遮音壁等の有無（○/×）の列がある。要請限度は区域の区分を"
+                    "**小文字 a/b/c** で持ち、○×の列を持たない。",
+                    "",
+                    "読めた表:",
+                    *detail,
+                    "",
+                    "年度フォルダの「常時監視測定地点」の CSV か、"
+                    "常時監視のシートを含む「調査結果」の Excel を渡すこと。",
+                ]
+            )
+        )
+    raise ValueError(
+        "\n".join(
+            [
+                f"{path.name} で常時監視の表が {len(hits)} 個に見える。"
+                "どれを読むべきか決められない。",
+                "",
+                "読めた表:",
+                *detail,
+            ]
+        )
+    )
+
+
+def _surveyed_year(df: pd.DataFrame) -> str:
+    """測定年度を**中身から**取る。取れなければ空文字。
+
+    ファイル名からは当てない。ブラウザが化けさせた
+    `cyousakekka$300500a20210401153420268.files$2019monitoring.csv` の
+    `2021` はダウンロード時刻で、`2019` が年度である——**同じ名前に
+    紛らわしい数字が 2 つ入っている。**
+    """
+    col = pick_column(df, COLUMN_MAP["tokyo_road_noise"]["surveyed"])
+    if col is None:
+        return ""
+    dates = pd.to_datetime(df[col], errors="coerce")
+    if not dates.notna().any():
+        return ""
+    # 年度なので 4〜12 月はその年、1〜3 月は前年に寄せる。
+    fiscal = dates.dt.year - (dates.dt.month < 4)
+    year = int(fiscal.mode().iloc[0])
+    print(f"[noise] 測定年度を {col} から特定: {year}年度（{int(dates.notna().sum()):,}行）")
+    return str(year)
+
+
 def normalize_noise(path: Path) -> gpd.GeoDataFrame:
-    """東京都環境局の騒音測定結果を点データにする。
+    """東京都環境局の自動車交通騒音 常時監視測定地点を点データにする。
 
     騒音レベルの列を取り違えると全件 NaN になり、
     測定点が存在するのに騒音レイヤーの値が消える
     （「点を面に変換する」という本作の主張ごと消える）。
+
+    **5 年分を並べて渡す。** 常時監視は幹線道路をローテーションして測るので、
+    1 年度分は 23 区で約 150 点しかないが、5 年分の和集合は 700 点になる
+    （複数年で測られた地点は 26 点だけ）。束ねるのは `aggregate_noise_years`。
     """
-    df = read_csv_japanese(path)
+    df = _pick_monitoring_table(_read_noise_tables(path), path)
+    # **騒音レベルの列は座標化より先に決める。** 緯度（35.6〜35.8）は
+    # `NOISE_DB_RANGE` に入ってしまうので、住所から作った緯度の列が表に
+    # 加わったあとだと dB の候補が 1 つ増える。いまは `name_hint=r"昼"` が
+    # 効いているので結果は変わらないが、**候補を増やす順番で呼ぶ理由が無い。**
+    laeq_col = require_column(
+        df,
+        path,
+        "tokyo_road_noise",
+        "laeq_db",
+        tag="noise",
+        label="等価騒音レベル(昼間 LAeq)",
+        why=(
+            "この値を距離重み付き内挿して面にする。特定できないまま進めると"
+            "測定点だけがあって騒音の値が全件空になる。"
+        ),
+        predicate=lambda s: pd.to_numeric(s, errors="coerce").between(*NOISE_DB_RANGE),
+        min_ratio=0.8,
+        whole=lambda s: int(pd.to_numeric(s, errors="coerce").nunique()) >= 5,
+        # 昼間と夜間はどちらも同じ値域に入る。昼間を優先する
+        # （要請限度の評価も日常の滞在も昼間が主）。
+        name_hint=r"昼",
+    )
+    df, geocoded = _fill_noise_coords_from_address(df, path)
     lon_col = require_column(
         df,
         path,
@@ -2423,24 +2673,6 @@ def normalize_noise(path: Path) -> gpd.GeoDataFrame:
         predicate=lambda s: pd.to_numeric(s, errors="coerce").between(*TOKYO_LAT_RANGE),
         name_hint=r"緯度|lat",
     )
-    laeq_col = require_column(
-        df,
-        path,
-        "tokyo_road_noise",
-        "laeq_db",
-        tag="noise",
-        label="等価騒音レベル(昼間 LAeq)",
-        why=(
-            "この値を距離重み付き内挿して面にする。特定できないまま進めると"
-            "測定点だけがあって騒音の値が全件空になる。"
-        ),
-        predicate=lambda s: pd.to_numeric(s, errors="coerce").between(*NOISE_DB_RANGE),
-        min_ratio=0.8,
-        whole=lambda s: int(pd.to_numeric(s, errors="coerce").nunique()) >= 5,
-        # 昼間と夜間はどちらも同じ値域に入る。昼間を優先する
-        # （要請限度の評価も日常の滞在も昼間が主）。
-        name_hint=r"昼",
-    )
     name_col = optional_column(
         df,
         "tokyo_road_noise",
@@ -2449,6 +2681,8 @@ def normalize_noise(path: Path) -> gpd.GeoDataFrame:
         label="測定地点名",
         fallback="根拠カードに地点名が出ない",
     )
+
+    year = _surveyed_year(df)
 
     gdf = clip_to_study_area(_to_points(df, lon_col, lat_col))
     require_nonempty(
@@ -2477,13 +2711,142 @@ def normalize_noise(path: Path) -> gpd.GeoDataFrame:
     print(
         f"[noise] 研究領域内 {len(gdf):,}件 / "
         f"{laeq_col} = {gdf['laeq_db'].min():.0f}〜{gdf['laeq_db'].max():.0f} dB"
+        + ("（住所から座標化）" if geocoded else "")
     )
     gdf["name"] = gdf[name_col] if name_col else ""
+    gdf["year"] = year
     gdf["source"] = SOURCES["tokyo_road_noise"].label
     gdf["synthetic"] = False
     return gdf[
-        ["name", "laeq_db", "lon", "lat", "source", "synthetic", "geometry"]
+        ["name", "laeq_db", "year", "lon", "lat", "source", "synthetic", "geometry"]
     ].reset_index(drop=True)
+
+
+def _fill_noise_coords_from_address(
+    df: pd.DataFrame, path: Path
+) -> tuple[pd.DataFrame, bool]:
+    """常時監視の測定地点を住所から座標化する。(座標のある行, 埋めたか) を返す。
+
+    **常時監視測定地点は緯度経度を持たない。** 公表されているのは
+    「千代田区平河町2丁目6」という住所だけで、平成25年度まで配信されていた
+    「自動車交通騒音調査結果」の CSV にあった緯度経度の列が無い。
+
+    **推定に切り替えるのではなく、同じ座標を作り直している。** 平成25年度の
+    ファイルは住所と緯度経度を両方持つので、そこで裏を取れる——23 区内
+    383 行のうち **381 行が街区レベルで一致し、公表座標との距離は中央値 0m**
+    （90%点 46m・最大 249m）。**都の公表座標そのものが位置参照情報の
+    街区代表点**だった。つまり座標の作り方は従来と変わらない。
+    """
+    lat_col = pick_column(df, COLUMN_MAP["tokyo_road_noise"]["lat"])
+    lon_col = pick_column(df, COLUMN_MAP["tokyo_road_noise"]["lon"])
+    if lat_col and lon_col:
+        have = pd.to_numeric(df[lat_col], errors="coerce").between(
+            *TOKYO_LAT_RANGE
+        ) & pd.to_numeric(df[lon_col], errors="coerce").between(*TOKYO_LON_RANGE)
+        if have.mean() >= COORD_MIN_RATIO:
+            return df, False
+
+    addr_col = require_column(
+        df,
+        path,
+        "tokyo_road_noise",
+        "address",
+        tag="noise",
+        label="測定地点の住所",
+        why=(
+            "常時監視測定地点には緯度経度が無く、住所からしか座標を作れない。"
+            "特定できないまま進めると測定点が 1 件も地図に載らない。"
+        ),
+        predicate=lambda s: s.astype(str).str.match(
+            r"^(?:東京都)?(?:" + "|".join(TOKYO_23_WARDS) + r")"
+        ),
+        # 23 区外（多摩・島しょ）の行が同じファイルに入っている。
+        # 常時監視は都内 267〜285 行のうち 23 区が 144〜157 行なので、
+        # 一致率は 5 割前後にしかならない。
+        min_ratio=0.4,
+        name_hint=r"住所|地点",
+    )
+    # **23 区分だけ座標化してはいけない。** このファイルは都全域が 1 本で、
+    # 23 区の行は半分ほどしかない。区名で先に絞ると多摩の測定点が消え、
+    # **区界のすぐ外を測った点まで落ちて縁のメッシュが不自然に静かに出る**
+    # （`config.CLIP_BUFFER_M` / `issues.md` A8）。都内全市区町村で座標化して、
+    # 範囲の絞り込みは他のレイヤーと同じく `clip_to_study_area` に任せる。
+    geocoder = geocode.load((geocode.ALL_MUNICIPALITIES,))
+    lat, lon = geocode.geocode_column(df[addr_col], geocoder, tag="noise")
+    df = df.assign(緯度=lat, 経度=lon)
+
+    # **取りこぼしは 23 区の中だけで測る。** 全体の一致率で見ると、
+    # 島しょ（大島町・八丈町）が落ちた分と 23 区の住所の書き方が変わった分が
+    # 混ざり、**この作品にとって痛い方だけを見られない**。
+    in_23ku = (
+        df[addr_col]
+        .astype(str)
+        .str.match(r"^(?:東京都)?(?:" + "|".join(TOKYO_23_WARDS) + r")")
+    )
+    missing = in_23ku & df["緯度"].isna()
+    lost, total = int(missing.sum()), int(in_23ku.sum())
+    if lost:
+        print(
+            f"[noise] 23 区内なのに照合できない住所 {lost}/{total}件: "
+            f"{list(df.loc[missing, addr_col].head(5))}",
+            file=sys.stderr,
+        )
+    # 取りこぼしが 5% を超えたら止める。**過小計上は出力を見ても気付けない**
+    # （測定点が薄い区は「静か」ではなく「測っていない」と同じ見た目になる）。
+    if total and lost / total > 0.05:
+        raise ValueError(
+            f"{path.name}: 23 区内 {total}件のうち {lost}件を"
+            "座標化できない。住所の書き方が変わった可能性がある"
+            "（etl/geocode.py の候補の並べ方を確認すること）。"
+        )
+    return df[df["緯度"].notna()].reset_index(drop=True), True
+
+
+def aggregate_noise_years(frames: list[gpd.GeoDataFrame]) -> gpd.GeoDataFrame:
+    """年度ごとの測定結果を 1 つの点データに束ねる。
+
+    **同じ地点を複数年で測っていることがある**（5 年分 700 点のうち 26 点）。
+    そのまま重ねても IDW の重みが等しいので平均と同じ結果になるが、
+    画面に「何年度の値か」を出せなくなるため、ここで明示的に平均する。
+    年次のばらつきは小さい——同一地点の年度間標準偏差は**中央値 0.55dB**で、
+    帯域の目安（`issues.md` A4）どころか測定の丸め（1dB 単位）と同じ桁である。
+
+    **住所ではなく座標で束ねる。** 同じ街区に別々の住所で 2 点あるとき、
+    位置参照情報は同じ代表点を返す。住所で束ねると同一座標に 2 点が残り、
+    IDW では「その街区だけ重みが 2 倍」になる。地図で見ても点が重なって
+    見えないので気付けない。
+    """
+    out = gpd.GeoDataFrame(pd.concat(frames, ignore_index=True), crs=frames[0].crs)
+    # 位置参照情報が配る座標の桁で束ねる。同じ街区なら同じ代表点が返るので、
+    # 距離で寄せる（`dedupe_points`）必要は無い——**距離で寄せてはいけない**。
+    # 100m 以内の別の街区にも測定点があり、寄せると別々の道路の実測値が
+    # 1 点に潰れる。
+    key = (
+        out["lon"].round(_ISJ_DECIMALS).astype(str)
+        + ","
+        + out["lat"].round(_ISJ_DECIMALS).astype(str)
+    )
+    grouped = out.groupby(key, sort=False)
+
+    merged = grouped.agg(
+        name=("name", "first"),
+        laeq_db=("laeq_db", "mean"),
+        lon=("lon", "first"),
+        lat=("lat", "first"),
+        source=("source", "first"),
+        synthetic=("synthetic", "first"),
+        geometry=("geometry", "first"),
+        n_years=("year", "nunique"),
+        years=("year", lambda s: "・".join(sorted({str(v) for v in s if v}))),
+    ).reset_index(drop=True)
+    merged["laeq_db"] = merged["laeq_db"].round(1)
+
+    repeated = int((merged["n_years"] > 1).sum())
+    print(
+        f"\n[noise] {len(out):,}件の測定を {len(merged):,}地点に束ねた"
+        f"（複数年度で測られた地点 {repeated:,}）"
+    )
+    return gpd.GeoDataFrame(merged, geometry="geometry", crs=out.crs)
 
 
 # 公表された座標がこの割合を下回ったら、住所からの座標化へ切り替える。
@@ -2828,7 +3191,14 @@ def run_normalizer(
             f"[{kind}] 渡した {len(paths)} ファイルのどれにも対象範囲の行が無い。"
             "入力ファイルと対象範囲（data/processed/area.geojson）を確認すること。"
         )
-    gdf = frames[0] if len(frames) == 1 else _concat_layers(frames)
+    # 束ね方はレイヤーによって違う。既定は「同名かつ 100m 以内なら同一施設」
+    # （`dedupe_points`）だが、騒音は**施設ではなく測定**なので、同じ地点の
+    # 別年度を平均する（`aggregate_noise_years`）。既定のまま通すと、
+    # 100m 以内の別の街区の実測値まで 1 点に潰れる。
+    if layer_key == "noise":
+        gdf = aggregate_noise_years(frames)
+    else:
+        gdf = frames[0] if len(frames) == 1 else _concat_layers(frames)
 
     # 昼間人口はメッシュコードの表で、地物ではない（GeoJSON にならない）。
     if layer_key == "population":

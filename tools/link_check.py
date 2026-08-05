@@ -111,7 +111,7 @@ def fetch(url: str) -> tuple[int, str]:
         return 0, ""
 
 
-def check_ckan(dataset_id: str, file_hint: str) -> tuple[bool, str]:
+def check_ckan(dataset_id: str, file_hints: tuple[str, ...]) -> tuple[bool, str]:
     """CKAN の API でデータセットの実在と、収録ファイル名を確かめる。
 
     **`success: true` だけでは足りない。** リンクが生きていても別の
@@ -133,16 +133,19 @@ def check_ckan(dataset_id: str, file_hint: str) -> tuple[bool, str]:
 
     result = payload.get("result", {})
     title = result.get("title", "")
-    if not file_hint:
+    if not file_hints:
         return True, f"実在する: 「{title}」"
 
     urls = " ".join(
         str(r.get("url", "")) + " " + str(r.get("name", ""))
         for r in result.get("resources", [])
     )
-    if file_hint in urls:
-        return True, f"「{title}」に {file_hint} がある"
-    return False, f"「{title}」に {file_hint} が無い"
+    # **書いた手掛かりは全部あること。** 1 つでも欠けたら落とす
+    # （複数年度を 1 ページから取る出典で、古い年度だけ消えても通ってしまう）。
+    missing = [h for h in file_hints if h not in urls]
+    if not missing:
+        return True, f"「{title}」に {'・'.join(file_hints)} がある"
+    return False, f"「{title}」に {'・'.join(missing)} が無い"
 
 
 def main(argv: list[str]) -> int:
@@ -164,7 +167,7 @@ def main(argv: list[str]) -> int:
         # --- 都のカタログのデータセットは API で見る ---
         m = CKAN_DATASET.match(src.url)
         if m:
-            ok, why = check_ckan(m.group(1), src.file_hint)
+            ok, why = check_ckan(m.group(1), src.file_hints)
             print(f"    {'✓' if ok else '✗'} {why}")
             if not ok:
                 failures.append(f"{src.key}: {why} — {src.url}")
@@ -203,15 +206,17 @@ def main(argv: list[str]) -> int:
             print("    ○ HTTP 200（中身の照合は無し。file_hint が空）")
             continue
 
-        if src.file_hint in body:
-            print(f"    ✓ HTTP 200 / 「{src.file_hint}」がページ内にある")
+        missing = [h for h in src.file_hints if h not in body]
+        if not missing:
+            found = "」「".join(src.file_hints)
+            print(f"    ✓ HTTP 200 / 「{found}」がページ内にある")
         else:
             # **ここが本題。** リンクは生きているのに、使ったデータが無い。
+            lack = "」「".join(missing)
             failures.append(
-                f"{src.key}: リンクは 200 だが「{src.file_hint}」が"
-                f"ページに無い — {src.url}"
+                f"{src.key}: リンクは 200 だが「{lack}」がページに無い — {src.url}"
             )
-            print(f"    ✗ 「{src.file_hint}」がページ内に無い")
+            print(f"    ✗ 「{lack}」がページ内に無い（{len(src.file_hints)} 件中）")
 
     print()
     print(

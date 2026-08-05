@@ -1010,40 +1010,138 @@ def _p04_detects_departments_by_value():
         assert out.iloc[0]["name"] == "Aクリニック", out.iloc[0]["name"]
 
 
-@check("騒音: 昼夜どちらの dB 列もあるとき昼間を選ぶ")
+# 常時監視測定地点の様式。**見出しが 3 行にまたがる**（項目名・副項目名・単位）
+# のが実データの形で、昼夜の区別は 3 行目にしか出ない。
+# 住所は実在する街区（位置参照情報に載っているもの）を使う——ここを作り物に
+# すると座標化が全滅し、「様式を読めたか」ではなく「住所が実在するか」を
+# 検査することになる。
+_NOISE_ADDRESSES = (
+    "渋谷区神南1丁目1",
+    "渋谷区道玄坂1丁目10",
+    "渋谷区桜丘町2",
+    "新宿区西新宿2丁目8",
+    "新宿区高田馬場1丁目1",
+    "豊島区南池袋2丁目45",
+)
+
+
+def _tmp_monitoring_csv(
+    tmp: Path,
+    name: str,
+    *,
+    day: list[int],
+    night: list[int] | None = None,
+    area_types: list[str] | None = None,
+    marks: bool = True,
+    year: int = 2023,
+    addresses: tuple[str, ...] = _NOISE_ADDRESSES,
+) -> Path:
+    """常時監視測定地点の CSV を、実データと同じ 3 行見出しで書き出す。"""
+    night = night or [v - 4 for v in day]
+    area_types = area_types or ["C", "B", "A"] * 3
+    head = [
+        ["騒音測定地点番号", "測定地点の住所", "環境基準類型", "遮音壁等の有無",
+         "測定開始年月日", "車道端からの距離", "等価騒音レベル(ｄＢ)", ""],
+        ["", "", "", "", "", "", "", ""],
+        ["", "", "", "", "", "(m)", "昼間", "夜間"],
+    ]
+    body = [
+        [
+            i + 1,
+            addresses[i % len(addresses)],
+            area_types[i % len(area_types)],
+            "○" if marks else i + 1,
+            f"{year}-11-{(i % 20) + 1:02d}",
+            4.2 + i,
+            day[i],
+            night[i],
+        ]
+        for i in range(len(day))
+    ]
+    path = tmp / name
+    pd.DataFrame(head + body).to_csv(path, index=False, header=False, encoding="utf-8")
+    return path
+
+
+@check("騒音: 見出しが 3 行にまたがっても昼間の dB 列を選ぶ")
 def _noise_prefers_daytime():
     with tempfile.TemporaryDirectory() as d:
         tmp = Path(d)
-        lat, lon = _INSIDE
-        # どちらも列名は候補に無く、値域も同じ。名前の手掛かりだけが違う。
-        rows = [
-            {
-                "緯度": lat,
-                "経度": lon + i * 0.002,
-                "昼間LAeq(dB)": 70 + i,
-                "夜間LAeq(dB)": 60 + i,
-            }
-            for i in range(6)
-        ]
-        path = _tmp_csv(tmp, "noise.csv", rows)
+        # 昼夜は値域が同じで、区別は**3 行目の見出しにしか無い**。
+        # 見出しを 1 行しか読まないと夜間を掴み得る（実測で 3〜4dB 低い）。
+        path = _tmp_monitoring_csv(
+            tmp, "noise.csv", day=[70, 71, 72, 73, 74, 75], night=[60, 61, 62, 63, 64, 65]
+        )
         with _quiet():
             out = fetch.normalize_noise(path)
         assert out["laeq_db"].min() >= 70.0, (
             f"夜間の列を拾っている: {sorted(out['laeq_db'].unique())}"
         )
+        assert len(out) == 6, f"6 点あるはずが {len(out)} 点"
 
 
 @check("騒音: 騒音レベルの列を特定できなければ止まる")
 def _noise_requires_laeq():
     with tempfile.TemporaryDirectory() as d:
         tmp = Path(d)
-        lat, lon = _INSIDE
-        rows = [
-            {"緯度": lat, "経度": lon + i * 0.002, "地点番号": 1000 + i}
-            for i in range(6)
+        # 常時監視の様式のまま、**dB の列だけ落ちている**表。数値の列は
+        # 残っているので「表は読めたが騒音レベルが無い」形になる。
+        head = [
+            ["騒音測定地点番号", "測定地点の住所", "環境基準類型", "遮音壁等の有無",
+             "車道端からの距離", "地上からの高さ"],
+            ["", "", "", "", "(m)", "(m)"],
+            ["", "", "", "", "", ""],
         ]
-        path = _tmp_csv(tmp, "noise.csv", rows)
+        body = [
+            [i + 1, _NOISE_ADDRESSES[i], "C", "○", 4.2 + i, 1.2] for i in range(6)
+        ]
+        path = tmp / "noise.csv"
+        pd.DataFrame(head + body).to_csv(
+            path, index=False, header=False, encoding="utf-8"
+        )
         _raises(lambda: fetch.normalize_noise(path), contains="等価騒音レベル")
+
+
+@check("騒音: 要請限度測定地点は読まない（測定点の選ばれ方が区に依存する）")
+def _noise_rejects_limit_survey():
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        # 要請限度の表は「区域の区分」が**小文字 a/b/c**で、○×の列を持たない。
+        # 中身がそっくりなので、名前で判定していると静かに混ざる。
+        path = _tmp_monitoring_csv(
+            tmp,
+            "noise.csv",
+            day=[70, 71, 72, 73, 74, 75],
+            area_types=["c", "b", "a"] * 3,
+            marks=False,
+        )
+        msg = _raises(lambda: fetch.normalize_noise(path), contains="要請限度")
+        assert "常時監視" in msg, msg
+
+
+@check("騒音: 同じ地点の別年度は平均し、近くの別地点は潰さない")
+def _noise_merges_years_not_neighbours():
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        # 同じ住所を 2 年度ぶん。各地点ちょうど 4dB 差にしてあるので、
+        # 平均が取れていれば 2dB だけ上がる。
+        first = [70, 71, 72, 73, 74, 75]
+        one = _tmp_monitoring_csv(tmp, "y1.csv", day=first, year=2019)
+        two = _tmp_monitoring_csv(tmp, "y2.csv", day=[v + 4 for v in first], year=2023)
+        with _quiet():
+            frames = [fetch.normalize_noise(p) for p in (one, two)]
+            out = fetch.aggregate_noise_years(frames)
+        assert len(out) == 6, f"6 地点に束ねるはずが {len(out)} 地点"
+        assert sorted(out["laeq_db"]) == [v + 2.0 for v in first], (
+            f"年度平均になっていない: {sorted(out['laeq_db'])}"
+        )
+        assert set(out["n_years"]) == {2}, f"年度数が合わない: {set(out['n_years'])}"
+
+        # **距離では寄せない。** 別の街区に落ちた点は 100m 以内でも別地点。
+        # `dedupe_points`（同名かつ 100m 以内は同一施設）をそのまま通すと、
+        # 別々の道路の実測値が 1 点に潰れる。
+        far = fetch.aggregate_noise_years([frames[0]])
+        assert len(far) == 6, f"1 年度だけでも 6 地点残るはずが {len(far)} 地点"
 
 
 @check("公共施設: 施設名から種別を判定できなければ止まる（到達不可の過大計上を防ぐ）")

@@ -126,11 +126,22 @@ def _read(path: Path) -> pd.DataFrame:
     return pd.read_csv(path, encoding="cp932", dtype=str)
 
 
+ALL_MUNICIPALITIES = "*"
+
+
 def load(wards: tuple[str, ...]) -> Geocoder:
     """data/raw/isj/ 以下の位置参照情報を読む。
 
     どちらの水準のファイルかは**列の中身**で判定する。版番号（19.0a / 19.0b）で
     区別する書き方にすると、版が上がったときに黙って別の水準を読む。
+
+    `wards` に `ALL_MUNICIPALITIES` を渡すと、**読み込んだ表に実際に入っている
+    市区町村名**を全部使う（都内 62 市区町村村）。区界の外側にある点まで
+    座標化したいときに使う——騒音の測定点は都全域が 1 ファイルに入っており、
+    23 区分だけ座標化すると**区界のすぐ外の測定点が落ちて縁のメッシュが
+    不自然に静かに出る**（`config.CLIP_BUFFER_M` / `issues.md` A8）。
+    **市区町村名は決め打ちしない**——郡部が「西多摩郡瑞穂町」の形で入るなど、
+    書き方を外から当てるとそこだけ黙って落ちる。
     """
     files = sorted(ISJ_DIR.rglob("*.csv"))
     if not files:
@@ -160,6 +171,13 @@ def load(wards: tuple[str, ...]) -> Geocoder:
     if not gaiku and not chome:
         raise ValueError(f"{ISJ_DIR} に読める位置参照情報が無い")
     print(f"[geocode] 位置参照情報 街区 {len(gaiku):,} / 町丁目 {len(chome):,} を読んだ")
+    if wards == (ALL_MUNICIPALITIES,) or wards == ALL_MUNICIPALITIES:
+        names = {k[0] for k in gaiku} | {k[0] for k in chome}
+        # 長い名前から照合する。「府中市」と「西多摩郡瑞穂町」のように
+        # 前方一致が入れ子になる書き方が混じるため、短い方が先に当たると
+        # 町名を取り損なう。
+        wards = tuple(sorted(names, key=len, reverse=True))
+        print(f"[geocode] 市区町村名を表から取った: {len(wards)} 件")
     return Geocoder(gaiku=gaiku, chome=chome, wards=wards)
 
 
