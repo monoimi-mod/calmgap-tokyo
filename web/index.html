@@ -76,11 +76,16 @@
           レイヤーらしく見える、という取り違えが実際に起きた。
         -->
         <div class="panel-section">
-          <h2>評価に使う 8 つのデータ（レイヤー）</h2>
-          <p class="section-note">
-            この 8 層を重み付きで足し合わせて需要スコアと負荷スコアを作り、
-            2 つを掛けて優先度にしています。重みを動かすと地図も提言も変わります。
-          </p>
+          <!--
+            **見出しの「8」は meta から入れる。** ここに直接書いていたため、
+            バナーの「実データ 10/10 レイヤー」と数が食い違って見え、
+            外部から「8 なの 10 なの、意味が分からない」と指摘された。
+            数の食い違いは書き換えて消すものではなく、
+            **2 層がスコアに入らないという事実そのものが説明**である
+            （etl/config.py の SUPPORT_LAYERS）。
+          -->
+          <h2 id="layer-heading">評価に使うデータ（レイヤー）</h2>
+          <p class="section-note" id="layer-roles-note"></p>
           <div id="sliders"></div>
           <button class="ghost-btn" id="reset-btn" style="margin-top: 10px">
             既定値に戻す
@@ -164,6 +169,14 @@
           </button>
           <button class="tab" role="tab" data-tab="selected" aria-selected="false">
             選択中の区画
+          </button>
+          <!--
+            **合成後の順位表からは、層ごとの姿が見えない。** 優先度は 8 層を
+            重み付きで足して掛けた値なので、「駅の乗降規模が大きいのはどこか」を
+            画面から知る方法が無かった（内訳は選んだ 1 区画についてしか出ない）。
+          -->
+          <button class="tab" role="tab" data-tab="layers" aria-selected="false">
+            レイヤー別
           </button>
           <div class="ranking-n" id="ranking-n"></div>
         </div>

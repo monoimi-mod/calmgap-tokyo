@@ -645,11 +645,15 @@ p {
   display: flex;
   gap: 4px;
   padding: 10px 16px 0;
+  /* タブが 3 つになって、幅の狭い画面で「レイヤ / ー別」と折れていた。
+     折り返すのはタブの列そのもので、1 つのタブの中ではない。 */
+  flex-wrap: wrap;
 }
 
 .tab {
   font: inherit;
   font-size: 12.5px;
+  white-space: nowrap;
   padding: 6px 11px;
   border: 1px solid transparent;
   border-bottom: none;
@@ -812,7 +816,10 @@ p {
 .factor {
   display: grid;
   grid-template-columns: 1fr 42px;
-  align-items: center;
+  /* 行が高くなった（順位と寄与が入った）ので、上端で揃える。
+     中央揃えのままだと、正規化値が行の真ん中に浮いて
+     どの見出しに属する数字なのか読めない。 */
+  align-items: start;
   gap: 8px;
   font-size: 11.5px;
   margin-bottom: 5px;
@@ -863,6 +870,131 @@ p {
   text-align: right;
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
+}
+
+/* **「地域内順位」と書いた札の隣に、順位そのものを出す。**
+   母数だけがあって順位が無い状態が続いていた（2026-08-05 に追加）。 */
+.factor-rank {
+  margin-top: 3px;
+  line-height: 1.5;
+}
+
+.fr-main {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.fr-main b {
+  font-family: var(--mono);
+  color: var(--text-primary);
+}
+
+.fr-sub {
+  display: block;
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+
+/* **重みを動かしたときに、この行の中で動く唯一の場所。**
+   正規化値（左の実数と 0〜1）はその区画の性質なので動かない。
+   動く量がどこにも無いと、スライダーが効いていないように見える。 */
+.factor-weighted {
+  margin-top: 4px;
+  padding: 4px 6px;
+  background: var(--surface-2);
+  border-radius: var(--radius);
+  line-height: 1.55;
+}
+
+.fw-label {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  margin-right: 5px;
+}
+
+.fw-calc {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.fw-value {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  margin-left: 2px;
+}
+
+.fw-share {
+  display: block;
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+
+/* 寄与の棒は、上の正規化値の棒と見分けが付かなければならない
+   （同じ幅の棒が 2 本並ぶと、どちらが何なのか読めない）。 */
+.factor-bar.is-contribution {
+  display: block;
+  height: 3px;
+  margin-top: 3px;
+  background: var(--surface-raised);
+}
+
+/* ------------------------------------------ レイヤー別タブ・レイヤーの役割 */
+
+.layer-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.layer-picker-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+
+.layer-picker-label {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  min-width: 34px;
+}
+
+/* スコアに入らない 2 層。「10 なの 8 なの」への答えがここに出る。 */
+.layer-role-list {
+  margin: 6px 0;
+  padding-left: 18px;
+}
+
+.layer-role-list li {
+  margin-bottom: 5px;
+  line-height: 1.55;
+}
+
+.layer-role-list code {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+
+/* 一覧が 0 件のとき。**騒音の測定点は 496 区画で 0 件になり、
+   そのことこそ見せるべき事実**なので、黙って閉じない。 */
+.fl-head.is-empty {
+  padding-bottom: 8px;
+  color: var(--text-secondary);
+}
+
+.fl-hint {
+  display: block;
+  color: var(--text-muted);
+}
+
+.fl-years {
+  margin-left: 6px;
 }
 
 .factor-label {

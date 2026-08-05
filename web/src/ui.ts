@@ -23,7 +23,17 @@ export interface AppState {
    * 「同じ順位表を文章で見るか数値で見るか」の違いしか無くなった。
    * 根拠文も同じ narrate() の出力で、2 箇所に同じ文が出ていた。
    */
-  tab: "ranking" | "selected";
+  tab: "ranking" | "selected" | "layers";
+  /**
+   * 「レイヤー別」タブでいま見ている層。
+   *
+   * **合成後の順位表だけでは、どの層が何を言っているのかが見えない。**
+   * 優先度は 8 層を重み付きで足して掛けた値なので、「駅の乗降規模が
+   * 大きいのはどこか」を画面から知る方法が無かった（内訳は選んだ 1 区画に
+   * ついてしか出ない）。層ごとの上位を出すと、**その層が何を拾う層なのかが
+   * 一覧で分かる**——同時に、上位が層ごとに全然違うことも見える。
+   */
+  layerKey: string;
   activePreset: string;
   /** 地図に塗る値。順位は常に優先度で決まる。 */
   displayMode: "priority" | "demand" | "load";
@@ -49,6 +59,77 @@ export interface AppState {
    * 一覧はその地図側と同一物である）。
    */
   highlightPoints: GeoJSON.FeatureCollection | null;
+  /**
+   * 層ごとの、区画の順位。**重みに依存しないので 1 回だけ作る。**
+   * 起動時に `computeLayerRanks` が作り、以後変わらない。
+   */
+  layerRanks: Record<string, LayerRank>;
+}
+
+/** 1 層ぶんの順位。`computeLayerRanks` の出力。 */
+export interface LayerRank {
+  /**
+   * 区画ごとの順位（1 始まり・値の降順）。同値は同順位。
+   * **0 は「順位が無い」**——その層の値が 0 の区画で、
+   * 順位を付ける母集団に入っていない（zeroIsAbsence の層）。
+   */
+  rank: Int32Array;
+  /** 母数。順位を付けた区画の数。 */
+  denom: number;
+  /** 値の降順に並べた区画の添字。レイヤー別タブの表に使う。 */
+  order: number[];
+}
+
+/**
+ * 層ごとの順位を作る。
+ *
+ * **画面は「地域内順位」という札を出しながら、順位そのものを出していなかった。**
+ * 母数（3,626 区画中）は書いてあるのに何番目かが無く、代わりに 0〜1 の
+ * 正規化値だけが出ていた——0.995 が何位なのかは、母数を掛け算すれば
+ * 出せるが、読む側にそれをさせていた。
+ *
+ * **順位は配信された `n_*` から作る。** 別の値から作ると、札の言う順位と
+ * 画面の値が食い違い得る。同値は同順位（1,1,3。競技順位）。
+ *
+ * 絶対尺度の層（騒音・用途地域）にも順位は付ける——**ただし画面では
+ * 「参考」として扱う。** その層の値を決めているのは順位ではなく法令の物差しで、
+ * 順位はあくまで「23 区の中でどのあたりか」を言うだけである。
+ */
+export function computeLayerRanks(
+  rows: MeshProps[],
+  components: ComponentDef[],
+): Record<string, LayerRank> {
+  const out: Record<string, LayerRank> = {};
+  for (const c of components) {
+    const field = `n_${c.key}`;
+    const values = rows.map((r) => (r[field] as number) ?? 0);
+    // 順位を付ける母集団。値 0 が「存在しない」層では、0 の区画を外す
+    //（母数が層ごとに違うのはこのため。etl/build.py の rank_denominator）。
+    const pool =
+      c.zeroIsAbsence && !c.absolute
+        ? values.map((v, i) => (v > 0 ? i : -1)).filter((i) => i >= 0)
+        : values.map((_, i) => i);
+    pool.sort((a, b) => values[b] - values[a]);
+
+    const rank = new Int32Array(rows.length);
+    let k = 0;
+    while (k < pool.length) {
+      let j = k;
+      while (j + 1 < pool.length && values[pool[j + 1]] === values[pool[k]]) j++;
+      for (let m = k; m <= j; m++) rank[pool[m]] = k + 1;
+      k = j + 1;
+    }
+    // 配信された母数と食い違ったら、画面のどこかが古い。
+    // 地図ごと止めるほどではないので、コンソールに出して先へ進む。
+    if (c.rank_denominator != null && c.rank_denominator !== pool.length) {
+      console.warn(
+        `[layer-rank] ${c.key}: 母数が meta と食い違う ` +
+          `(meta ${c.rank_denominator} / 実データ ${pool.length})`,
+      );
+    }
+    out[c.key] = { rank, denom: pool.length, order: pool };
+  }
+  return out;
 }
 
 /**
@@ -65,7 +146,11 @@ export type HighlightKind =
   | "clinic"
   | "host"
   | "station"
-  | "station_nearest";
+  | "station_nearest"
+  // **騒音だけは「徒歩圏に在るもの」ではない。** 光らせるのは施設ではなく
+  // 測定地点で、半径も帯域ではなく IDW の打ち切り距離（1,500m）。
+  // 0 件ならその区画の騒音は測定値ではなく 23 区の中央値である。
+  | "noise";
 
 // 優先度は 9,507 区画の中で 0.99〜0.17 と動く。2 桁だと上位 100 件が
 // すべて 0.99 か 1.00 になり、差が無いように見えていた（実際には在る）。
@@ -197,6 +282,21 @@ export interface LayerFact {
   hl?: { kind: HighlightKind; radiusM: number };
 }
 
+/**
+ * 構成要素のキー → `meta.fact_radius_m` のキー。
+ *
+ * **半径は層ごとに違う値で、しかも意味も違う**（需要 3 層と駅は帯域、
+ * 騒音は内挿の打ち切り）。対応表を 1 つ置いて、画面のどこでも同じ
+ * 引き方をする。ここに無い層は、半径という概念を持たない層である。
+ */
+const RADIUS_KEY: Record<string, keyof Meta["fact_radius_m"]> = {
+  welfare_capacity: "welfare",
+  sped_school: "school",
+  clinic: "clinic",
+  station_flow: "station",
+  noise: "noise",
+};
+
 export function layerFact(
   key: string,
   row: MeshProps,
@@ -261,11 +361,30 @@ export function layerFact(
     // 需要側と基準が違うことを、行ごとの basis で言う。
     case "zoning":
       return { value: s("f_zoning_name") ?? "—", basis: "この区画の値（面積最大の区分）" };
-    case "noise":
+    case "noise": {
+      const db = g("f_noise_db");
+      // **測定点の件数を、値と同じ行に出す。** 0 件は「静か」ではなく
+      // 「測っていない」——打ち切り距離の内に測定点が 1 つも無い区画では、
+      // ここに出ている dB は測定でも内挿でもなく **23 区の中央値**である
+      //（496 区画。docs/issues.md A6）。件数を書かないと、その 496 区画と
+      // 実測 12 点から内挿した区画が、画面で同じ見た目になる。
+      const n = g("f_noise_n") ?? 0;
       return {
-        value: g("f_noise_db") != null ? `${g("f_noise_db")} dB (LAeq)` : "—",
-        basis: "この区画の値（測定点からの内挿）",
+        value:
+          (db != null ? `${db} dB (LAeq)` : "—") +
+          (n
+            ? `・内挿に使った測定点 ${num(n)}点`
+            : "・測定点なし（23 区の中央値で補完）"),
+        basis:
+          `この区画の値（半径 ${num(radius.noise)}m 以内の測定点からの距離重み付き内挿）。` +
+          "この半径は徒歩圏ではなく、内挿の打ち切り距離です。" +
+          "測定点は幹線道路の道路端にしかありません。",
+        // 0 件でも押せるようにする。**「測定点が無い」ことこそ地図で
+        // 見せるべき**で、押しても何も起きないと「まだ実装されていない」に見える
+        //（円だけが描かれ、その中が空であることが見える）。
+        hl: { kind: "noise", radiusM: radius.noise },
       };
+    }
     case "crowding":
       return {
         value: g("f_crowding") != null ? `${num(g("f_crowding")!)}人` : "—",
@@ -516,6 +635,51 @@ export function renderIntro(meta: Meta): void {
     "<b>示すのは区画であって、特定の施設ではありません。</b>";
 }
 
+/**
+ * 「8 つのレイヤー」と「実データ 10/10 レイヤー」の対応を画面で解く。
+ *
+ * **どちらも正しいのに、対応がどこにも書かれていなかった**
+ *（2026-08-05・外部から「8 なの 10 なの、意味が分からない」と指摘されて発覚）。
+ * 片方の数字を書き換えて食い違いを消すのではない——
+ * **2 層がスコアに入らないという事実そのものが答え**である。
+ * しかもその 1 つ（既存の公共施設）は、この作品でいちばん頑健な出力
+ *「到達不可」を作っている層で、**スコアに入らないことが長所**になっている。
+ *
+ * 数はすべて meta から出す（ここに書くと、層が増えたときに古くなる。
+ * 分類漏れは etl/build.py の `_layer_roles` が止める）。
+ */
+export function renderLayerRoles(meta: Meta): void {
+  const scored = meta.layer_roles.filter((r) => r.role === "score");
+  const support = meta.layer_roles.filter((r) => r.role === "support");
+
+  const heading = document.getElementById("layer-heading");
+  if (heading) {
+    heading.textContent = `評価に使う ${scored.length} つのデータ（レイヤー）`;
+  }
+
+  const el = document.getElementById("layer-roles-note");
+  if (!el) return;
+  el.innerHTML =
+    `この ${scored.length} 層を重み付きで足し合わせて需要スコアと負荷スコアを作り、` +
+    "2 つを掛けて優先度にしています。重みを動かすと地図も提言も変わります。" +
+    "<br><br>" +
+    `<b>データの層は全部で ${meta.layer_roles.length} 層あります。</b>` +
+    `そのうち<b>スコアに入るのが ${scored.length} 層</b>（下のスライダー）、` +
+    `<b>入らないのが ${support.length} 層</b>です。` +
+    "<ul class='layer-role-list'>" +
+    support
+      .map(
+        (r) =>
+          `<li><b>${escapeHtml(r.label)}</b>（<code>${escapeHtml(r.layer)}</code>）<br>` +
+          `${boldMd(r.note)}</li>`,
+      )
+      .join("") +
+    "</ul>" +
+    `「実データ ${meta.real_layer_count}/${meta.layer_total} レイヤー」は` +
+    `この ${meta.layer_roles.length} 層のことで、スライダーの ${scored.length} 本とは` +
+    "数え方が違うだけです。";
+}
+
 /* ------------------------------------------------------------------ スライダー */
 
 export function renderSliders(
@@ -760,13 +924,148 @@ export function renderDetail(
   state: AppState,
   onPick: (meshCode: string, lon?: number, lat?: number) => void,
   onHighlight: (kind: HighlightKind | null) => void,
-  onFocusPoint: (lon: number, lat: number) => void = () => {},
+  onFocusPoint: (index: number) => void = () => {},
+  onPickLayer: (key: string) => void = () => {},
 ): void {
   const body = document.getElementById("detail-body")!;
   body.innerHTML = "";
 
   if (state.tab === "ranking") renderRanking(body, state, onPick);
+  else if (state.tab === "layers") renderLayerRanking(body, state, onPick, onPickLayer);
   else renderSelected(body, state, onHighlight, onFocusPoint);
+}
+
+/**
+ * レイヤー別の上位区画。**合成後の順位表からは見えないものを出す。**
+ *
+ * 優先度は 8 層を重み付きで足して掛けた値なので、
+ * 「駅の乗降規模が大きいのはどこか」を画面から知る方法が無かった
+ *（内訳は選んだ 1 区画についてしか出ない）。層ごとの上位を並べると、
+ * **その層が何を拾っているのかが一覧で分かる**——同時に、
+ * **層ごとに上位の顔ぶれが全く違うこと**も見える。
+ *
+ * **並びはスコアに入る正規化値の順で、実数の順ではない。**
+ * 需要側の 4 層は距離で重み付けして足しており（帯域のガウス核・
+ * 打ち切りは帯域の 2 倍）、**実数は帯域と同じ半径での単純な件数**である。
+ * 同じ 3 駅でも、駅が区画の真上にあるか帯域の縁にあるかで正規化値は違う。
+ * その食い違いを隠さないために、両方を並べて出す。
+ */
+function renderLayerRanking(
+  body: HTMLElement,
+  state: AppState,
+  onPick: (meshCode: string) => void,
+  onPickLayer: (key: string) => void,
+): void {
+  const { meta, rows, score } = state;
+  const comp =
+    meta.components.find((c) => c.key === state.layerKey) ?? meta.components[0];
+  const lr = state.layerRanks[comp.key];
+
+  const intro = document.createElement("p");
+  intro.className = "card-narrative";
+  intro.style.marginBottom = "10px";
+  intro.innerHTML =
+    "<b>1 つの層だけで見た上位区画です。</b>優先度（8 層の合成）ではありません。" +
+    "層を選ぶと、その層の値が大きい順に並びます。行を選ぶと地図がその区画へ寄ります。";
+  body.appendChild(intro);
+
+  // 層の選択。**並び順は config.py の定義順**（スライダー・内訳と同じ）。
+  const picker = document.createElement("div");
+  picker.className = "layer-picker";
+  for (const side of ["demand", "load"] as const) {
+    const group = document.createElement("div");
+    group.className = "layer-picker-group";
+    group.innerHTML = `<span class="layer-picker-label">${
+      side === "demand" ? "需要側" : "負荷側"
+    }</span>`;
+    for (const c of meta.components.filter((x) => x.side === side)) {
+      const b = document.createElement("button");
+      b.className = "preset-btn";
+      b.type = "button";
+      b.textContent = shortLabel(c);
+      b.setAttribute("aria-pressed", String(c.key === comp.key));
+      b.addEventListener("click", () => onPickLayer(c.key));
+      group.appendChild(b);
+    }
+    picker.appendChild(group);
+  }
+  body.appendChild(picker);
+
+  const head = document.createElement("div");
+  head.className = "layer-head";
+  head.innerHTML =
+    `<h3 style="margin:12px 0 4px">${escapeHtml(comp.label)} ${scaleTag(comp)}</h3>` +
+    `<p class="factor-source">${boldMd(comp.rationale)}</p>` +
+    `<p class="factor-source">出典: ${escapeHtml(comp.source)}</p>` +
+    (comp.sign < 0
+      ? '<p class="card-narrative"><b>この層は減点です。</b>' +
+        "値が大きい区画ほど負荷スコアを<b>下げます</b>（既に安らげる場所として）。" +
+        "下の表は値の大きい順なので、<b>優先度が高い順ではありません</b>。</p>"
+      : "");
+  body.appendChild(head);
+
+  const N = Math.min(state.rankingN, lr.order.length);
+  const table = document.createElement("table");
+  table.className = "data-table is-ranking";
+  table.innerHTML = `
+    <thead>
+      <tr>
+        <th>この層<br>での順位</th><th>区 / 最寄り駅</th>
+        <th>この区画の実数</th>
+        <th class="num">正規化<br>値</th><th class="num">優先度<br>順位</th>
+      </tr>
+    </thead>`;
+  const tbody = document.createElement("tbody");
+  for (let k = 0; k < N; k++) {
+    const i = lr.order[k];
+    const row = rows[i];
+    const fact = layerFact(comp.key, row, meta.fact_radius_m);
+    const ward = typeof row.w === "number" ? (meta.target_wards[row.w] ?? "") : "";
+    const station = (row.f_station_name as string) ?? "";
+    const tr = document.createElement("tr");
+    tr.style.cursor = "pointer";
+    if (state.selected === row.c) tr.style.background = "var(--surface-2)";
+    tr.innerHTML = `
+      <td>${lr.rank[i]}</td>
+      <td>${escapeHtml([ward, station].filter(Boolean).join(" ") || "—")}
+        <span class="factor-source" style="font-family:var(--mono)">${escapeHtml(row.c)}</span></td>
+      <td>${escapeHtml(fact.value)}</td>
+      <!-- **ここだけ 4 桁で出す。** 3 桁だと上位が「1.000」で並び、
+           順位が違うのに値が同じに見える（配信精度は 4 桁）。 -->
+      <td class="num">${fmt((row[`n_${comp.key}`] as number) ?? 0, 4)}</td>
+      <td class="num">${num(score.order.indexOf(i) + 1)}</td>`;
+    tr.addEventListener("click", () => onPick(row.c));
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  body.appendChild(table);
+
+  const note = document.createElement("p");
+  note.className = "card-narrative";
+  note.style.marginTop = "10px";
+  // **「実数の順ではない」ことを表の下で言う。** 言わないと、
+  // 実数が下の行より小さいのに上に来ている行が誤りに見える。
+  note.innerHTML =
+    "<b>並びは正規化値の順で、実数の順ではありません。</b>" +
+    (comp.side === "demand"
+      ? "需要側の 4 層は<b>距離で重み付けして足しています</b>" +
+        `（帯域 ${num(meta.fact_radius_m[RADIUS_KEY[comp.key]])}m のガウス核）。` +
+        "実数は同じ半径で数えた単純な件数なので、" +
+        "<b>同じ件数でも、近くにあるか縁にあるかで正規化値は違います</b>。"
+      : "負荷側は区画自身に与えられた値ですが、" +
+        "正規化のしかたが層で違います（下の札）。") +
+    "<br><br>" +
+    (comp.absolute
+      ? "<b>この層は絶対尺度です</b>——値を決めているのは順位ではなく" +
+        `${escapeHtml(comp.absolute.label)}という物差しで、` +
+        "この順位は「23 区の中でどのあたりか」を言うだけの<b>参考</b>です。"
+      : `<b>母数は ${num(lr.denom)} 区画</b>——この層の値が 0 でない区画だけで` +
+        `順位を付けています（全 ${num(meta.mesh_count)} 区画ではありません）。`) +
+    "<br><br>" +
+    "<b>この表は優先度ではありません。</b>右端の優先度順位を見ると、" +
+    "この層で上位の区画が優先度でも上位とは限らないことが分かります——" +
+    "優先度は需要と負荷の<b>掛け算</b>で、片側だけ極端な場所は上がりません。";
+  body.appendChild(note);
 }
 
 function renderRanking(
@@ -881,13 +1180,25 @@ const LIST_CAPACITY: Record<
  */
 function facilityListBlock(state: AppState, row: MeshProps): string {
   const fc = state.highlightPoints;
-  if (!fc || !fc.features.length) return "";
+  if (!fc) return "";
+  // **0 件でも黙って閉じない。** 騒音の測定点は 496 区画で 0 件になり、
+  // **そのことこそ見せるべき事実**である（issues.md A6）。何も出ないと
+  // 「押しても動かない行」に見える。
+  if (!fc.features.length) {
+    return `<div class="fact-list">
+        <div class="fl-head is-empty">この範囲には 1 件もありません（地図の円の中が空です）。</div>
+      </div>`;
+  }
 
   const mx = row.mx as number | undefined;
   const my = row.my as number | undefined;
 
+  // **添字を保ったまま距離順に並べる。** 押されたときに渡すのは座標ではなく
+  // この添字で、`state.highlightPoints`（地図へ渡したのと同一の配列）を
+  // 引き直す。同じ地点に 2 件あっても、一覧の行・地図の点・吹き出しの
+  // 中身が同じ 1 件であることが構造的に保証される。
   const items = fc.features
-    .map((f) => {
+    .map((f, index) => {
       const p = (f.properties ?? {}) as Record<string, unknown>;
       const x = p.x as number | undefined;
       const y = p.y as number | undefined;
@@ -897,30 +1208,45 @@ function facilityListBlock(state: AppState, row: MeshProps): string {
           ? Math.hypot(x - mx, y - my)
           : null;
       const g = f.geometry;
-      const c = g && g.type === "Point" ? (g.coordinates as number[]) : null;
-      return { p, d, lon: c?.[0] ?? null, lat: c?.[1] ?? null };
+      const hasPoint = !!g && g.type === "Point";
+      return { p, d, index, hasPoint };
     })
     .sort((a, b) => (a.d ?? Infinity) - (b.d ?? Infinity));
 
   const rows = items
-    .map(({ p, d, lon, lat }) => {
-      const spec = LIST_CAPACITY[String(p.layer ?? "")];
+    .map(({ p, d, index, hasPoint }) => {
+      // 騒音の測定点は施設ではないので、`capacity` の表とは別に書く。
+      // 同じ「規模」の欄に dB を流し込むと、単位の違う 4 つ目の値が
+      // 同じ列に入ることになる（在籍者数・定員・乗降客数に続いて）。
+      const isNoise = p.layer === "noise";
       let size = "";
-      if (spec && p.capacity != null) {
-        const n = Number(p.capacity).toLocaleString("ja-JP");
-        // 仮の値であることを、値と同じ行に書く。
-        // 一覧で落とすと、60 行のうちどれが実測か分からなくなる。
-        const mark =
-          p.assumed && spec.assumed
-            ? `<span class="fl-assumed">仮（${escapeHtml(spec.assumed)}）</span>`
-            : "";
-        size = `<span class="fl-size">${escapeHtml(spec.label)} ${n}${escapeHtml(spec.unit)}</span>${mark}`;
+      if (isNoise) {
+        const years = p.years ? `${p.years}年度` : "";
+        size =
+          `<span class="fl-size">${escapeHtml(String(p.laeq_db ?? "—"))} dB (LAeq)</span>` +
+          (years ? `<span class="fl-years">${escapeHtml(years)}</span>` : "");
+      } else {
+        const spec = LIST_CAPACITY[String(p.layer ?? "")];
+        if (spec && p.capacity != null) {
+          const n = Number(p.capacity).toLocaleString("ja-JP");
+          // 仮の値であることを、値と同じ行に書く。
+          // 一覧で落とすと、60 行のうちどれが実測か分からなくなる。
+          const mark =
+            p.assumed && spec.assumed
+              ? `<span class="fl-assumed">仮（${escapeHtml(spec.assumed)}）</span>`
+              : "";
+          size = `<span class="fl-size">${escapeHtml(spec.label)} ${n}${escapeHtml(spec.unit)}</span>${mark}`;
+        }
       }
-      const focus =
-        lon != null && lat != null ? ` data-lon="${lon}" data-lat="${lat}"` : "";
-      return `<li class="fl-item"${focus} role="button" tabindex="0">
+      // **一覧でも調査名を出す。** 60 行を眺めているときに、どの点が
+      // 「苦情の出た道路」でどれが系統調査なのかが行ごとに分からないと、
+      // 混ぜたことが見えない（docs/issues.md A1）。
+      const meta = isNoise
+        ? `騒音の測定地点${p.survey ? ` ・ ${p.survey}` : ""}`
+        : String(p.host_kind ?? p.kind ?? "");
+      return `<li class="fl-item"${hasPoint ? ` data-i="${index}"` : ""} role="button" tabindex="0">
           <div class="fl-name">${escapeHtml(String(p.name ?? ""))}</div>
-          <div class="fl-meta">${escapeHtml(String(p.host_kind ?? p.kind ?? ""))}${
+          <div class="fl-meta">${escapeHtml(meta)}${
             d != null ? ` ・ ${Math.round(d).toLocaleString("ja-JP")}m` : ""
           }</div>
           ${size ? `<div class="fl-size-row">${size}</div>` : ""}
@@ -934,9 +1260,55 @@ function facilityListBlock(state: AppState, row: MeshProps): string {
   ].filter(Boolean);
 
   return `<div class="fact-list">
-      <div class="fl-head">${fc.features.length.toLocaleString("ja-JP")} 件（地図に出ている点と同じ）・近い順</div>
+      <div class="fl-head">${fc.features.length.toLocaleString("ja-JP")} 件（地図に出ている点と同じ）・近い順
+        <span class="fl-hint">名前を押すと地図が寄って吹き出しが出ます</span></div>
       <ul class="fl-list">${rows}</ul>
       ${sources.length ? `<div class="fl-source">出典: ${escapeHtml(sources.join(" / "))}</div>` : ""}
+    </div>`;
+}
+
+/**
+ * 内訳の 1 行に「で、何位なの？」を出す。
+ *
+ * **画面は「地域内順位（3,626区画中）」という札を出しながら、
+ * 順位そのものをどこにも書いていなかった**（2026-08-05・指摘を受けて追加）。
+ * 母数だけがあって順位が無く、代わりに 0〜1 の正規化値が出ていた——
+ * 0.995 が何位かは母数を掛ければ出せるが、読む側にそれをさせていた。
+ *
+ * **絶対尺度の層では順位を主にしない。** その層の値を決めているのは
+ * 法令の物差しであって順位ではない。順位は「23 区の中でどのあたりか」を
+ * 言うだけの参考として、物差しの上の位置の後ろに置く。
+ */
+function layerRankLine(c: ComponentDef, state: AppState, idx: number): string {
+  const lr = state.layerRanks[c.key];
+  if (!lr) return "";
+  const rank = lr.rank[idx];
+  const n = state.meta.mesh_count;
+
+  if (c.absolute) {
+    const value = (state.rows[idx][`n_${c.key}`] as number) ?? 0;
+    return `<div class="factor-rank">
+        <span class="fr-main">物差しの上の位置 <b>${fmt(value)}</b></span>
+        <span class="fr-sub">${escapeHtml(c.absolute.label)}。
+          値はこの物差しで決まり、順位では決まりません
+          （参考: ${num(n)} 区画中 第 ${num(rank)} 位）。</span>
+      </div>`;
+  }
+  if (!rank) {
+    // 順位が無い＝その層の値が 0。**「最下位」ではない**——順位を付ける
+    // 母集団に入っていない（掛け算モデルで確実に 0 を効かせるため）。
+    return `<div class="factor-rank">
+        <span class="fr-main">順位なし</span>
+        <span class="fr-sub">この層の値が 0 の区画です。
+          ${num(lr.denom)} 区画の順位付けには入っていません
+          （最下位ではなく、母集団の外）。</span>
+      </div>`;
+  }
+  return `<div class="factor-rank">
+      <span class="fr-main"><b>${num(lr.denom)} 区画中 第 ${num(rank)} 位</b>
+        （上位 ${pctRank(rank, lr.denom)}%）</span>
+      <span class="fr-sub">母数はこの層の値が 0 でない区画。
+        全 ${num(n)} 区画ではありません。</span>
     </div>`;
 }
 
@@ -944,7 +1316,7 @@ function renderSelected(
   body: HTMLElement,
   state: AppState,
   onHighlight: (kind: HighlightKind | null) => void,
-  onFocusPoint: (lon: number, lat: number) => void,
+  onFocusPoint: (index: number) => void,
 ): void {
   const { rows, score, meta, selected, weights } = state;
   if (!selected) {
@@ -1006,22 +1378,43 @@ function renderSelected(
   // 大きさは棒が示すので、順序に情報を持たせる必要が無い。
   for (const side of ["demand", "load"] as const) {
     const comps = meta.components.filter((c) => c.side === side);
+
+    // **重みを動かしたときに動く量を、この節の中に持つ。**
+    //
+    // スライダーを動かしても内訳の数値が動かないのは直感に反する、という
+    // 指摘を受けた（2026-08-05）。動かないのは正しい——**層の正規化値は
+    // その区画の性質**で、こちらが何を重視するかとは関係が無い。
+    // だが画面はそれを言っておらず、上の需要・負荷・順位だけが動いていた。
+    //
+    // 動くものをこの節に出す: 重み・寄与（正規化値 × 重み）・
+    // その側の寄与に占める割合。**寄与は重み付き和の中の取り分**であって、
+    // 需要スコアそのものではない（和はこのあと順位化される）。
+    const contributions = comps.map(
+      (c) => ((row[`n_${c.key}`] as number) ?? 0) * (weights[c.key] ?? c.weight),
+    );
+    const totalAbs = contributions.reduce((a, v) => a + Math.abs(v), 0);
+
     const section = document.createElement("div");
     section.className = "factors";
     section.innerHTML =
       `<h2 style="margin-top:14px">${side === "demand" ? "需要側" : "負荷側"}の内訳` +
       `（${comps.length} レイヤー）</h2>` +
+      '<p class="factor-source" style="margin:-4px 0 8px">' +
       (side === "demand"
-        ? '<p class="factor-source" style="margin:-4px 0 8px">' +
-          "<b>下線のある行を選ぶと、数えた施設が下に一覧で開き、同時に地図にも出ます。</b>" +
-          "一覧の行数と地図の点の数は、行に書いた件数と必ず一致します。</p>"
-        : "");
+        ? "<b>下線のある行を選ぶと、数えたものが下に一覧で開き、同時に地図にも出ます。</b>" +
+          "一覧の行数と地図の点の数は、行に書いた件数と必ず一致します。<br>"
+        : "") +
+      "<b>スライダーを動かしても、左の実数と正規化値は動きません</b>——" +
+      "それはこの区画の性質で、こちらが何を重視するかとは無関係だからです。" +
+      "動くのは<b>寄与</b>（正規化値 × 重み）と、上の需要・負荷・順位です。</p>";
 
-    for (const c of comps) {
+    comps.forEach((c, ci) => {
       const w = weights[c.key] ?? c.weight;
       const normalized = (row[`n_${c.key}`] as number) ?? 0;
       const fact = layerFact(c.key, row, meta.fact_radius_m);
       const on = fact.hl && state.highlight === fact.hl.kind;
+      const contribution = contributions[ci];
+      const share = totalAbs > 0 ? Math.abs(contribution) / totalAbs : 0;
 
       const el = document.createElement("div");
       el.className = "factor" + (fact.hl ? " is-highlightable" : "") + (on ? " is-on" : "");
@@ -1041,12 +1434,30 @@ function renderSelected(
           <div class="factor-bar${c.sign < 0 ? " is-negative" : ""}">
             <i style="width:${Math.round(normalized * 100)}%"></i>
           </div>
+          ${layerRankLine(c, state, idx)}
+          <div class="factor-weighted">
+            <span class="fw-label">この重みでの寄与</span>
+            <span class="fw-calc">${fmt(normalized)} × 重み ${fmt(w, 1)} =</span>
+            <b class="fw-value">${
+              // 0 に符号を付けない。減点レイヤーの寄与が 0 のとき
+              // 「−0.000」と出ていて、引かれているように見えた。
+              contribution === 0 ? "" : c.sign < 0 ? "−" : ""
+            }${fmt(Math.abs(contribution))}</b>${
+              c.sign < 0 ? '<span class="factor-zero">減点</span>' : ""
+            }
+            <span class="fw-share">${side === "demand" ? "需要側" : "負荷側"}の寄与の ${Math.round(
+              share * 100,
+            )}%</span>
+            <span class="factor-bar is-contribution${c.sign < 0 ? " is-negative" : ""}">
+              <i style="width:${Math.round(share * 100)}%"></i>
+            </span>
+          </div>
           <div class="factor-source">出典: ${escapeHtml(c.source)}</div>
         </div>
         <div class="factor-num">${fmt(normalized)}</div>`;
       section.appendChild(el);
       if (on) section.insertAdjacentHTML("beforeend", facilityListBlock(state, row));
-    }
+    });
     body.appendChild(section);
   }
 
@@ -1109,10 +1520,9 @@ function renderSelected(
       }
     });
   }
-  for (const li of body.querySelectorAll<HTMLElement>(".fl-item[data-lon]")) {
-    const lon = Number(li.dataset.lon);
-    const lat = Number(li.dataset.lat);
-    const fire = () => onFocusPoint(lon, lat);
+  for (const li of body.querySelectorAll<HTMLElement>(".fl-item[data-i]")) {
+    const index = Number(li.dataset.i);
+    const fire = () => onFocusPoint(index);
     li.addEventListener("click", fire);
     li.addEventListener("keydown", (e) => {
       if ((e as KeyboardEvent).key === "Enter" || (e as KeyboardEvent).key === " ") {
@@ -1478,7 +1888,7 @@ export function renderMethodology(meta: Meta): void {
     .map(
       (c) =>
         `<li><b>${escapeHtml(c.label)}</b>（${c.side === "demand" ? "需要" : "負荷"}${c.sign < 0 ? "・減点" : ""}）<br>
-         ${escapeHtml(c.rationale)}<br>
+         ${boldMd(c.rationale)}<br>
          ${scaleBadge(c)}<br>
          <span class="factor-source">出典: ${escapeHtml(c.source)}</span></li>`,
     )
@@ -1520,6 +1930,45 @@ export function renderMethodology(meta: Meta): void {
       （周りの顔ぶれが変わるため）。絶対尺度の層は変わりません——
       騒音 70dB は 23 区で計算しても多摩を入れて計算しても 0.75 のままです。
     </p>
+    <!--
+      **「なぜ 2 種類が混ざっているのか」を画面が答えていなかった。**
+      札は出していたし、それぞれが何であるかも書いてあったが、
+      混ぜた理由と、混ぜたことの代償が無かった
+      （2026-08-05・「どういう意図で、それは妥当なのか」と指摘されて追加）。
+    -->
+    <h2 style="margin-top:14px">なぜ 2 種類の物差しが混ざっているのか</h2>
+    <p class="card-narrative">
+      <b>順位化には副作用があります。</b>パーセンタイル順位は、その層の値が
+      対象地域内でどれだけ狭い範囲に収まっていても、必ず 0〜1 いっぱいに
+      引き伸ばします。<b>識別力の無い層ほど差が誇張され、測定の偏りがあれば
+      それごと増幅されます。</b>
+    </p>
+    <p class="card-narrative">
+      実際にこの 2 層で起きました。<b>用途地域</b>は用途制限の強さから
+      0.05〜1.00 の段差を意図して置いた値なのに、順位化を通すと第一種低層住居
+      専用地域が 0.285 で乗っていました（設計値の約 6 倍。「静穏が法的に
+      保証された土地」が商業地域の 3 割の負荷を持つ）。<b>騒音</b>は
+      対象 2 区の頃、内挿値のばらつきが標準偏差 2.24dB しか無いのに 0〜1 へ広げられ、
+      <b>測定点の選ばれ方の偏りが、そのまま区の違いとして働いていました</b>。
+    </p>
+    <p class="card-narrative">
+      <b>では全部を絶対尺度にすればよいのでは、とはなりません。</b>
+      絶対尺度に移せるのは、<b>0 と 1 を外部の法令・告示で決められる層だけ</b>です。
+      騒音は環境基準 55dB と要請限度 75dB、用途地域は建築基準法別表第二から
+      取っています。一方、事業所の定員や駅の乗降客数に「この値が 1」と言える
+      外部の基準はありません。無いのに決めれば、
+      <b>順位化の恣意性を別の恣意性に置き換えるだけ</b>になります。
+      だから<b>根拠を書ける層だけを移し、書けない層は順位のまま残しています</b>。
+    </p>
+    <p class="card-narrative">
+      <b>混ぜたことの代償は 2 つあります。</b>
+      1 つは、<b>層をまたいで「0.5」を同じ意味に読めないこと</b>——
+      順位の層の 0.5 は「真ん中あたり」、絶対尺度の層の 0.5 は
+      「物差しの中点（騒音なら 65dB）」で、別のものです。
+      重みを層どうしで比べるときは、この違いが入っています。
+      もう 1 つは下に書いた通りで、<b>絶対尺度の「変わらない」は
+      最終スコアまでは残りません</b>。
+    </p>
     <p class="card-narrative">
       <b>順位の母数は層ごとに違います。</b>値 0 は「そこに無い」として厳密に 0 に
       固定し、<b>正の値を持つ区画の中だけで</b>順位を付けているためです。
@@ -1549,6 +1998,15 @@ export function renderMethodology(meta: Meta): void {
       <b>年次はそろっていません</b>（事業所 2026 年 〜 公園 2011 年）。
       各レイヤーで入手できる最新版を使っています。
     </p>
+    <p class="card-narrative">
+      出典の数（${meta.sources.length} 件）は、上の
+      ${meta.components.length} 層とも、データの層
+      ${meta.layer_roles.length} 個とも一致しません。
+      <b>1 つの層を複数の出典が書いていることがあるためです</b>——
+      特別支援学校は位置（国土数値情報 P29）と規模（都教委の在籍者数）を
+      別々の出典から取り、既存の公共施設は 23 区の一覧と児童館（P14）を
+      合わせています。
+    </p>
     <table class="data-table">${sources}</table>
     <p class="card-narrative">
       レジストリには他に ${meta.unused_source_count} 件の出典がありますが、
@@ -1557,6 +2015,19 @@ export function renderMethodology(meta: Meta): void {
     <p class="card-narrative">
       データ生成: ${escapeHtml(meta.generated_at)} / モード: ${meta.data_mode}
     </p>`;
+}
+
+/**
+ * `**強調**` だけを太字に戻す。**それ以外は素通しにしない。**
+ *
+ * 出典名や rationale は `etl/config.py` が唯一の出所で、そちらでは
+ * 日本語の文章として `**` を使って強調を書いている。画面はそれを
+ * エスケープしたまま出していたので、**アスタリスクがそのまま見えていた**
+ *（プリセットの note では既に戻していたのに、rationale では戻していなかった）。
+ * 先にエスケープしてから太字だけ戻すので、config 側に HTML は書けない。
+ */
+function boldMd(s: string): string {
+  return escapeHtml(s).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
 }
 
 function escapeHtml(s: string): string {

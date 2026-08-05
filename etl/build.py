@@ -40,6 +40,7 @@ from .config import (
     HOST_MAX_DISTANCE_M,
     LOAD_COMPONENTS,
     MESH_LEVEL,
+    NOISE_IDW_MAX_DISTANCE_M,
     PRIORITY_ALPHA,
     PRIORITY_BETA,
     PRESETS,
@@ -49,7 +50,9 @@ from .config import (
     CRS_PROJECTED,
     PUBLISH_XY_DECIMALS,
     SOURCES,
+    SOURCE_JOIN,
     STUDY_BBOX,
+    SUPPORT_LAYERS,
     TARGET_WARDS,
     TOP_N_CARDS,
     WEB_DATA,
@@ -197,7 +200,37 @@ def build_mesh_table(layers: dict, level: int) -> gpd.GeoDataFrame:
     ).to_numpy()
 
     _attach_facts(mesh_gdf, layers)
+    _check_noise_point_count(mesh_gdf, noise)
     return mesh_gdf
+
+
+def _check_noise_point_count(mesh_gdf: gpd.GeoDataFrame, noise: pd.Series) -> None:
+    """「内挿に使った測定点 0 件」と「観測圏外」が同じ区画であることを確かめる。
+
+    画面は騒音の行に「内挿に使った測定点 N 点」と書き、その N 点を光らせる。
+    **N が 0 のとき、その区画の騒音は測定ではなく 23 区の中央値である**——
+    画面はそう書く。だからこの 2 つが同じ区画集合でなければ、画面は
+    「補完値です」と書きながら測定点を光らせる（またはその逆）ことになる。
+
+    ズレ得る経路は 1 つだけで、座標の丸めである。IDW は丸めていない投影座標で
+    距離を測り、`f_noise_n` は**配信するのと同じ丸めた座標**で数える
+    （画面と一致させるため。CLAUDE.md「数えたものと光らせるもの」）。
+    打ち切り 1,500m のちょうど境界に 1cm 以内で載る測定点があれば食い違う。
+    **黙って通すと、画面のその 1 区画だけが嘘になる。**
+    """
+    missing = noise.isna().to_numpy()
+    counted_zero = mesh_gdf["f_noise_n"].to_numpy() == 0
+    bad = np.nonzero(missing != counted_zero)[0]
+    if len(bad):
+        codes = ", ".join(mesh_gdf["mesh_code"].to_numpy()[bad][:5])
+        raise ValueError(
+            f"騒音: 観測圏外の区画（{int(missing.sum())} 件）と、"
+            f"打ち切り {NOISE_IDW_MAX_DISTANCE_M:.0f}m 以内の測定点が 0 件の区画"
+            f"（{int(counted_zero.sum())} 件）が一致しない: {len(bad)} 区画（例 {codes}）。"
+            "打ち切り距離のちょうど境界に測定点が載っている。"
+            "config.PUBLISH_XY_DECIMALS の丸めが原因なので、"
+            "**画面の件数と補完の説明のどちらを直すかを決めてから**進めること。"
+        )
 
 
 def _attach_facts(mesh_gdf: gpd.GeoDataFrame, layers: dict) -> None:
@@ -294,6 +327,20 @@ def _attach_facts(mesh_gdf: gpd.GeoDataFrame, layers: dict) -> None:
 
     # 騒音と緑被覆は生値がそのまま意味を持つので、丸めるだけ。
     mesh_gdf["f_noise_db"] = np.round(mesh_gdf["noise"].to_numpy(), 1)
+
+    # **内挿に使った測定点の件数。** 他の f_*_n と違い「徒歩圏」ではなく
+    # IDW の打ち切り距離（1,500m）で数える——半径の意味が層ごとに違うのは
+    # 駅（帯域）・公共施設（到達可否の境目）と同じで、**その層の計算が
+    # 実際に見ている範囲**に揃えるという規則のほう。
+    #
+    # **0 件は「静か」ではなく「測っていない」。** その区画の騒音は
+    # 23 区の中央値で補完されており、画面はそれをこの件数で言う
+    #（`docs/issues.md` A6）。数字を出すだけでなく点を光らせられるのは、
+    # 「測定点が幹線道路の道路端にしか無い」という A1 の偏りが、
+    # 説明ではなく地図で見えるようにするため。
+    mesh_gdf["f_noise_n"] = aggregate.count_within(
+        mesh_gdf, layers["noise"], NOISE_IDW_MAX_DISTANCE_M, round_decimals=r
+    ).to_numpy()
     mesh_gdf["f_green_pct"] = np.round(mesh_gdf["green"].to_numpy() * 100, 1)
     # 混雑だけ実数を配信していなかった。**8 層のうち 1 層だけ実数が無いと、
     # 「正規化値 0.93」の隣に何も置けない**——画面は実数と正規化値を
@@ -347,6 +394,7 @@ def _feature_properties(row: pd.Series, xy: tuple[float, float] | None = None) -
         ("f_station_riders", int),
         ("f_station_dist", int),
         ("f_host_n", int),
+        ("f_noise_n", int),
         ("f_crowding", int),
         ("f_noise_db", float),
         ("f_green_pct", float),
@@ -477,6 +525,38 @@ def write_outputs(
         with_xy=True,
     )
 
+    # --- 騒音の測定地点 ---
+    #
+    # **需要側の点と混ぜない。** 事業所も駅も「そこに在るもの」だが、
+    # 測定点は**調査がそこを測ったという事実**であって、施設ではない。
+    # 同じファイルに入れると `layer` 列の値が 1 つ増えるだけに見え、
+    # 地図でも同じ色の点になる（画面では白抜きの点として描き分ける）。
+    #
+    # **なぜ配信するか。** この作品でいちばん大きい既知の偏りは
+    # 「騒音は幹線道路の道路端しか測っていない」こと（`docs/issues.md` A1）で、
+    # 静かなのではなく測っていない場所が 496 区画ある（A6）。
+    # **その偏りは文章では伝わらない**——測定点が道路に沿って並び、
+    # 住宅地の内側が空白であることは、地図に出せば一目で分かる。
+    #
+    # `laeq_db` は 5 年分（令和元〜5年度）の同一地点平均。年度間の標準偏差は
+    # 中央値 0.55dB で、測定の丸め（1dB 単位）と同じ桁である。
+    #
+    # 利用条件は確認済み（`docs/issues.md` C5）。2026-08-05 に環境局
+    # 自動車環境課へ電話で照会し、**測定地点と騒音レベルの二次利用も可**との
+    # 回答を得ている。**CC BY 4.0 とは名乗らない**——口頭の許諾であって
+    # 名前の付いたライセンスではないので、`SOURCES` の `license` には
+    # 回答の内容をそのまま書いてある。
+    noise_points = layers["noise"].assign(layer="noise")
+    _write_geojson(
+        WEB_DATA / "noise_points.geojson",
+        noise_points,
+        # `survey` は落とさない。**測定点の選ばれ方が違う 2 つの調査を
+        # 混ぜている**ので、どちらの点かは画面の吹き出しまで運ぶ
+        # （`docs/issues.md` A1）。混ぜたことが見えなくなるのが一番まずい。
+        ["name", "laeq_db", "years", "n_years", "survey", "layer", "source"],
+        with_xy=True,
+    )
+
     _write_json(WEB_DATA / "cards.json", cards)
     _write_json(WEB_DATA / "proposals.json", proposals)
 
@@ -522,7 +602,20 @@ def write_outputs(
             "host": HOST_MAX_DISTANCE_M,
             # 最寄り 1 駅（＝区画の呼び名）を探す上限。件数の半径ではない。
             "station_max": STATION_MAX_DISTANCE_M,
+            # 騒音の内挿の打ち切り距離。**帯域でも徒歩圏でもない**——
+            # この距離の内に測定点が 1 つも無ければ、その区画の騒音は
+            # 測定ではなく 23 区の中央値である。
+            "noise": NOISE_IDW_MAX_DISTANCE_M,
         },
+        # **10 層のうち、スコアに入るのは 8 層。** 画面が「実データ 10/10」と
+        # 「評価に使う 8 つのレイヤー」を別々に出していて、対応がどこにも
+        # 書かれていなかった（外部からの指摘で発覚）。
+        #
+        # **10 と 8 の食い違いは、書き換えて消すものではない。**
+        # スコアに入らない 2 層のうち hosts は「到達不可」という
+        # この作品でいちばん頑健な出力を作っている層で、
+        # スコアに入らないことがそのまま長所である。
+        "layer_roles": _layer_roles(provenance),
         # 提言リスト（＝順位表）に出す件数。TypeScript 側に重複定義を作らない
         #（画面と配信 JSON が別物になっていた。config.RANKING_OPTIONS 参照）。
         # **選べるようにしてあるのは、打ち切りに根拠が無いことを隠さないため。**
@@ -541,6 +634,9 @@ def write_outputs(
             {
                 "key": c.key,
                 "label": c.label,
+                # どのデータ層から作られているか。画面が
+                # 「10 層のうちこの 8 層」を対応付けて出すために配信する。
+                "layer": c.layer,
                 "side": c.side,
                 "weight": c.weight,
                 "sign": c.sign,
@@ -591,9 +687,7 @@ def write_outputs(
                 "note": s.note,
                 "layer": s.layer,
                 "vintage": s.vintage,
-                "count": int(len(layers[s.layer]))
-                if s.layer in layers and hasattr(layers[s.layer], "__len__")
-                else None,
+                "count": _source_row_count(layers, s),
             }
             for s in SOURCES.values()
             if s.layer is not None
@@ -606,6 +700,89 @@ def write_outputs(
         },
     }
     _write_json(WEB_DATA / "meta.json", meta)
+
+
+def _source_row_count(layers: dict, source) -> int | None:
+    """その出典が実際に書いた行数。数えられなければレイヤー全体の件数。
+
+    **レイヤーの件数をそのまま出すと、複数の出典が書く層で嘘になる。**
+    騒音は令和元〜5年度（都）と令和6年度（環境GIS＋）の 2 出典で、
+    出典一覧が**どちらにも 1,058 件**と出ていた——令和6年度が 1,058 点
+    あるように読める（実際は 167 点）。ホスト施設でも同じことが起きていた。
+
+    **0 件になったら数えない。** 学校の規模（都教委の在籍者数）のように
+    **行ではなく属性を書く出典**があり、`source` 列にはそちらの名前が
+    入っている。P29 は行を書いているのに `source` 列には出てこないので、
+    厳密に数えると 0 件になる。**「0 件の出典」は使っていない出典に見える**
+    ので、そのときはレイヤー全体の件数へ戻す。
+    """
+    layer = layers.get(source.layer)
+    if layer is None or not hasattr(layer, "__len__"):
+        return None
+    if "source" in getattr(layer, "columns", []):
+        # 1 行が複数の出典を持つことがある（同じ地点を 2 つの調査が測った）。
+        stored = layer["source"].fillna("").astype(str)
+        hit = stored.map(
+            lambda v: source.label in _current_source_label(v).split(SOURCE_JOIN)
+        )
+        if int(hit.sum()):
+            return int(hit.sum())
+    return int(len(layer))
+
+
+def _layer_roles(provenance: dict[str, str]) -> list[dict]:
+    """データの層 10 個を「スコアに入る 8 層」と「入らない 2 層」に分けて出す。
+
+    **分類漏れで止まる。** 新しい層を足して `Component.layer` にも
+    `SUPPORT_LAYERS` にも書かなかったとき、画面の「10 層のうち 8 層が
+    スコアに入る」だけが黙って古くなる——数が合わないことは
+    出力を眺めても分からない（8 と 10 の食い違いは、外部から
+    指摘されるまで気付けなかった。それを二度やらないための検査）。
+
+    並び順は `ALL_COMPONENTS` の定義順（＝画面の並び順）で、
+    スコアに入らない層をその後ろに置く。
+    """
+    by_layer = {c.layer: c for c in ALL_COMPONENTS}
+    unknown = sorted(set(provenance) - set(by_layer) - set(SUPPORT_LAYERS))
+    if unknown:
+        raise ValueError(
+            f"どちらにも分類されていないデータ層がある: {'・'.join(unknown)}。"
+            "スコアに入るなら Component.layer に、入らないなら "
+            "config.SUPPORT_LAYERS に書くこと。"
+            "**書かないと画面の「10 層のうち 8 層」だけが古くなる。**"
+        )
+    missing = sorted((set(by_layer) | set(SUPPORT_LAYERS)) - set(provenance))
+    if missing:
+        raise ValueError(
+            f"存在しないデータ層を分類している: {'・'.join(missing)}。"
+            "レイヤー名が変わったか、層が消えている。"
+        )
+
+    roles = [
+        {
+            "layer": c.layer,
+            "label": c.label,
+            "role": "score",
+            "component": c.key,
+            "side": c.side,
+            "note": "",
+            "provenance": provenance[c.layer],
+        }
+        for c in ALL_COMPONENTS
+    ]
+    roles += [
+        {
+            "layer": key,
+            "label": label,
+            "role": "support",
+            "component": None,
+            "side": None,
+            "note": note,
+            "provenance": provenance[key],
+        }
+        for key, (label, note) in SUPPORT_LAYERS.items()
+    ]
+    return roles
 
 
 def _synthetic_notice(provenance: dict[str, str]) -> str | None:
@@ -658,6 +835,14 @@ def _current_source_label(stored: str) -> str:
     レジストリに無い出典が正当に入っており、ここで止めると
     **出典を個別に書いたことそのものが罰になる**。
     """
+    # **1 つの点に出典が 2 つ並ぶことがある**（騒音は令和元〜5年度が都の資料、
+    # 令和6年度が環境GIS＋で、同じ地点を両方が測っている）。まとめて引くと
+    # 一致せず、両方が古い名前のまま残る。分けて寄せてから並べ直す。
+    if SOURCE_JOIN in stored:
+        mapping = _source_alias_map()
+        return SOURCE_JOIN.join(
+            mapping.get(part, part) for part in stored.split(SOURCE_JOIN)
+        )
     return _source_alias_map().get(stored, stored)
 
 

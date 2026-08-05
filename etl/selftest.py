@@ -264,6 +264,97 @@ def _zoning_absolute_survives():
     assert n.iloc[-1] / n.iloc[0] == ZONING_LOAD[9] / ZONING_LOAD[1]
 
 
+@check("データの層は全部が「スコアに入る／入らない」に分類されている")
+def _layer_roles_cover_all():
+    """画面は「10 層のうち 8 層がスコアに入る」と書く。
+
+    **この数は画面に書いてはいけない**——層が増えたときに、
+    その文だけが黙って古くなる。実際「実データ 10/10 レイヤー」と
+    「評価に使う 8 つのレイヤー」が対応の無いまま並んでいて、
+    外部から「8 なの 10 なの、意味が分からない」と指摘された。
+
+    `build._layer_roles` が分類漏れで止まることを確かめる。
+    """
+    from . import build
+    from .config import SUPPORT_LAYERS
+
+    layers = {c.layer for c in ALL_COMPONENTS} | set(SUPPORT_LAYERS)
+    provenance = {k: "real" for k in layers}
+
+    roles = build._layer_roles(provenance)
+    assert len(roles) == len(layers), f"層の数が合わない: {len(roles)} != {len(layers)}"
+    assert sum(1 for r in roles if r["role"] == "score") == len(ALL_COMPONENTS)
+    assert all(r["note"] for r in roles if r["role"] == "support"), (
+        "スコアに入らない層に「何をしている層か」が書かれていない"
+    )
+
+    # 分類していない層が来たら止まる。
+    try:
+        build._layer_roles({**provenance, "brand_new": "real"})
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("分類漏れの層があるのに止まらなかった")
+
+    # 分類しているのに存在しない層があっても止まる（層名が変わった場合）。
+    dropped = dict(provenance)
+    dropped.pop(next(iter(SUPPORT_LAYERS)))
+    try:
+        build._layer_roles(dropped)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("存在しない層を分類しているのに止まらなかった")
+
+
+@check("騒音: 「測定点 0 件」と「観測圏外」が食い違えば止まる")
+def _noise_count_matches_missing():
+    """画面は騒音の行に「内挿に使った測定点 N 点」と書き、その N 点を光らせる。
+
+    **N が 0 のとき、その区画の騒音は測定ではなく 23 区の中央値である**——
+    画面はそう書く。両者がずれると、画面は「補完値です」と書きながら
+    測定点を光らせる（またはその逆）ことになる。ずれ得る経路は
+    座標の丸めだけ（IDW は丸めない座標・件数は配信する丸めた座標）。
+    """
+    from . import build
+
+    mesh = build.gpd.GeoDataFrame(
+        {"mesh_code": ["a", "b"], "f_noise_n": [3, 0]},
+        geometry=[None, None],
+    )
+    noise = pd.Series([65.0, float("nan")])
+    build._check_noise_point_count(mesh, noise)  # 一致していれば通る
+
+    mesh_bad = build.gpd.GeoDataFrame(
+        {"mesh_code": ["a", "b"], "f_noise_n": [3, 1]},
+        geometry=[None, None],
+    )
+    try:
+        build._check_noise_point_count(mesh_bad, noise)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("測定点があるのに観測圏外、という状態で止まらなかった")
+
+
+@check("出典名に、出典どうしの区切り文字が入っていない")
+def _source_labels_have_no_separator():
+    """1 つの地物が複数の出典を持つとき、名前を区切りでつないで持ち回る
+    （騒音は同じ地点を令和5年度＝都の資料と令和6年度＝環境GIS＋が測っている）。
+
+    **区切りが出典名の中に入っていると、分割したときに名前が壊れる。**
+    実際に踏んだ——「・」で区切っていたが、
+    「常時監視・要請限度測定地点」という名前自体に「・」が入っており、
+    出典一覧の件数がレイヤー全体の件数のまま直らなかった。
+    """
+    from .config import SOURCES, SOURCE_JOIN
+
+    for s in SOURCES.values():
+        assert SOURCE_JOIN not in s.label, f"{s.key} の label に {SOURCE_JOIN!r}"
+        for alias in s.aliases:
+            assert SOURCE_JOIN not in alias, f"{s.key} の alias に {SOURCE_JOIN!r}"
+
+
 @check("絶対尺度の層は基準の出典を必ず持つ")
 def _absolute_requires_basis():
     """lo / hi をどの法令から取ったか書けない層に絶対尺度を使うと、
@@ -1102,21 +1193,86 @@ def _noise_requires_laeq():
         _raises(lambda: fetch.normalize_noise(path), contains="等価騒音レベル")
 
 
-@check("騒音: 要請限度測定地点は読まない（測定点の選ばれ方が区に依存する）")
-def _noise_rejects_limit_survey():
+@check("騒音: 常時監視と要請限度を取り違えない（大文字/小文字で判定する）")
+def _noise_labels_survey():
+    """**2026-08-05 まで、要請限度は読まずに止めていた。**
+
+    測定点の選ばれ方が区に依存する調査（`docs/issues.md` A1 の原因）なので
+    混ぜない、という方針だった。**入れることにした**——実際にうるさいと
+    申し立てが出た道路の情報のほうが価値がある、というユーザー判断。
+
+    方針が変わっても、**取り違えてはいけない**ことは変わらない。むしろ
+    強くなる: 画面は「この点は常時監視/要請限度」と書くので、**判定を
+    間違えると、苦情の出た道路の実測値が系統調査の値として画面に出る。**
+    出力を眺めても気付けない種類の誤りである。
+
+    手掛かりは法概念の書き分けで、表記のゆれではない——環境基本法の
+    地域類型は大文字 A/AA/B/C、騒音規制法の区域の区分は小文字 a/b/c。
+    """
     with tempfile.TemporaryDirectory() as d:
         tmp = Path(d)
-        # 要請限度の表は「区域の区分」が**小文字 a/b/c**で、○×の列を持たない。
-        # 中身がそっくりなので、名前で判定していると静かに混ざる。
-        path = _tmp_monitoring_csv(
+        # 中身はそっくりで、違うのは類型の大文字/小文字と○×の列だけ。
+        mon = _tmp_monitoring_csv(tmp, "mon.csv", day=[70, 71, 72, 73, 74, 75])
+        req = _tmp_monitoring_csv(
             tmp,
-            "noise.csv",
+            "req.csv",
             day=[70, 71, 72, 73, 74, 75],
             area_types=["c", "b", "a"] * 3,
             marks=False,
         )
-        msg = _raises(lambda: fetch.normalize_noise(path), contains="要請限度")
-        assert "常時監視" in msg, msg
+        with _quiet():
+            m = fetch.normalize_noise(mon)
+            r = fetch.normalize_noise(req)
+        assert set(m["survey"]) == {fetch.SURVEY_MONITORING}, set(m["survey"])
+        assert set(r["survey"]) == {fetch.SURVEY_REQUEST_LIMIT}, set(r["survey"])
+
+        # 束ねても調査名は消えない。同じ座標を両方が測っていれば併記する
+        # （捨てると「混ぜたこと」が画面から見えなくなる）。
+        with _quiet():
+            merged = fetch.aggregate_noise_years([m, r])
+        assert len(merged) == len(m), f"同じ住所なので 1 点に畳まれるはず: {len(merged)}"
+        assert set(merged["survey"]) == {
+            f"{fetch.SURVEY_MONITORING}・{fetch.SURVEY_REQUEST_LIMIT}"
+        }, set(merged["survey"])
+
+
+@check("騒音: 「N 年度の平均」の N と、並べる年度の数が一致する")
+def _noise_year_count_matches_list():
+    """**画面が「6 年度の平均」と書きながら 5 年度しか並べていなかった。**
+
+    `n_years` は `nunique()`、一覧は空文字を落とした集合、と**2 箇所から
+    別々に作っていた**ため、年度を取れなかった行の空文字が件数にだけ乗った
+    （241 地点）。原因は令和3年度の要請限度だけ日付の列が「測定開始開始」に
+    平坦化されて候補から外れていたこと——**列名で決めていたから**である。
+
+    ここで検査するのは 2 つ:
+      - 年度の列は列名で見つからなくても**中身**から見つかること
+      - 件数と一覧が同じ集合から作られていること
+    """
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        frames = []
+        for year in (2021, 2022):
+            path = _tmp_monitoring_csv(
+                tmp, f"n{year}.csv", day=[70, 71, 72, 73, 74, 75], year=year
+            )
+            raw = pd.read_csv(path, header=None, dtype=object)
+            # 見出しを実データと同じ壊れ方にする（「測定開始年月日」→「測定開始開始」）。
+            raw.iloc[0, 4] = "測定開始"
+            raw.iloc[2, 4] = "開始"
+            broken = tmp / f"b{year}.csv"
+            raw.to_csv(broken, index=False, header=False, encoding="utf-8")
+            with _quiet():
+                frames.append(fetch.normalize_noise(broken))
+
+        assert set(frames[0]["year"]) == {"2021"}, set(frames[0]["year"])
+        with _quiet():
+            merged = fetch.aggregate_noise_years(frames)
+        for _, row in merged.iterrows():
+            listed = len([v for v in str(row["years"]).split("・") if v])
+            assert row["n_years"] == listed, (
+                f"{row['name']}: n_years={row['n_years']} だが一覧は {listed} 年度"
+            )
 
 
 @check("騒音: 同じ地点の別年度は平均し、近くの別地点は潰さない")

@@ -32,6 +32,7 @@ const meta = load("meta.json");
 const mesh = load("mesh.geojson");
 const demand = load("demand_points.geojson");
 const hosts = load("hosts.geojson");
+const noise = load("noise_points.geojson");
 
 /** 半径内の点を数える。ブラウザ側とまったく同じ式であること。 */
 function countWithin(cx, cy, points, radius) {
@@ -85,6 +86,16 @@ const groups = [
     points: xy(hosts, () => true),
     radius: radius.host,
   },
+  // **騒音の測定点は「徒歩圏」ではない。** 半径は IDW の打ち切り距離で、
+  // 「この区画の騒音値を作るのに使われた点」を意味する。
+  // 0 件なら、その区画の値は測定ではなく 23 区の中央値である——
+  // 画面はそう書くので、件数と光る点はここでも一致していなければならない。
+  {
+    field: "f_noise_n",
+    label: "内挿に使った騒音測定点",
+    points: xy(noise, () => true),
+    radius: radius.noise,
+  },
 ];
 
 console.log("\n徒歩圏の件数の照合（Python の配信値 ↔ 画面と同じ数え方）\n");
@@ -120,7 +131,9 @@ for (const g of groups) {
     `  ${ok ? "✓" : "✗"} ${g.label.padEnd(22)} 半径 ${String(g.radius).padStart(5)}m ` +
       `点 ${String(g.points.length).padStart(6)} 件` +
       (ok
-        ? "  全 9,507 区画で一致"
+        ? // 件数は数え直したものを出す。**ここに 9,507 と書いてあったので、
+          // 模擬モード（3,009 区画）でも「全 9,507 区画で一致」と表示していた。**
+          `  全 ${mesh.features.length.toLocaleString("en-US")} 区画で一致`
         : `  ${mismatched} 区画で不一致（最大 ${worst} 件・例 ${worstCode}）`),
   );
 }

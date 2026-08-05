@@ -17,7 +17,13 @@ import pandas as pd
 from shapely.geometry import Polygon
 
 from . import mesh as meshlib
-from .config import CRS_GEOGRAPHIC, CRS_PROJECTED
+from .config import (
+    CRS_GEOGRAPHIC,
+    CRS_PROJECTED,
+    NOISE_IDW_MAX_DISTANCE_M,
+    NOISE_IDW_POWER,
+    NOISE_IDW_SMOOTHING_M,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -352,9 +358,9 @@ def idw_to_mesh(
     mesh_gdf: gpd.GeoDataFrame,
     points: gpd.GeoDataFrame,
     value_col: str,
-    power: float = 2.0,
-    max_distance_m: float = 1500.0,
-    smoothing_m: float = 50.0,
+    power: float = NOISE_IDW_POWER,
+    max_distance_m: float = NOISE_IDW_MAX_DISTANCE_M,
+    smoothing_m: float = NOISE_IDW_SMOOTHING_M,
 ) -> pd.Series:
     """点の実測値を逆距離加重（IDW）でメッシュへ内挿する。
 

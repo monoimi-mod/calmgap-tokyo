@@ -5,6 +5,13 @@ export type Side = "demand" | "load";
 export interface ComponentDef {
   key: string;
   label: string;
+  /**
+   * 元になっているデータの層（meta.layer_provenance のキー）。
+   * **「実データ 10/10 レイヤー」と「評価に使う 8 つのレイヤー」の
+   * 対応を画面で言うために要る**——どちらも正しいのに、対応が
+   * どこにも書かれていなかった（etl/config.py の SUPPORT_LAYERS）。
+   */
+  layer: string;
   side: Side;
   /** 既定重み。スライダーの初期値。 */
   weight: number;
@@ -78,7 +85,29 @@ export interface Meta {
      * 「この区画の呼び名」を決めるためだけの距離で、スコアには入らない。
      */
     station_max: number;
+    /**
+     * 騒音の内挿（IDW）の打ち切り距離。**帯域でも徒歩圏でもない**——
+     * この距離の内に測定点が 1 つも無ければ、その区画の騒音は測定ではなく
+     * 23 区の中央値である（`f_noise_n` が 0 の 496 区画）。
+     */
+    noise: number;
   };
+  /**
+   * データの層 10 個の役割。**8 と 10 の食い違いを画面で解くために配信する。**
+   * role="score" が 8 層、role="support" が 2 層（既存の公共施設・区界）。
+   * 分類漏れがあれば build.py が止まるので、ここが古くなることはない。
+   */
+  layer_roles: {
+    layer: string;
+    label: string;
+    role: "score" | "support";
+    /** スコアに入る層なら対応する構成要素のキー。入らない層は null。 */
+    component: string | null;
+    side: Side | null;
+    /** スコアに入らない層が何をしているか。role="score" では空。 */
+    note: string;
+    provenance: "real" | "synthetic";
+  }[];
   /**
    * 「既存施設では到達不可」の要約。**重みにもスコアにも依存しない**ので
    * 画面の見出しに使う。mid_or_above は区内の優先度の中央値で切った件数で、
@@ -128,6 +157,12 @@ export interface MeshProps {
   w?: number;
   /** 徒歩圏（meta.host_max_distance_m）にある区の公共施設の件数。 */
   f_host_n?: number;
+  /**
+   * この区画の騒音値を作るのに使った測定点の件数（打ち切り 1,500m 以内）。
+   * **0 は「静か」ではなく「測っていない」**——その区画の f_noise_db は
+   * 23 区の中央値で補完した値である（docs/issues.md A6）。
+   */
+  f_noise_n?: number;
   /**
    * 徒歩圏の障害福祉事業所のうち、対象 23 区の外にあるものの件数。
    * 入力は区界の外側 2km まで拾う設計なので（エッジ効果の回避）、

@@ -45,7 +45,9 @@ from .config import (
     CRS_PROJECTED,
     DATA_PROCESSED,
     DATA_RAW,
+    NOISE_GIS_YEARS,
     SOURCES,
+    SOURCE_JOIN,
     STUDY_BBOX,
     TARGET_WARDS,
     TARGET_WARD_CODES,
@@ -177,7 +179,16 @@ COLUMN_MAP: dict[str, dict[str, tuple[str, ...]]] = {
         "name": ("P13_003", "名称", "公園名"),
     },
     "tokyo_road_noise": {
-        "laeq_db": ("昼間等価騒音レベル(dB)", "昼間等価騒音レベル", "LAeq昼間"),
+        # 「等価騒音レベル(dB)昼間」は要請限度の表（見出しが 2 段で、
+        # 平坦化すると単位が先に来る）。常時監視は「昼間等価騒音レベル(dB)」。
+        "laeq_db": (
+            "昼間等価騒音レベル(dB)",
+            "昼間等価騒音レベル",
+            "等価騒音レベル(dB)昼間",
+            # 環境GIS＋（全国の常時監視結果）の列名。
+            "騒音_昼間(dB)",
+            "LAeq昼間",
+        ),
         # 台東区は「X座標」「Y座標」。**どちらが緯度かは出典で変わる**——
         # 平面直角座標系なら X が北（緯度相当）だが、台東区は X が経度である。
         # そのため対応づけは推測で置き、`resolve_column` の値域検査に判定を委ねる
@@ -200,7 +211,13 @@ COLUMN_MAP: dict[str, dict[str, tuple[str, ...]]] = {
         # 測定年度を中身から取るための列。**ファイル名から年度を当てない**
         # （手元のファイル名は `cyousakekka$300500a...files$2019monitoring.csv`
         #  のようにブラウザが化けさせた形で届く）。
-        "surveyed": ("測定開始年月日", "測定年月日開始", "測定期間開始"),
+        "surveyed": (
+            "測定開始年月日",
+            "測定年月日開始",
+            "測定期間開始",
+            # 環境GIS＋の列名。
+            "測定開始日",
+        ),
     },
     "tokyo_public_facility": {
         # 「事業所名」は渋谷区（SHIBUYA OPEN DATA の施設・事業所一覧）、
@@ -2432,6 +2449,16 @@ def normalize_parks(path: Path, clip: bool = True) -> gpd.GeoDataFrame:
 # どちらが欠けたのかは例外に書く。
 _AREA_TYPE_VALUES = ("A", "AA", "B", "C")
 _YESNO_MARKS = ("○", "〇", "◯", "×", "✕")
+# 要請限度の「区域の区分」は**小文字** a/b/c。表記のゆれではなく、
+# 環境基本法の地域類型（大文字）と騒音規制法の区域区分（小文字）という
+# **別の法概念の書き分け**である（`docs/status.md`）。
+_ZONE_DIVISION_VALUES = ("a", "b", "c")
+
+# 調査の呼び名。**この 2 つを画面まで運ぶ。** 測定点の選ばれ方が違うので、
+# 同じ層に入れても「どちらの調査で測った点か」は最後まで区別できなければ
+# ならない（`docs/issues.md` A1）。
+SURVEY_MONITORING = "常時監視"
+SURVEY_REQUEST_LIMIT = "要請限度"
 
 # 位置参照情報が配る緯度経度の桁数。同じ街区なら完全に同じ値が返るので、
 # この桁で束ねれば「同じ地点の別年度」だけがまとまる。
@@ -2535,41 +2562,75 @@ def _monitoring_markers(df: pd.DataFrame) -> tuple[str | None, list[str]]:
     return area_type, marks
 
 
-def _pick_monitoring_table(
-    tables: list[tuple[str, pd.DataFrame]], path: Path
-) -> pd.DataFrame:
-    """常時監視の表を中身で選ぶ。選べなければ実際の値を添えて止まる。"""
-    hits = [
-        (name, df, area_type, marks)
-        for name, df in tables
-        for area_type, marks in [_monitoring_markers(df)]
-        if area_type is not None and marks
-    ]
-    if len(hits) == 1:
-        name, df, area_type, marks = hits[0]
-        print(
-            f"[noise] 常時監視の表を中身から特定: {name}"
-            f"（地域類型 {area_type} が大文字 A/B/C・"
-            f"○×の列 {', '.join(marks)}・{len(df):,}行）"
-        )
-        return df
+def _request_limit_marker(df: pd.DataFrame) -> str | None:
+    """要請限度の「区域の区分」列（**小文字** a/b/c）を中身から探す。
 
+    **常時監視の否定として判定しない。** 「大文字 A/B/C が無い表 = 要請限度」に
+    すると、様式が変わって地域類型の列が落ちた常時監視の表を要請限度として
+    読むことになる。**どちらも積極的な手掛かりで判定する。**
+    """
+    for col in df.columns:
+        values = df[col].dropna().astype(str).map(_clean_label)
+        if len(values) < 5:
+            continue
+        if values.isin(_ZONE_DIVISION_VALUES).mean() >= 0.9:
+            return str(col)
+    return None
+
+
+def _pick_noise_tables(
+    tables: list[tuple[str, pd.DataFrame]], path: Path
+) -> list[tuple[str, pd.DataFrame]]:
+    """1 冊の中から常時監視と要請限度の表を中身で選び、(調査名, 表) で返す。
+
+    **2026-08-05 まで、このレイヤーは常時監視だけを読んでいた。**
+    要請限度は苦情の出た道路を測る調査で、測定点の選ばれ方が区に依存する
+    （`docs/issues.md` A1 の原因そのもの）ため、意図的に外していた。
+
+    **入れることにした**（ユーザー判断）。理由は、
+    **要請限度が測っているのは「実際にうるさいと申し立てが出た道路」**で、
+    この作品が探しているもの——過負荷で退避先が要る場所——に直接効く情報だから。
+    偏りは残る。だから**捨てずに、どちらの調査の点かを画面まで運ぶ**
+    （`survey` 列）。混ぜたことを見えなくするのが一番まずい。
+
+    **どちらも積極的な手掛かりで判定する。** 「常時監視でない表 = 要請限度」に
+    すると、様式が変わって地域類型の列が落ちた常時監視の表を要請限度として
+    読む。手掛かりは法概念の書き分けで、大文字/小文字は表記のゆれではない:
+
+      - 常時監視 … 環境基準の地域類型が**大文字 A/AA/B/C**、
+                    遮音壁等・低騒音舗装の有無（○/×）の列がある
+      - 要請限度 … 騒音規制法の区域の区分が**小文字 a/b/c**、○×の列は無い
+    """
+    found: list[tuple[str, pd.DataFrame]] = []
     detail = []
     for name, df in tables:
         area_type, marks = _monitoring_markers(df)
+        zone = _request_limit_marker(df)
         detail.append(
             f"  {name}: {len(df):,}行 / "
             f"地域類型（大文字 A/B/C）{area_type or '無し'} / "
-            f"○×の列 {', '.join(marks) or '無し'}"
+            f"○×の列 {', '.join(marks) or '無し'} / "
+            f"区域の区分（小文字 a/b/c）{zone or '無し'}"
         )
-    if not hits:
+        if area_type is not None and marks:
+            print(
+                f"[noise] {SURVEY_MONITORING}の表を中身から特定: {name}"
+                f"（地域類型 {area_type} が大文字 A/B/C・"
+                f"○×の列 {', '.join(marks)}・{len(df):,}行）"
+            )
+            found.append((SURVEY_MONITORING, df))
+        elif zone is not None:
+            print(
+                f"[noise] {SURVEY_REQUEST_LIMIT}の表を中身から特定: {name}"
+                f"（区域の区分 {zone} が小文字 a/b/c・{len(df):,}行）"
+            )
+            found.append((SURVEY_REQUEST_LIMIT, df))
+
+    if not found:
         raise ValueError(
             "\n".join(
                 [
-                    f"{path.name} に常時監視測定地点の表が無い。",
-                    "このレイヤーは**常時監視だけ**を読む。要請限度測定地点は"
-                    "苦情の出た道路を測る調査で、測定点の選ばれ方が区に依存する"
-                    "（docs/issues.md A1）ため混ぜない。",
+                    f"{path.name} に測定地点の表が無い。",
                     "常時監視の表は環境基準の地域類型を**大文字 A/AA/B/C** で持ち、"
                     "遮音壁等の有無（○/×）の列がある。要請限度は区域の区分を"
                     "**小文字 a/b/c** で持ち、○×の列を持たない。",
@@ -2577,22 +2638,25 @@ def _pick_monitoring_table(
                     "読めた表:",
                     *detail,
                     "",
-                    "年度フォルダの「常時監視測定地点」の CSV か、"
-                    "常時監視のシートを含む「調査結果」の Excel を渡すこと。",
+                    "年度フォルダの「調査結果」の Excel（両方の表を含む）か、"
+                    "「常時監視測定地点」「要請限度測定地点」の CSV を渡すこと。",
                 ]
             )
         )
-    raise ValueError(
-        "\n".join(
-            [
-                f"{path.name} で常時監視の表が {len(hits)} 個に見える。"
-                "どれを読むべきか決められない。",
-                "",
-                "読めた表:",
-                *detail,
-            ]
+    kinds = [k for k, _ in found]
+    if len(kinds) != len(set(kinds)):
+        raise ValueError(
+            "\n".join(
+                [
+                    f"{path.name} で同じ調査の表が複数に見える: {'・'.join(kinds)}。"
+                    "どれを読むべきか決められない。",
+                    "",
+                    "読めた表:",
+                    *detail,
+                ]
+            )
         )
-    )
+    return found
 
 
 def _surveyed_year(df: pd.DataFrame) -> str:
@@ -2602,13 +2666,34 @@ def _surveyed_year(df: pd.DataFrame) -> str:
     `cyousakekka$300500a20210401153420268.files$2019monitoring.csv` の
     `2021` はダウンロード時刻で、`2019` が年度である——**同じ名前に
     紛らわしい数字が 2 つ入っている。**
+
+    **列名だけで決めない。** 見出しが 2 段の表を平坦化した結果は年度で揺れ、
+    令和3年度の要請限度だけ「測定開始開始」（「測定開始」＋「開始」）になる。
+    候補に無いので `pick_column` が外れ、**年度が空のまま静かに通っていた**
+    ——画面は「6 年度の平均」と書きながら 5 年度しか並べない状態になり、
+    241 地点でそうなっていた。列名で見つからなければ**中身**から探す。
     """
     col = pick_column(df, COLUMN_MAP["tokyo_road_noise"]["surveyed"])
-    if col is None:
-        return ""
-    dates = pd.to_datetime(df[col], errors="coerce")
-    if not dates.notna().any():
-        return ""
+    dates = pd.to_datetime(df[col], errors="coerce") if col else None
+
+    if dates is None or not dates.notna().any():
+        # 中身から探す。**測定期間の日付が入っている列**——他の日付列
+        # （集計日など）は無いので、範囲で絞れば取り違えようがない。
+        # 同点なら名前に手掛かりがある方を採る。
+        best: tuple[float, str] | None = None
+        for c in df.columns:
+            parsed = pd.to_datetime(df[c], errors="coerce")
+            hit = parsed.between("2000-01-01", "2035-12-31").mean()
+            if hit < 0.8:
+                continue
+            score = hit + (0.5 if re.search(r"測定|開始|期間|年月日", str(c)) else 0)
+            if best is None or score > best[0]:
+                best = (score, str(c))
+        if best is None:
+            return ""
+        col = best[1]
+        dates = pd.to_datetime(df[col], errors="coerce")
+        print(f"[noise] 測定年度の列を中身から特定: {col}")
     # 年度なので 4〜12 月はその年、1〜3 月は前年に寄せる。
     fiscal = dates.dt.year - (dates.dt.month < 4)
     year = int(fiscal.mode().iloc[0])
@@ -2616,8 +2701,69 @@ def _surveyed_year(df: pd.DataFrame) -> str:
     return str(year)
 
 
+def _read_nies_gis_noise(path: Path) -> pd.DataFrame | None:
+    """環境GIS＋（全国の自動車騒音常時監視結果）の CSV なら読む。違えば None。
+
+    **判定はファイル名でも見出しの有無でもなく、中身の組み合わせで行う。**
+    このファイルは全国 1 本・2002〜2024 年度で 69,833 行あり、
+    都の年度別ファイルとは別物である。手掛かりは 3 つそろって初めて成立する:
+    都道府県コード・地方公共団体コード・昼間の騒音の列。
+
+    **使うのは `config.NOISE_GIS_YEARS` の年度だけ**（現在は 2024）。
+    残りの年度は都の資料から直接取っており、そちらは要請限度も含む。
+    全部読むと 2002 年からの測定が需要も負荷も持たないまま層に入る。
+
+    **座標（`x`/`y`）は捨てる。** 小数第3位に丸めてあり、都の公表座標を
+    基準にすると中央値 65m ずれる（当方のジオコーディングは中央値 0m）。
+    250m 区画に載せる用途では粗いので、他の年度と同じく住所から作り直す。
+    列を残すと `_fill_noise_coords_from_address` が拾い得るので、明示的に落とす。
+    """
+    try:
+        head = read_csv_japanese(path, nrows=5, dtype=str)
+    except Exception:
+        return None
+    cols = set(map(str, head.columns))
+    if not ({"都道府県コード", "地方公共団体コード"} <= cols):
+        return None
+    if not any(c in cols for c in COLUMN_MAP["tokyo_road_noise"]["laeq_db"]):
+        return None
+
+    df = read_csv_japanese(path, dtype=str)
+    years = tuple(str(y) for y in NOISE_GIS_YEARS)
+    have = set(df["測定年度"].dropna().astype(str))
+    missing = [y for y in years if y not in have]
+    if missing:
+        raise ValueError(
+            f"{path.name}: 求めている年度 {'・'.join(missing)} がこのファイルに無い"
+            f"（収録は {min(have)}〜{max(have)}）。"
+            "config.NOISE_GIS_YEARS と配信年度を確認すること。"
+        )
+
+    # 都内に絞る。**全国 69,833 行をそのまま座標化しない**——位置参照情報は
+    # 都内しか読んでおらず、他県の住所は全件落ちる（そして「照合できない住所が
+    # 5% を超えたら止める」に引っかかって、正しい入力なのに止まる）。
+    keep = df["測定年度"].astype(str).isin(years) & (df["都道府県名"] == "東京都")
+    df = df[keep].drop(columns=[c for c in ("x", "y") if c in df.columns])
+    require_nonempty(
+        len(df),
+        tag="noise",
+        what=f"環境GIS＋の東京都・{'・'.join(years)}年度の行",
+        why="年度と都道府県名の列を確認すること。",
+    )
+    print(
+        f"[noise] 環境GIS＋（全国）から東京都の {'・'.join(years)}年度 "
+        f"{len(df):,}行を採る（座標は使わず住所から作り直す）"
+    )
+    return df
+
+
 def normalize_noise(path: Path) -> gpd.GeoDataFrame:
-    """東京都環境局の自動車交通騒音 常時監視測定地点を点データにする。
+    """東京都環境局の自動車交通騒音の測定地点を点データにする。
+
+    **1 冊から常時監視と要請限度の両方を読む**（`_pick_noise_tables`）。
+    どちらの調査で測った点かは `survey` 列で最後まで持ち回る——測定点の
+    選ばれ方が違う 2 つの調査を混ぜている以上、**混ぜたことが画面から
+    見えなくなってはいけない**（`docs/issues.md` A1）。
 
     騒音レベルの列を取り違えると全件 NaN になり、
     測定点が存在するのに騒音レイヤーの値が消える
@@ -2627,7 +2773,33 @@ def normalize_noise(path: Path) -> gpd.GeoDataFrame:
     1 年度分は 23 区で約 150 点しかないが、5 年分の和集合は 700 点になる
     （複数年で測られた地点は 26 点だけ）。束ねるのは `aggregate_noise_years`。
     """
-    df = _pick_monitoring_table(_read_noise_tables(path), path)
+    gis = _read_nies_gis_noise(path)
+    if gis is not None:
+        # 環境GIS＋は常時監視だけを収録している（要請限度は入っていない）。
+        # 中身でもそれを確かめる——`環境基準類型コード` が大文字 A/AA/B/C。
+        area_type, _ = _monitoring_markers(gis)
+        if area_type is None:
+            raise ValueError(
+                f"{path.name}: 環境GIS＋のはずが環境基準の地域類型"
+                "（大文字 A/AA/B/C）の列が無い。列構成が変わった可能性がある。"
+            )
+        return _normalize_noise_table(
+            gis, path, SURVEY_MONITORING, SOURCES["nies_gis_road_noise"].label
+        )
+
+    frames = [
+        _normalize_noise_table(df, path, survey, SOURCES["tokyo_road_noise"].label)
+        for survey, df in _pick_noise_tables(_read_noise_tables(path), path)
+    ]
+    return gpd.GeoDataFrame(
+        pd.concat(frames, ignore_index=True), crs=frames[0].crs
+    ).reset_index(drop=True)
+
+
+def _normalize_noise_table(
+    df: pd.DataFrame, path: Path, survey: str, source_label: str
+) -> gpd.GeoDataFrame:
+    """1 つの表（常時監視 or 要請限度）を点データにする。"""
     # **騒音レベルの列は座標化より先に決める。** 緯度（35.6〜35.8）は
     # `NOISE_DB_RANGE` に入ってしまうので、住所から作った緯度の列が表に
     # 加わったあとだと dB の候補が 1 つ増える。いまは `name_hint=r"昼"` が
@@ -2709,16 +2881,29 @@ def normalize_noise(path: Path) -> gpd.GeoDataFrame:
         why=f"数値として解釈できる行が無い。実際の値: {list(gdf[laeq_col].head(5))}",
     )
     print(
-        f"[noise] 研究領域内 {len(gdf):,}件 / "
+        f"[noise] {survey}: 研究領域内 {len(gdf):,}件 / "
         f"{laeq_col} = {gdf['laeq_db'].min():.0f}〜{gdf['laeq_db'].max():.0f} dB"
         + ("（住所から座標化）" if geocoded else "")
     )
     gdf["name"] = gdf[name_col] if name_col else ""
     gdf["year"] = year
-    gdf["source"] = SOURCES["tokyo_road_noise"].label
+    gdf["survey"] = survey
+    # **出典は表ごとに違う。** 令和元〜5年度は都の資料、令和6年度は環境GIS＋。
+    # ここを固定にしていると、2024 年度の点が都の資料を出典として名乗る。
+    gdf["source"] = source_label
     gdf["synthetic"] = False
     return gdf[
-        ["name", "laeq_db", "year", "lon", "lat", "source", "synthetic", "geometry"]
+        [
+            "name",
+            "laeq_db",
+            "year",
+            "survey",
+            "lon",
+            "lat",
+            "source",
+            "synthetic",
+            "geometry",
+        ]
     ].reset_index(drop=True)
 
 
@@ -2833,18 +3018,59 @@ def aggregate_noise_years(frames: list[gpd.GeoDataFrame]) -> gpd.GeoDataFrame:
         laeq_db=("laeq_db", "mean"),
         lon=("lon", "first"),
         lat=("lat", "first"),
-        source=("source", "first"),
+        # **出典も併記する。** 同じ地点を令和5年度（都の資料）と令和6年度
+        # （環境GIS＋）が測っていることがある。`first` にすると、その地点は
+        # **片方の出典だけを名乗る**——画面は測定点の吹き出しに出典を出すので、
+        # 2024 年度の値を都の資料の出典で出すことになる。
+        source=(
+            "source",
+            lambda s: SOURCE_JOIN.join(sorted({str(v) for v in s if v})),
+        ),
         synthetic=("synthetic", "first"),
         geometry=("geometry", "first"),
-        n_years=("year", "nunique"),
+        # **件数と一覧は同じ集合から作る。** 別々に作っていたため、
+        # 画面が「6 年度の平均」と書きながら 5 年度しか並べない点が 241 あった
+        # ——`nunique()` は年度を取れなかった行の空文字を 1 種類として数え、
+        # 一覧の側はそれを落としていた。**どちらが正しいかではなく、
+        # 2 つの数字が別の場所から来ていたことが誤り。**
         years=("year", lambda s: "・".join(sorted({str(v) for v in s if v}))),
+        # **同じ街区を両方の調査が測っていることがある。** そこも 1 点に畳む
+        # ——上と同じ理由で、同一座標に 2 点残すとその街区だけ IDW の重みが
+        # 2 倍になる。**どちらの調査で測ったかは捨てずに並べて持つ**
+        # （「常時監視・要請限度」）。混ぜたことが画面から見えなくなるのが
+        # いちばんまずい（`docs/issues.md` A1）。
+        survey=(
+            "survey",
+            lambda s: "・".join(sorted({str(v) for v in s if v})),
+        ),
     ).reset_index(drop=True)
     merged["laeq_db"] = merged["laeq_db"].round(1)
+    merged["n_years"] = (
+        merged["years"].str.count("・").add(1).where(merged["years"].ne(""), 0)
+    )
+
+    # 年度を取れなかった行があると、その地点の年度が 1 つ少なく出る。
+    # **黙って通さない**——測定年度は画面に出る値で、`_surveyed_year` が
+    # 空を返すのは「測定年月日の列を見つけられなかった」ときだけである。
+    blank_year = int((out["year"].astype(str) == "").sum())
+    if blank_year:
+        print(
+            f"[noise] 測定年度を取れなかった測定 {blank_year:,}件"
+            "（`測定開始年月日` などの列を確認すること）",
+            file=sys.stderr,
+        )
 
     repeated = int((merged["n_years"] > 1).sum())
+    both = int((merged["survey"].str.contains("・")).sum())
+    by_survey = merged["survey"].value_counts().to_dict()
     print(
         f"\n[noise] {len(out):,}件の測定を {len(merged):,}地点に束ねた"
-        f"（複数年度で測られた地点 {repeated:,}）"
+        f"（複数年度で測られた地点 {repeated:,}・"
+        f"両方の調査が測った地点 {both:,}）"
+    )
+    print(
+        "[noise] 調査ごとの地点数: "
+        + " / ".join(f"{k} {v:,}" for k, v in sorted(by_survey.items()))
     )
     return gpd.GeoDataFrame(merged, geometry="geometry", crs=out.crs)
 

@@ -13,11 +13,13 @@ import { initMap, setPointData, type MapHandles } from "./map";
 import type { Meta, MeshProps, Sensitivity, Weights } from "./types";
 import {
   clusterOf,
+  computeLayerRanks,
   type HighlightKind,
   recompute,
   renderBanner,
   renderDetail,
   renderIntro,
+  renderLayerRoles,
   renderLegendNote,
   renderLimitations,
   renderMethodology,
@@ -46,11 +48,14 @@ async function loadJSON<T>(name: string): Promise<T> {
 }
 
 async function boot(): Promise<void> {
-  const [meta, meshFC, demandFC, hostsFC] = await Promise.all([
+  const [meta, meshFC, demandFC, hostsFC, noiseFC] = await Promise.all([
     loadJSON<Meta>("meta.json"),
     loadJSON<GeoJSON.FeatureCollection>("mesh.geojson"),
     loadJSON<GeoJSON.FeatureCollection>("demand_points.geojson"),
     loadJSON<GeoJSON.FeatureCollection>("hosts.geojson"),
+    // 騒音の測定地点。**需要側の点と別ファイルにしてある**——施設ではなく
+    // 「調査がそこを測った」という事実で、地図でも白抜きで描き分ける。
+    loadJSON<GeoJSON.FeatureCollection>("noise_points.geojson"),
   ]);
 
   const rows = meshFC.features.map((f) => f.properties as unknown as MeshProps);
@@ -66,15 +71,21 @@ async function boot(): Promise<void> {
     selected: null,
     highlightPoints: null,
     tab: "ranking",
+    // レイヤー別タブの初期表示。**config.py の定義順の先頭**で、
+    // 「いちばん重要な層」という意味ではない（重みの既定値も最大ではない）。
+    layerKey: meta.components[0]?.key ?? "",
     activePreset: "default",
     displayMode: "priority",
     rankingN: meta.ranking_default_n,
     highlight: null,
+    // 層ごとの順位は重みに依存しないので、起動時に 1 回だけ作る。
+    layerRanks: computeLayerRanks(rows, meta.components),
   };
   state.score = recompute(state);
 
   renderBanner(meta);
   renderIntro(meta);
+  renderLayerRoles(meta);
   renderLegendNote(meta);
   renderMethodology(meta);
   renderLimitations(meta);
@@ -134,7 +145,7 @@ async function boot(): Promise<void> {
       // 表と地図の一致を検査していて、一覧はその地図側と同一物）。
       const hl = highlightFor(state);
       state.highlightPoints = hl?.points ?? null;
-      renderDetail(state, onPickMesh, applyHighlight, onFocusPoint);
+      renderDetail(state, onPickMesh, applyHighlight, onFocusPoint, applyLayerKey);
       handles.setHighlight(hl);
     });
   }
@@ -163,7 +174,11 @@ async function boot(): Promise<void> {
 
     const kind = st.highlight;
     const isHost = kind === "host";
-    const src = isHost ? hostsFC : demandFC;
+    // **騒音だけは「徒歩圏に在るもの」ではない。** 光らせるのは
+    // この区画の騒音値を作った測定点（IDW の打ち切り 1,500m 以内）で、
+    // 0 件ならその値は測定ではなく 23 区の中央値である。
+    const isNoise = kind === "noise";
+    const src = isHost ? hostsFC : isNoise ? noiseFC : demandFC;
     const layerOf: Record<string, string> = {
       welfare: "welfare",
       school: "school",
@@ -194,19 +209,19 @@ async function boot(): Promise<void> {
       if (best) picked = [best];
     } else {
       radiusM = meta.fact_radius_m[
-        kind as "welfare" | "school" | "clinic" | "host" | "station"
+        kind as "welfare" | "school" | "clinic" | "host" | "station" | "noise"
       ];
       const r2 = radiusM * radiusM;
       for (const f of src.features) {
         const p = f.properties as Record<string, unknown>;
-        if (!isHost && p.layer !== layerOf[kind]) continue;
+        if (!isHost && !isNoise && p.layer !== layerOf[kind]) continue;
         const dx = (p.x as number) - mx;
         const dy = (p.y as number) - my;
         if (dx * dx + dy * dy <= r2) picked.push(f);
       }
     }
 
-    const side = isHost ? "host" : "demand";
+    const side = isHost ? "host" : isNoise ? "noise" : "demand";
     const centroid = centroidOf(feature);
     if (!centroid) return null;
     return {
@@ -227,17 +242,37 @@ async function boot(): Promise<void> {
     render(false);
   }
 
+  /** レイヤー別タブで見る層の切り替え。スコアには触れない。 */
+  function applyLayerKey(key: string): void {
+    state.layerKey = key;
+    render(false);
+  }
+
   /**
-   * 一覧の項目から、その施設へ地図を寄せる。
+   * 一覧の項目から、その施設へ地図を寄せて吹き出しを出す。
    *
    * **区画の選択は変えない。** 変えると、寄せた先の区画が選択され、
    * いま開いている一覧そのものが別の区画のものへ入れ替わる
    *（「近くを見たい」だけの操作で文脈が飛ぶ）。
-   * ズームは点が押せる程度まで——ここまで来れば地図側の
-   * ポップアップで同じ情報が出る。
+   *
+   * **寄せるだけでは足りなかった。** 250m 四方に 60 件が重なる場所では、
+   * 寄った先のどの点が押した施設なのか分からない（点は全部同じ色・
+   * 同じ大きさで、名前はホバーしないと出ない）。吹き出しまで出して初めて
+   * 「この点です」と言えたことになる。
+   *
+   * **渡すのは配列の添字で、緯度経度ではない。** 一覧は
+   * `state.highlightPoints`（＝地図へ渡したのと同一の配列）から作っており、
+   * 添字で引けば**一覧の行・地図の点・吹き出しの中身が同じ 1 件**である
+   * ことが構造的に保証される。座標で引き直すと、同じ地点に 2 件ある
+   * ときに別の行の中身が出得る（CLAUDE.md「数えたものと光らせるもの」）。
    */
-  function onFocusPoint(lon: number, lat: number): void {
+  function onFocusPoint(index: number): void {
+    const f = state.highlightPoints?.features[index];
+    const g = f?.geometry;
+    if (!f || !g || g.type !== "Point") return;
+    const [lon, lat] = g.coordinates as number[];
     handles.flyTo(lon, lat, 16.2);
+    handles.openPointPopup(lon, lat, (f.properties ?? {}) as Record<string, unknown>);
   }
 
   function select(meshCode: string | null): void {

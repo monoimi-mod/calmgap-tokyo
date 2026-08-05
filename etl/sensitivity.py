@@ -32,6 +32,8 @@ from .config import (
     FIXED_VALUE_TRIALS,
     HOST_DISTANCE_TRIALS,
     HOST_MAX_DISTANCE_M,
+    NOISE_IDW_MAX_DISTANCE_M,
+    NOISE_IDW_SMOOTHING_M,
     PRESETS,
     PRIORITY_ALPHA,
     PRIORITY_BETA,
@@ -466,12 +468,14 @@ def fixed_value_perturbation(
         ),
         (
             "idw",
-            "騒音の内挿（平滑化 50m・打ち切り 1500m）",
+            f"騒音の内挿（平滑化 {NOISE_IDW_SMOOTHING_M:.0f}m・"
+            f"打ち切り {NOISE_IDW_MAX_DISTANCE_M:.0f}m）",
             2,
             lambda: {
                 "idw": {
-                    "smoothing_m": 50.0 * rng.uniform(1 - p, 1 + p),
-                    "max_distance_m": 1500.0 * rng.uniform(1 - p, 1 + p),
+                    "smoothing_m": NOISE_IDW_SMOOTHING_M * rng.uniform(1 - p, 1 + p),
+                    "max_distance_m": NOISE_IDW_MAX_DISTANCE_M
+                    * rng.uniform(1 - p, 1 + p),
                 }
             },
         ),
@@ -509,8 +513,8 @@ def fixed_value_perturbation(
             bandwidths=_perturb(BANDWIDTH_M, rng, p),
             zoning_loads=_perturb(ZONING_LOAD, rng, p, hi=1.0),
             idw={
-                "smoothing_m": 50.0 * rng.uniform(1 - p, 1 + p),
-                "max_distance_m": 1500.0 * rng.uniform(1 - p, 1 + p),
+                "smoothing_m": NOISE_IDW_SMOOTHING_M * rng.uniform(1 - p, 1 + p),
+                "max_distance_m": NOISE_IDW_MAX_DISTANCE_M * rng.uniform(1 - p, 1 + p),
             },
             alpha=PRIORITY_ALPHA * rng.uniform(1 - p, 1 + p),
             beta=PRIORITY_BETA * rng.uniform(1 - p, 1 + p),

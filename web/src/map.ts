@@ -82,6 +82,38 @@ function pointDetailHtml(p: Record<string, unknown>): string {
   const name = escapeHtml(String(p.name ?? ""));
   const kind = escapeHtml(String(p.host_kind ?? p.kind ?? ""));
 
+  // **騒音の測定点は施設ではない。** 名前の欄に入っているのは住所で、
+  // 「そこに何かが在る」のではなく「調査がそこを測った」という事実である。
+  // 需要側の点と同じ書式（種別・規模・出典）に流し込むと、
+  // 測定点が 768 番目の施設に見える。
+  if (p.layer === "noise") {
+    const db = p.laeq_db != null ? `${Number(p.laeq_db)} dB (LAeq)` : "—";
+    const years = p.years ? String(p.years) : "";
+    const n = Number(p.n_years ?? 0);
+    // **どちらの調査で測った点かを必ず出す。** 測定点の選ばれ方が
+    // 違う 2 つの調査を 1 つの層に混ぜているので、混ぜたことが
+    // 画面から見えなくなってはいけない（docs/issues.md A1）。
+    const survey = String(p.survey ?? "");
+    return `<div class="popup-card"><b>${name}</b>
+      <div class="popup-kind">自動車交通騒音の測定地点（施設ではありません）</div>
+      <div class="popup-row"><b>等価騒音レベル</b> ${escapeHtml(db)}</div>
+      ${
+        years
+          ? `<div class="popup-row popup-sub">測定年度 ${escapeHtml(years)}${
+              n > 1 ? `（${n} 年度の平均）` : ""
+            }</div>`
+          : ""
+      }
+      ${survey ? `<div class="popup-row popup-sub">調査 ${escapeHtml(survey)}${surveyNote(survey)}</div>` : ""}
+      <div class="popup-role">この点そのものは道路端の値です。区画の値は
+        周囲の測定点からの距離重み付き内挿で、測定値ではありません。</div>
+      ${
+        p.source
+          ? `<div class="popup-source">出典: ${escapeHtml(String(p.source))}</div>`
+          : ""
+      }</div>`;
+  }
+
   const spec = CAPACITY_LABEL[String(p.layer ?? "")];
   let size = "";
   if (spec && p.capacity != null) {
@@ -106,6 +138,22 @@ function pointDetailHtml(p: Record<string, unknown>): string {
       : "";
 
   return `<div class="popup-card"><b>${name}</b><div class="popup-kind">${kind}</div>${role}${size}${source}</div>`;
+}
+
+/**
+ * 調査名の後ろに置く一言。**2 つの調査は測っているものではなく、
+ * 測る場所の選ばれ方が違う。**
+ *
+ * 名前（「常時監視」「要請限度」）だけでは、行政の用語を知らない人に
+ * 何も伝わらない。ここが伝わらないと、地図に並ぶ点が同じ性質のものに見える。
+ */
+function surveyNote(survey: string): string {
+  const both = survey.includes("・");
+  if (both) return "（同じ街区を両方の調査が測っています）";
+  if (survey.includes("要請限度")) {
+    return "（苦情が出た道路を測る調査。うるさい場所を指しますが、選ばれ方が区に依存します）";
+  }
+  return "（幹線道路を年度ごとに順に測る系統調査）";
 }
 
 function escapeHtml(s: string): string {
@@ -348,8 +396,17 @@ function baseStyle(): StyleSpecification {
           "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 3.5, 16, 8],
           // 需要側か供給側かで、既存の点レイヤーと同じ色を使う。
           // ハイライト用に 3 つ目の色を作らない。
+          //
+          // **騒音の測定点だけは白抜き。** これは施設ではなく
+          // 「調査がそこを測った」という事実で、橙（需要側）でも
+          // 緑（供給側）でもない。**それでも新しい色相は作らない**——
+          // 斜線ハッチと同じ考え方で、区別は色ではなく塗りの有無で付ける
+          //（3 つ目の色を出すと「この色は施設の色と関係があるのか」という
+          // 問いが生まれる）。輪郭は他と同じ黒。
           "circle-color": [
             "case",
+            ["==", ["get", "side"], "noise"],
+            "#ffffff",
             ["==", ["get", "side"], "host"],
             CAT_HOST,
             CAT_DEMAND,
@@ -427,6 +484,21 @@ export interface MapHandles {
   flyTo: (lon: number, lat: number, zoom?: number) => void;
   /** 接している上位区画までが画面に入るように寄せる。1 区画なら flyTo で足りる。 */
   fitTo: (bounds: [[number, number], [number, number]]) => void;
+  /**
+   * 一覧から選ばれた 1 点に吹き出しを出す。
+   *
+   * **地図を寄せるだけでは足りなかった。** 一覧の施設名を押すとその点へ
+   * 寄るところまでは動いていたが、250m 四方に 60 件が重なる場所では
+   * **寄った先のどれが押した施設なのかが分からない**（点は全部同じ色・
+   * 同じ大きさで、名前はホバーしないと出ない）。中身は地図の点を
+   * 押したときと**同じ `pointDetailHtml`**——一覧と地図で違うことを
+   * 書いたら、どちらが本当なのかという問いが増える。
+   */
+  openPointPopup: (
+    lon: number,
+    lat: number,
+    props: Record<string, unknown>,
+  ) => void;
 }
 
 export async function initMap(
@@ -552,11 +624,17 @@ export async function initMap(
       if (!f) return;
       map.getCanvas().style.cursor = "pointer";
       const p = f.properties ?? {};
+      // 騒音の測定点には種別が無い（名前の欄は住所）。空行を出さず、
+      // 「これは施設ではない」が一目で分かる語を置く。
+      const sub =
+        p.layer === "noise"
+          ? `騒音の測定地点${p.laeq_db != null ? ` ${Number(p.laeq_db)} dB` : ""}`
+          : String(p.host_kind ?? p.kind ?? "");
       hover
         .setLngLat(e.lngLat)
         .setHTML(
           `<b>${escapeHtml(String(p.name ?? ""))}</b><br>` +
-            `${escapeHtml(String(p.host_kind ?? p.kind ?? ""))}` +
+            `${escapeHtml(sub)}` +
             '<br><span class="popup-hint">押すと詳細</span>',
         )
         .addTo(map);
@@ -610,6 +688,10 @@ export async function initMap(
       // 上限を切らないと 1 区画（250m 四方）で最大ズームまで寄ってしまい、
       // 接している区画がどこまで続いているのかが読めなくなる。
       map.fitBounds(bounds, { padding: 80, maxZoom: 15.2, duration: 800 });
+    },
+    openPointPopup: (lon, lat, props) => {
+      hover.remove();
+      detail.setLngLat([lon, lat]).setHTML(pointDetailHtml(props)).addTo(map);
     },
   };
 }
