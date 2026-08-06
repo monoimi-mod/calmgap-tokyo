@@ -348,6 +348,7 @@ async function boot(): Promise<void> {
     handles.setSelected(meshCode);
     if (meshCode && state.tab === "ranking") state.tab = "selected";
     syncTabs();
+    syncUrl();
     render(false);
   }
 
@@ -372,6 +373,8 @@ async function boot(): Promise<void> {
 
     // 接している上位区画があるなら、その全体が入るように寄せる。
     // 1 区画へ寄ると「接する上位区画 11」と書いてあるものが画面から外れる。
+    syncUrl();
+
     const cluster = clusterOf(state, meshCode);
     const b = boundsOf(meshFC, cluster.length > 1 ? cluster : [meshCode]);
     if (b) {
@@ -439,6 +442,7 @@ async function boot(): Promise<void> {
     handles.toggleLayer("mesh-unreachable", on);
 
     renderRankingFilter(state, applyRankingFilter);
+    syncUrl();
     render(false);
 
     // **押した結果が画面の外にあってはいけない。** モバイルでは
@@ -477,6 +481,40 @@ async function boot(): Promise<void> {
     handles.toggleLayer("mesh-unreachable", (e.target as HTMLInputElement).checked);
   });
 
+  /* ------------------------------------------------- URL で状態を持ち回る */
+
+  /**
+   * **「この区画を見てください」と渡せないのは、この道具にとって本当の穴だった。**
+   *
+   * 目的は「9,507 区画を、人が話し合える十数区画まで絞る」ことで、
+   * その話し合いは会議やメールの上で起きる。**なのに区画を指す方法が
+   * 「スクロールして 5339463631 を探してください」しか無かった。**
+   *
+   * `#c=<メッシュコード>` … その区画を選んで寄る
+   * `#f=unreachable`      … 順位表を「徒歩圏に区の公共施設が無い区画」に絞る
+   *
+   * **`replaceState` で書く。** 区画を選ぶたびに履歴が積まれると、
+   * 戻るボタンが「地図を触った回数ぶん」戻ることになる。
+   */
+  function syncUrl(): void {
+    const parts: string[] = [];
+    if (state.selected) parts.push(`c=${state.selected}`);
+    if (state.rankingFilter !== "all") parts.push(`f=${state.rankingFilter}`);
+    const hash = parts.length ? `#${parts.join("&")}` : "";
+    if (hash !== window.location.hash) {
+      history.replaceState(null, "", `${window.location.pathname}${hash}`);
+    }
+  }
+
+  function applyUrl(): void {
+    const h = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+    if (h.get("f") === "unreachable") applyRankingFilter("unreachable");
+    const code = h.get("c");
+    // **実在しないコードは黙って無視する。** 選択だけ立てて地図が動かないと、
+    // 「リンクが壊れている」のか「そういう区画なのか」が分からない。
+    if (code && state.rows.some((r) => r.c === code)) onPickMesh(code);
+  }
+
   const tabs = [...document.querySelectorAll<HTMLButtonElement>(".tab")];
   function syncTabs(): void {
     for (const t of tabs) {
@@ -504,6 +542,10 @@ async function boot(): Promise<void> {
   }
 
   render();
+
+  // **URL の指定は最後に当てる。** 先に当てると、そのあとの初期描画が
+  // 選択を上書きしてしまう（applyRankingFilter が render を呼ぶため）。
+  applyUrl();
 
   // **読み込み中の覆いを外す。** 最初のタイルまで描けた時点で外すので、
   // 「白い地図に凡例だけ浮いている」状態を人に見せない。
@@ -565,14 +607,56 @@ function boundsOf(
   ];
 }
 
+/**
+ * 起動に失敗したときの画面。
+ *
+ * **失敗の種類で相手が違う。** かつてはどの失敗でも同じ画面を出しており、
+ * **生の例外文と `python -m etl.build` という開発者向けのコマンド**が
+ * 並んでいた。**WebGL が使えない端末で開いた人**——GPU を切ってある
+ * 業務用 PC、古い端末、リモートデスクトップ——には、
+ * `{"requestedAttributes":{"antialias":false,…}}` と
+ * 「npm install してください」が出ることになる。
+ * 行政の窓口で開かれる想定の道具でそれは通らない。
+ *
+ * データが読めないのは**手元でビルドしていない人**（開発者）の話、
+ * WebGL が無いのは**見に来た人**の話で、書くべきことが違う。
+ */
 boot().catch((err: unknown) => {
   const msg = err instanceof Error ? err.message : String(err);
+  const webglFailed =
+    /webgl/i.test(msg) ||
+    // MapLibre は WebGL が無いと生成時点で投げる。文言は版で変わるので、
+    // 「WebGL」の語に頼りきらず生成の失敗も拾う。
+    /Failed to initialize|WebGL context/i.test(msg);
+
+  const esc = (s: string) => s.replace(/[<>]/g, "");
+  const body = webglFailed
+    ? `<h1 style="font-size:18px;margin:0 0 10px">この端末では地図を表示できません</h1>
+       <p style="color:#52514e;margin:0 0 14px">
+         地図の描画に <b>WebGL</b> を使っています。お使いのブラウザや端末で
+         無効になっているか、対応していないようです。
+       </p>
+       <ul style="color:#52514e;margin:0 0 14px;padding-left:1.2em">
+         <li>別のブラウザ（Chrome / Edge / Safari の最新版）で開く</li>
+         <li>ブラウザ設定の「ハードウェア アクセラレーション」を有効にする</li>
+         <li>リモートデスクトップ経由の場合、手元の端末で開く</li>
+       </ul>
+       <p style="color:#8a897f;font-size:12px;margin:0">
+         算出方法・データ出典・限界の記述は
+         <a href="https://github.com/monoimi-mod/calmgap-tokyo" style="color:#3b6fb5">
+           リポジトリの docs/</a> にあります（地図が無くても読めます）。
+       </p>`
+    : `<h1 style="font-size:18px;margin:0 0 10px">データを読み込めませんでした</h1>
+       <p style="color:#52514e;margin:0 0 14px">${esc(msg)}</p>
+       <p style="color:#8a897f;font-size:12px;margin:0 0 8px">
+         手元で動かしている場合は、先に配信データを作ってください。
+       </p>
+       <pre style="background:#f4f4f1;padding:12px;border-radius:6px;font-size:12px;margin:0">python -m etl.build
+cd web &amp;&amp; npm install &amp;&amp; npm run dev</pre>`;
+
   document.body.innerHTML = `
-    <div style="padding:32px;font-family:sans-serif;max-width:640px;line-height:1.7">
-      <h1 style="font-size:18px">起動できませんでした</h1>
-      <p style="color:#52514e">${msg.replace(/[<>]/g, "")}</p>
-      <pre style="background:#f4f4f1;padding:12px;border-radius:6px;font-size:12px">python -m etl.build
-cd web &amp;&amp; npm install &amp;&amp; npm run dev</pre>
+    <div style="padding:32px;font-family:system-ui,sans-serif;max-width:640px;line-height:1.7">
+      ${body}
     </div>`;
   console.error(err);
 });

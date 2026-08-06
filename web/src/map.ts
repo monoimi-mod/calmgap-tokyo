@@ -558,14 +558,50 @@ type SourceId =
  */
 const pendingData = new WeakMap<MLMap, Map<SourceId, GeoJSON.FeatureCollection>>();
 
-/** 保留していたデータをソースへ流し込む。 */
+/**
+ * スタイル確定前に届いた**レイヤー操作**の保留箱。
+ *
+ * **データ側だけ防いでいて、レイヤー側が素通しだった。**
+ * `setFilter` / `setLayoutProperty` はスタイル確定前に呼ぶと
+ * `Style is not done loading.` を投げ、それが boot() まで抜けて
+ * **画面ごと「データを読み込めませんでした」に化ける。**
+ *
+ * 人の操作では起こらない（読み込み終わるまで押せない）が、
+ * **URL で区画を指定して開くと必ず通る**——`#c=...` を足して初めて
+ * 再現した。**押せないから安全、はタイミングの話であって設計ではない。**
+ */
+const pendingOps = new WeakMap<MLMap, (() => void)[]>();
+
+/** スタイルが確定していれば即実行、まだなら保留する。 */
+function whenStyled(map: MLMap, fn: () => void): void {
+  if (map.isStyleLoaded()) {
+    fn();
+    return;
+  }
+  let q = pendingOps.get(map);
+  if (!q) {
+    q = [];
+    pendingOps.set(map, q);
+  }
+  q.push(fn);
+}
+
+/** 保留していたデータと操作を流し込む。 */
 function flushPending(map: MLMap): void {
   const queued = pendingData.get(map);
-  if (!queued) return;
-  for (const [id, data] of queued) {
-    (map.getSource(id) as maplibregl.GeoJSONSource | undefined)?.setData(data);
+  if (queued) {
+    for (const [id, data] of queued) {
+      (map.getSource(id) as maplibregl.GeoJSONSource | undefined)?.setData(data);
+    }
+    queued.clear();
   }
-  queued.clear();
+  // **データより後に流す。** 選択の枠やハイライトは、対象のデータが
+  // 入っている前提で filter を当てるものなので、順序が逆だと空振りする。
+  const ops = pendingOps.get(map);
+  if (ops) {
+    for (const fn of ops) fn();
+    ops.length = 0;
+  }
 }
 
 export interface MapHandles {
@@ -657,8 +693,13 @@ export async function initMap(
    *
    * 寸法が確定してから `fitBounds` をやり直せば、どちらも起きない。
    */
+  // **一度きり。** 対象地域へ合わせるのは「まだどこも見ていない」ときだけで、
+  // それ以降は視点を触らない。
+  let fitted = false;
+
   const fitToArea = (): void => {
     map.resize();
+    if (fitted) return;
     map.fitBounds(
       [
         [minx, miny],
@@ -666,6 +707,24 @@ export async function initMap(
       ],
       { padding: 24, animate: false },
     );
+    // 寸法が確定していないうちは「合わせた」と見なさない
+    //（0 サイズのキャンバスに対して合わせても意味が無い）。
+    const el = map.getContainer();
+    if (el.clientWidth > 0 && el.clientHeight > 0) fitted = true;
+  };
+
+  /**
+   * 視点をこちらから動かしたことを記録する。
+   *
+   * **ResizeObserver が後から視点を上書きしていた。** 起動直後は
+   * コンテナの寸法が数フレームかけて確定するので、`fitToArea` が
+   * 何度か走る——その間に区画へ寄せても**全域表示へ引き戻される。**
+   * URL で区画を指定して開いたときに毎回そうなって発覚したが、
+   * **リンク以前の問題**で、ウィンドウをリサイズしただけでも
+   * 見ていた場所が失われていた。
+   */
+  const markMoved = (): void => {
+    fitted = true;
   };
 
   // 主題レイヤーは baseStyle() に含めてあるので、ここで追加する必要はない。
@@ -763,11 +822,18 @@ export async function initMap(
     setMeshData: (data) => {
       setSourceData(map, "mesh", data);
     },
+    // **レイヤー操作は whenStyled を通す。** スタイル確定前に呼ぶと
+    // `Style is not done loading.` を投げ、boot() まで抜けて画面ごと落ちる。
+    // 人が押す経路では起きないが、**URL で区画を指定して開くと必ず通る。**
     setSelected: (meshCode) => {
-      map.setFilter("mesh-selected", ["==", ["get", "c"], meshCode ?? "__none__"]);
+      whenStyled(map, () => {
+        map.setFilter("mesh-selected", ["==", ["get", "c"], meshCode ?? "__none__"]);
+      });
     },
     setCluster: (meshCodes) => {
-      map.setFilter("mesh-cluster", ["in", ["get", "c"], ["literal", meshCodes]]);
+      whenStyled(map, () => {
+        map.setFilter("mesh-cluster", ["in", ["get", "c"], ["literal", meshCodes]]);
+      });
     },
     setHighlight: (h) => {
       const empty: GeoJSON.FeatureCollection = {
@@ -790,12 +856,16 @@ export async function initMap(
       });
     },
     toggleLayer: (id, visible) => {
-      map.setLayoutProperty(id, "visibility", visible ? "visible" : "none");
+      whenStyled(map, () => {
+        map.setLayoutProperty(id, "visibility", visible ? "visible" : "none");
+      });
     },
     flyTo: (lon, lat, zoom = 15.2) => {
+      markMoved();
       map.flyTo({ center: [lon, lat], zoom, duration: 800 });
     },
     fitTo: (bounds) => {
+      markMoved();
       // 上限を切らないと 1 区画（250m 四方）で最大ズームまで寄ってしまい、
       // 接している区画がどこまで続いているのかが読めなくなる。
       map.fitBounds(bounds, { padding: 80, maxZoom: 15.2, duration: 800 });
