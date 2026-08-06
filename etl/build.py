@@ -13,6 +13,8 @@
                        （地区でも施設でもない。理由は etl/hosts.py の build_ranking）
     hosts.geojson      既存の公共施設（供給側）
     demand_points.geojson  需要側の点データ（地図の文脈表示用）
+    noise_points.geojson   騒音の測定地点（施設ではない。調査が測った場所）
+    parks.geojson      公園（緑・公園被覆を作っているもの。退避先ではない）
     meta.json          構成要素定義・出典・生成条件
 
 重みの掛け合わせは意図的にブラウザ側へ残してある。
@@ -24,8 +26,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from datetime import datetime, timezone
 from functools import lru_cache
+from pathlib import Path
 
 import geopandas as gpd
 import numpy as np
@@ -343,6 +347,27 @@ def _attach_facts(mesh_gdf: gpd.GeoDataFrame, layers: dict) -> None:
         mesh_gdf, layers["noise"], NOISE_IDW_MAX_DISTANCE_M, round_decimals=r
     ).to_numpy()
     mesh_gdf["f_green_pct"] = np.round(mesh_gdf["green"].to_numpy() * 100, 1)
+    # **被覆率を作った公園そのものを画面へ運ぶ。** 8 層のうち、実数の隣に
+    # 「その数を作ったもの」を出せないのはこの層だけだった——「緑・公園被覆
+    # 0%」と書いてあっても、**近くに公園が本当に無いのか、隣の区画に
+    # 寄っているだけなのかが画面から分からない。**
+    #
+    # **半径ではなく重なりで数える。** 他の需要 4 層は帯域と同じ半径の
+    # 円で数えるが、この層は区画そのものの被覆率なので、数えるべきは
+    # 「この区画に重なる公園」である。**揃っていないのは規則が違うから**で、
+    # 揃えると被覆率と一覧が別のものを指すことになる。
+    #
+    # **ブラウザに数え直させない。** 円（`normalize_parks` が面積から作る）と
+    # セル形状の交差を矩形近似で再現すると、**9,507 区画のうち 9 区画で
+    # 件数が食い違った**（うち 6 区画は 0 件かどうかまで変わる）。投影後の
+    # セルは軸に平行な矩形ではなく、経度で 0.6m ほど傾くためである。
+    # 対応表そのものを配れば、食い違う余地が構造的に無い。
+    # **`.to_numpy()` を通す。** 返り値は mesh_code を索引にした Series で、
+    # そのまま代入すると RangeIndex の側と突き合わされて全行 NaN になる
+    #（他の集計も同じ理由で全部 to_numpy している）。
+    green_parks = aggregate.polygon_overlap_index(mesh_gdf, layers["parks"]).to_numpy()
+    mesh_gdf["green_parks"] = green_parks
+    mesh_gdf["f_green_n"] = np.array([len(v) for v in green_parks], dtype=int)
     # 混雑だけ実数を配信していなかった。**8 層のうち 1 層だけ実数が無いと、
     # 「正規化値 0.93」の隣に何も置けない**——画面は実数と正規化値を
     # 1 行に並べる作りにしたので、そこが空くと対応関係の説明が崩れる。
@@ -399,10 +424,18 @@ def _feature_properties(row: pd.Series, xy: tuple[float, float] | None = None) -
         ("f_crowding", int),
         ("f_noise_db", float),
         ("f_green_pct", float),
+        ("f_green_n", int),
     ):
         v = row.get(key)
         if pd.notna(v) and float(v) != 0.0:
             props[key] = cast(v)
+    # この区画に重なる公園の添字（parks.geojson の行順）。
+    # **件数ではなく対応表そのものを配る**——ブラウザが数え直すと
+    # 9 区画で食い違う（`_attach_facts` の green_parks 参照）。
+    # 空のときは載せない（4,192 区画にしか付かない）。
+    gp = row.get("green_parks")
+    if isinstance(gp, (list, tuple)) and len(gp):
+        props["gp"] = list(gp)
     for key in ("f_station_name", "f_zoning_name"):
         v = row.get(key)
         if v is not None and pd.notna(v):
@@ -446,6 +479,86 @@ def _unreachable_summary(scored: pd.DataFrame) -> dict:
         "mid_or_above": int(reach["中位以上"].sum()),
         "note": "区内で優先度が中位以上のもの。既定重みでの値で、"
         "区をまたいで並べてよいのはこちら。",
+    }
+
+
+CALM_SPACES_PATH = Path(__file__).resolve().parent.parent / "data/reference/calm_spaces.json"
+
+
+def _calm_space_report(scored: pd.DataFrame) -> dict | None:
+    """既に置かれているカームダウンスペースを、この方法の順位と突き合わせる。
+
+    **この作品で唯一の外部照合である。** `parity_check` も `selftest` も
+    `doc_numbers` も内部整合しか見ておらず、**モデルが現実を当てている
+    証拠にはならない。** 既存の設置場所と比べて初めて、外から確かめたことになる
+    （`docs/methodology.md` 8.3）。
+
+    **どちらに転んでも発見になる設計。** 上位に寄っていればモデルが
+    実務家の判断を再現できているという主張になり、ズレていれば
+    「現在の配置がニーズと合っていない」という提言そのものになる。
+
+    **入力は手で集めた一覧で、他のレイヤーとは出自が違う**
+    （`data/reference/calm_spaces.json`。中央集約されたオープンデータが
+    無いため）。**網羅性の保証は無い**ので、スコアには一切入れない。
+
+    **`access` を必ず一緒に数える。** 室数だけを数えると
+    「23 区に 16 室ある」と読めるが、**その大半は施設の中にあり、
+    その施設の利用者しか使えない**——大学は学生・教職員、空港は保安検査後、
+    博物館は入館料が要る。**街を歩いている人がその場で使えるか**が、
+    この地図が前提にしている到達可否である。
+    """
+    if not CALM_SPACES_PATH.exists():
+        return None
+    doc = json.loads(CALM_SPACES_PATH.read_text(encoding="utf-8"))
+    sites = doc.get("sites", [])
+    if not sites:
+        return None
+
+    # 優先度の順位（1 が最上位）。scored の並びに依存させない。
+    order = scored["priority"].to_numpy().argsort()[::-1]
+    rank_of: dict[str, int] = {}
+    codes = scored["mesh_code"].tolist()
+    for r, i in enumerate(order):
+        rank_of[codes[i]] = r + 1
+    host_of = dict(zip(scored["mesh_code"], scored["f_host_n"].fillna(0).astype(int)))
+
+    rows = []
+    for s in sites:
+        code = meshlib.encode(float(s["lat"]), float(s["lon"]), 5)
+        rows.append(
+            {
+                "name": s["name"],
+                "rooms": int(s["rooms"]),
+                "access": s["access"],
+                "mesh_code": code,
+                # 対象地域の外に出ることは無いはずだが、出たら黙って 0 にしない。
+                "rank": rank_of.get(code),
+                "host_n": host_of.get(code),
+            }
+        )
+
+    ranked = sorted(r["rank"] for r in rows if r["rank"] is not None)
+    n_mesh = len(scored)
+    by_access: dict[str, int] = {}
+    for r in rows:
+        by_access[r["access"]] = by_access.get(r["access"], 0) + r["rooms"]
+
+    return {
+        "surveyed_at": doc.get("surveyed_at", ""),
+        "sites": rows,
+        "site_count": len(rows),
+        "room_count": sum(r["rooms"] for r in rows),
+        # **「誰でも使える」室数を別に出す。** ここがこの照合の要点で、
+        # 室数だけでは「16 室ある」と読めてしまう。
+        "rooms_by_access": by_access,
+        "open_rooms": by_access.get("open", 0),
+        "rank_min": ranked[0] if ranked else None,
+        "rank_median": int(np.median(ranked)) if ranked else None,
+        "rank_max": ranked[-1] if ranked else None,
+        "in_top_50": sum(1 for r in ranked if r <= 50),
+        "in_bottom_half": sum(1 for r in ranked if r > n_mesh / 2),
+        "mesh_count": n_mesh,
+        "note": "手で集めた一覧との照合。網羅性の保証は無く、スコアには入らない。",
     }
 
 
@@ -614,6 +727,30 @@ def write_outputs(
         with_xy=True,
     )
 
+    # --- 公園（緑・公園被覆を作っているもの） ---
+    #
+    # **施設ではない。** 需要側の点（事業所・学校・駅・クリニック）とも、
+    # 供給側のホストとも別に配る。ここに在るのは「この区画の被覆率を
+    # 作った公園」で、**退避先として評価したものではない**
+    #（屋外が退避先になるかは当事者に確かめていない）。
+    #
+    # **点として配る。** 元データ（P13）が点で、形は入っていない——
+    # 被覆率は面積の等しい円に置き換えて出している。円の半径は
+    # `r = √(A/π)` で復元できるので、面積だけ運べば足りる。
+    # **円であることは画面が言う**（吹き出しに「半径 18m 相当の円」と出す）。
+    parks_out = layers["parks"].copy()
+    parks_out["r_m"] = np.round(
+        np.sqrt(parks_out["area_m2"].to_numpy() / math.pi), 1
+    )
+    # 円の中心＝元の点。面積から作った円なので centroid で元に戻る。
+    parks_out = parks_out.set_geometry(parks_out.geometry.centroid)
+    _write_geojson(
+        WEB_DATA / "parks.geojson",
+        parks_out,
+        ["name", "area_m2", "r_m", "source"],
+        with_xy=True,
+    )
+
     _write_json(WEB_DATA / "cards.json", cards)
     _write_json(WEB_DATA / "proposals.json", proposals)
 
@@ -640,6 +777,10 @@ def write_outputs(
         # **画面で計算し直さない**——しきい値の取り方（区ごと・母数は区内の
         # 全メッシュ）を TypeScript にもう 1 つ書くと、静かに食い違う。
         "unreachable": _unreachable_summary(scored),
+        # **この作品で唯一の外部照合。** 内部整合（parity・selftest・
+        # doc_numbers）をどれだけ積んでも、モデルが現実を当てている証拠には
+        # ならない。既に置かれているものと突き合わせて初めて外から確かめたことになる。
+        "calm_spaces": _calm_space_report(scored),
         # 各層が特定の区とどれだけ紐づいているか（docs/issues.md A1）。
         #
         # **配信する理由は検査のため。** 騒音の「世田谷ダミーとの相関」は

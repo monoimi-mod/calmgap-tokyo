@@ -43,6 +43,27 @@ export interface AppState {
    */
   rankingN: number;
   /**
+   * 順位表の絞り込み。**別のタブにはしない。**
+   *
+   * 「優先度の順位」と「既存施設で届いていない区画」は、この作品の
+   * 2 つの出力でありながら**別の場所を指している**——上位 50 区画のうち
+   * 到達不可は 0 件で、到達不可 1,058 区画の順位の中央値は 8,083 位である。
+   * 別々の画面に置くと「結局どちらを見ればよいのか」で終わるが、
+   * **同じ一覧の切り替えにすると、押した瞬間に上位が消えること自体が
+   * 「重みで決まる順位と、重みでほぼ決まらない不足は別物だ」という
+   * 観察になる。**
+   */
+  rankingFilter: "all" | "unreachable";
+  /**
+   * 「区内で優先度が中位以上の到達不可区画」の添字（`midOrAboveSet` の出力）。
+   *
+   * **1 回数えて、見出し数値・順位表・地図の 3 箇所へ同じものを配る。**
+   * 3 者が別々に数えると、同じ規則で数えているつもりのまま食い違い得る
+   * （「表の件数・地図の点・一覧の行数」で既に一度やっている）。
+   * 重みで動くのでスコアを計算し直すたびに作り直す。
+   */
+  midOrAbove: Set<number>;
+  /**
    * 地図に光らせている「徒歩圏に在るもの」の種別。null なら消灯。
    * **数えたものと光らせるものが同じであることが前提**
    *（tools/facility_parity.mjs が全 9,507 区画で検査している）。
@@ -150,7 +171,12 @@ export type HighlightKind =
   // **騒音だけは「徒歩圏に在るもの」ではない。** 光らせるのは施設ではなく
   // 測定地点で、半径も帯域ではなく IDW の打ち切り距離（1,500m）。
   // 0 件ならその区画の騒音は測定値ではなく 23 区の中央値である。
-  | "noise";
+  | "noise"
+  // **公園は「徒歩圏に在るもの」でも「測ったもの」でもない。**
+  // 光らせるのは**この区画に重なる公園**で、半径では選ばない
+  // （被覆率がそういう数え方だから。`etl/build.py` の green_parks）。
+  // 選ぶのはブラウザではなく Python で、配信された `gp` を引くだけ。
+  | "green";
 
 // 優先度は 9,507 区画の中で 0.99〜0.17 と動く。2 桁だと上位 100 件が
 // すべて 0.99 か 1.00 になり、差が無いように見えていた（実際には在る）。
@@ -197,9 +223,73 @@ export interface RankRow {
  *
  * 隣接は単位ではなく記述的な事実として残す。母数（表示件数）を必ず添える。
  */
+/**
+ * 「区内で優先度が中位以上の到達不可区画」の添字。**ブラウザ側で数え直す。**
+ *
+ * `etl/hosts.py` の `reach_report` と同じ規則:
+ *   到達不可 = 徒歩圏（700m）に区の公共施設が 1 件も無い（`f_host_n == 0`）
+ *   しきい値 = **区内の優先度の中央値**（境界を含む）。母数は区内の全区画
+ *   区の判定が付かなかった区画（水面など）は数えない
+ *
+ * **なぜ meta の固定値を使わないのか。** `meta.unreachable.mid_or_above` は
+ * **既定の重みで 1 回だけ計算した値**である。しきい値は区内の優先度の
+ * 中央値なので、**重みを動かせばこの集合は動く**——にもかかわらず画面は
+ * 「この数字は重みにもスコアにも依存しません」と書いていた。
+ * 動かなかったのは依存していないからではなく、**配信時に凍らせた数を
+ * そのまま出していたから**である。
+ *
+ * 依存の度合いは小さい（到達不可の判定そのものは重みを通らず、重みが効くのは
+ * 区内中央値との大小だけ）。**小さいことと、無いことは違う。** 数え直せば
+ * 画面の数と一覧の行数と地図の区画が同じ規則から出た同じものになり、
+ * 実際にどれだけ動くのかも見える。
+ *
+ * **既定の重みでは `meta.unreachable.mid_or_above` と一致しなければならない。**
+ * 食い違うなら、Python とここのどちらかが上の規則から外れている。
+ */
+export function midOrAboveSet(state: AppState): Set<number> {
+  const { rows, score } = state;
+
+  // 区ごとに優先度を集めて中央値を出す。母数は区内の全区画。
+  const byWard = new Map<number, number[]>();
+  for (let i = 0; i < rows.length; i++) {
+    const w = rows[i].w;
+    if (typeof w !== "number") continue;
+    const bucket = byWard.get(w);
+    if (bucket) bucket.push(score.priority[i]);
+    else byWard.set(w, [score.priority[i]]);
+  }
+
+  const median = new Map<number, number>();
+  for (const [w, values] of byWard) {
+    values.sort((a, b) => a - b);
+    const n = values.length;
+    // 偶数個なら中央 2 つの平均（pandas の median と同じ）。
+    median.set(
+      w,
+      n % 2 ? values[(n - 1) / 2] : (values[n / 2 - 1] + values[n / 2]) / 2,
+    );
+  }
+
+  const out = new Set<number>();
+  for (let i = 0; i < rows.length; i++) {
+    const w = rows[i].w;
+    if (typeof w !== "number") continue;
+    if (((rows[i].f_host_n as number) ?? 0) !== 0) continue;
+    if (score.priority[i] >= (median.get(w) ?? Infinity)) out.add(i);
+  }
+  return out;
+}
+
 export function rankingRows(state: AppState): RankRow[] {
   const { rows, score, meta } = state;
-  const top = score.order.slice(0, state.rankingN);
+
+  // 絞り込みは母数を差し替えるだけ。**並べ方も打ち切りも変えない**
+  // ——同じ規則で並べた同じ順位表の、見る範囲が違うだけである。
+  const pool =
+    state.rankingFilter === "unreachable"
+      ? score.order.filter((i) => state.midOrAbove.has(i))
+      : score.order;
+  const top = pool.slice(0, state.rankingN);
   const idx = top.map((i) => gridIndex(rows[i].c));
 
   return top.map((rowIdx, k) => {
@@ -392,9 +482,20 @@ export function layerFact(
       };
     case "green": {
       const pct = g("f_green_pct") ?? 0;
+      const n = g("f_green_n") ?? 0;
       return {
-        value: pct > 0 ? `${pct}%` : "0%（屋外に退避先なし）",
-        basis: "この区画の値（都市公園の面積被覆率）",
+        // **「0%（屋外に退避先なし）」と書いていた。撤回した。**
+        // この層が見ているのは区画に重なる面積だけで、隣の区画の公園も、
+        // そこへ行けるかどうかも測っていない。
+        value: pct > 0 ? `${pct}%（${num(n)}件）` : "0%（重なる公園なし）",
+        // **半径ではなく重なりで数える。** 需要 4 層は帯域と同じ半径の
+        // 円で数えるが、この層は区画そのものの被覆率なので、
+        // 数えるべきは「この区画に重なる公園」である。
+        // **揃っていない理由をこの行の隣に書く**（CLAUDE.md）。
+        basis: "この区画に重なる公園の面積割合（半径ではなく重なりで数える）",
+        // 0 件でも押せるようにする——**円が 1 つも無いことが見えるのが、
+        // この層でいちばん言いたいこと**（隣に公園があっても 0% になる）。
+        hl: { kind: "green", radiusM: 0 },
       };
     }
     default:
@@ -515,8 +616,16 @@ function narrate(
   loadBits.push(green > 0 ? `緑・公園被覆${green}%` : "緑・公園被覆なし");
   parts.push(`${loadBits.join("、")}。`);
 
+  // **かつてここは「屋外に代替の退避先が存在しない」と書いていた。誤りである。**
+  // 見ているのはこの区画に重なる公園の面積割合だけで、隣の区画の公園も、
+  // そこへ行けるかどうかも測っていない。元データは点で、面積の等しい
+  // 円に置き換えてある（等価半径の中央値 18m）。Python 側（etl/hosts.py の
+  // narrate）と同じ文にすること——2 つある根拠文が食い違うと、
+  // 同じ区画が画面と JSON で別のことを言う。
+  // 直前の loadBits が既に「緑・公園被覆なし」と言っているので、
+  // ここで足すのは**その 0% が何を意味しないか**だけにする。
   if (green < 3) {
-    parts.push("屋外に代替の退避先が存在しない。");
+    parts.push("ただしこれは区画に重なる面積で、隣の区画にある公園は数えていない。");
   }
 
   // 重みを大きく動かしたときに、何が効いているかを補足する。
@@ -563,6 +672,132 @@ const shortLabel = (c: ComponentDef) => c.label.split("（")[0];
  * 供給側を 23 区分そろえた結果この値は 0 になり、見出しが空振りしていた。
  * その数字は現在の重みで動くので、副次の行として残す。
  */
+/**
+ * 画面の最上部に置く「結論」。**方法と結果を同じ塊に入れる。**
+ *
+ * ここが空いていたために、画面は**限界の説明から始まっていた**——
+ * 感度分析・プリセット共通 0 件・特別支援学校依存・固定値 76 個が
+ * 結論より上に並び、読み終えた人に残るのは「この数字は信じてはいけない」
+ * だけだった。**限界は 1 文字も削っていない。下の折りたたみへ移した。**
+ *
+ * **2 つ出すのは、この作品の出力が 2 つあるからである。**
+ * 片方（順位）は重みで動き、もう片方（到達不可）は重みがほとんど入らない。
+ * **どちらか一方だけを結論として出すと、もう一方が付け足しに見える**——
+ * 実際、以前は 148 だけが大きく出ていて、順位表は右のタブの中にあった。
+ *
+ * **「◯◯周辺」とは書かない**（2026-08-03 に地区をやめた）。
+ * 区名と最寄り駅名は**区画の呼び名**であって、広がりの主張ではない。
+ */
+export function renderFindings(
+  state: AppState,
+  onShowRanking: () => void,
+  onShowUnreachable: () => void,
+): void {
+  const el = document.getElementById("findings");
+  if (!el) return;
+  const { meta, rows, score } = state;
+
+  const topIdx = score.order[0];
+  const topRow = topIdx != null ? rows[topIdx] : undefined;
+  const where = topRow
+    ? [
+        typeof topRow.w === "number" ? (meta.target_wards[topRow.w] ?? "") : "",
+        (topRow.f_station_name as string) ?? "",
+      ]
+        .filter(Boolean)
+        .join(" ")
+    : "";
+
+  el.innerHTML = "";
+
+  const card = (
+    kicker: string,
+    value: string,
+    unit: string,
+    note: string,
+    action: string,
+    onClick: () => void,
+  ): void => {
+    const d = document.createElement("div");
+    d.className = "finding";
+    d.innerHTML =
+      `<div class="finding-kicker">${kicker}</div>` +
+      `<div class="finding-value">${value}<small>${unit}</small></div>` +
+      `<div class="finding-note">${note}</div>`;
+    const b = document.createElement("button");
+    b.className = "finding-btn";
+    b.type = "button";
+    b.textContent = action;
+    b.addEventListener("click", onClick);
+    d.appendChild(b);
+    el.appendChild(d);
+  };
+
+  // **母数を隣に置く。** 「50 区画」だけだと表示件数の設定に見えるが、
+  // 「9,507 のうち 50」と書けば**絞り込みそのものが結論である**ことが伝わる
+  //（この道具の自己説明は「9,507 区画を人が話し合える数まで絞る」である）。
+  card(
+    "需要 × 負荷がともに高い区画",
+    num(state.rankingN),
+    ` / ${num(meta.mesh_count)} 区画`,
+    // **打ち切りに根拠が無いことを、結論の隣で言う。** 順位表の中にも
+    // 書いてあるが、ここで数を大きく出す以上、ここでも言う必要がある。
+    `優先度の高い順に出しています（件数は選べます）。` +
+      (where ? `いま 1 位は <b>${escapeHtml(where)}</b>。` : "") +
+      `<b>この打ち切りに根拠はありません</b>——優先度は連続していて切れ目がありません。`,
+    "順位表を見る",
+    onShowRanking,
+  );
+
+  card(
+    `需要が高いのに、徒歩圏（半径 ${num(meta.host_max_distance_m)}m）に区の公共施設が 1 件も無い区画`,
+    num(state.midOrAbove.size),
+    ` / ${num(meta.mesh_count)} 区画`,
+    // **「退避先が無い」とは書かない。** 数えているのは区の公共施設
+    // （図書館・出張所・児童館）で、そこにカームダウンスペースが
+    // あるわけではない——外部照合では、23 区の図書館に 1 館も無い。
+    // **施設があっても退避先があることにはならない**ので、この数が
+    // 言えるのは「転用しうる屋内の公共空間が近くに無い」までである。
+    "既存ストックの徒歩圏から外れており、新規整備か民間施設との連携が要ります。" +
+      "<b>公共施設があっても、そこにカームダウンスペースがあるとは限りません</b>" +
+      "（数えているのは転用しうる場所の有無です）。" +
+      "<b>重みでも動きます</b>（下の折りたたみ）。",
+    "絞り込んで地図に出す",
+    onShowUnreachable,
+  );
+
+  // --- 外部照合 ---
+  //
+  // **この作品で唯一、外の物差しで確かめた部分である。** parity も selftest も
+  // 内部整合しか見ておらず、**モデルが現実を当てている証拠にはならない。**
+  //
+  // **数字は meta から入れる**（順位はビルドごとに動く。ここに書けば必ず古くなる）。
+  const cs = meta.calm_spaces;
+  if (cs && cs.rank_median != null) {
+    const p = document.createElement("p");
+    p.className = "findings-check";
+    p.innerHTML =
+      `<b>外部照合。</b>東京 23 区で既に置かれているカームダウンスペースは、` +
+      `調べた範囲で <b>${num(cs.site_count)} か所・${num(cs.room_count)} 室</b>。` +
+      `その区画の優先度順位は <b>中央値 ${num(cs.rank_median)} 位</b>` +
+      `（${num(cs.mesh_count)} 区画中）で、<b>上位 50 に入るものは ${cs.in_top_50} 件</b>、` +
+      `${cs.in_bottom_half} 件は下位半分にあります。` +
+      `<br><br>` +
+      // **室数だけを数えてはいけない。** 「16 室ある」と読めてしまうが、
+      // その大半は施設の中にあり、その施設の利用者しか使えない。
+      // **この地図が前提にしているのは「街を歩いている人が使えるか」**である。
+      `そのうち<b>街を歩いている人がその場で使えるのは ${cs.open_rooms} 室</b>` +
+      `——残りは大学の関係者のみ（${cs.rooms_by_access.members ?? 0} 室）、` +
+      `保安検査後（${cs.rooms_by_access.airside ?? 0} 室）、` +
+      `入館料やチケットが要るもの（${cs.rooms_by_access.ticketed ?? 0} 室）です。` +
+      `<br><br><b>いま置かれている場所と、この地図が指す場所は一致していません。</b>` +
+      `既存の設置は施設ごとの判断で、都市全体の需給から決まってはいないためです。` +
+      `<span class="findings-check-note">手で集めた一覧との照合（${escapeHtml(cs.surveyed_at)} 時点）。` +
+      `中央集約されたオープンデータが無いため<b>網羅性の保証はありません</b>。スコアには入っていません。</span>`;
+    el.appendChild(p);
+  }
+}
+
 export function renderStat(state: AppState): void {
   const { rows, score, meta } = state;
   // 順位表に出している件数と揃える。ここだけ 50 固定だと、
@@ -589,21 +824,50 @@ export function renderStat(state: AppState): void {
   // 非市街地の面積比で決まってしまう部分を落としてあり、
   // **区をまたいで並べてよいのはこちらだけ**である（issues.md A9）。
   //
-  // **格下げであって撤去ではない。** この指標は重みもスコアも帯域も
-  // 通っていない——この作品でいちばん頑健な出力で、順位（特別支援学校
-  // 1 層で全部入れ替わる）とはそこが違う。1,058 は補足として残す。
+  // **格下げであって撤去ではない。** 1,058 は補足として残す。
+  //
+  // **2026-08-06: この節は折りたたみの中へ移した。** 数そのものは
+  // 画面最上部の結論（`renderFindings`）が出しており、ここに残るのは
+  // **その数が何に寄りかかっているか**の説明である。見出しもそう書く。
   kickerEl.textContent =
-    "区内で優先度が中位以上で、かつ" +
-    `徒歩圏（半径 ${num(meta.host_max_distance_m)}m）に区の公共施設が 1 件も無い区画`;
+    "上の 2 つ目の数（区内で優先度が中位以上、かつ" +
+    `徒歩圏 ${num(meta.host_max_distance_m)}m に区の公共施設が 1 件も無い区画）について`;
 
-  valueEl.innerHTML =
-    `${u.mid_or_above.toLocaleString("ja-JP")}<small> 区画</small>`;
+  // **配信された固定値ではなく、いまの重みで数え直した値を出す。**
+  // meta.unreachable.mid_or_above は既定の重みで 1 回計算した数で、
+  // しきい値が区内の優先度の中央値である以上、**重みを動かせば動く**。
+  // 動かないように見えていたのは凍らせた数を出していたからにすぎない。
+  const midN = state.midOrAbove.size;
 
+  valueEl.innerHTML = `${midN.toLocaleString("ja-JP")}<small> 区画</small>`;
+
+  // **かつてここには「この数字は重みにもスコアにも依存しません
+  // （スライダーを動かしても変わりません）」と書いてあった。誤りである。**
+  //
+  // 到達不可の判定（徒歩圏に 1 件も無い）自体は確かに重みを通らない。
+  // だがこの見出し数値はそこへ**「区内で優先度が中位以上」**という条件を
+  // 重ねたもので、優先度は重みで動く。プリセットを替えるだけで
+  // 133〜171 件に動き、**顔ぶれは既定と 107〜139 件しか共通しない**
+  //（重み ±30% を 200 回振ると 119〜187 件）。
+  //
+  // **動かないように見えていたのは、配信時に凍らせた数を出していたから
+  // だけである。** 数え直すようにしたので、いまはスライダーで動く。
+  //
+  // **範囲をここに書かない。** 書けば必ず古くなる（この作品が繰り返し
+  // 踏んできた型）。動く様子はスライダーを動かせば画面が見せる。
   labelEl.innerHTML =
     "既存ストックの徒歩圏から外れており、新規整備か民間施設との連携が要る区画です。" +
-    "<b>この数字は重みにもスコアにも依存しません</b>" +
-    "（スライダーを動かしても変わりません）。" +
-    "しきい値は区ごとの優先度の中央値で、母数は区内の全区画です。" +
+    `<br><br><b>この件数は重みで動きます。</b>` +
+    "「徒歩圏に 1 件も無い」という判定そのものに重みは入りませんが、" +
+    "そこへ<b>「区内で優先度が中位以上」</b>という条件を重ねているためです" +
+    "（スライダーを動かすと、この数字も動きます）。" +
+    "<br><br><b>さらに、方法そのものに寄りかかっています。</b>" +
+    "何を需要と見なすか、何を退避先と見なすか、" +
+    `徒歩 ${num(meta.host_max_distance_m)}m という距離、` +
+    "「区内で中位以上」という線引き——この 4 つはこちらが決めたもので、" +
+    "変えれば件数も顔ぶれも変わります。" +
+    "<b>言えるのは「この方法の内側での結果」までです。</b>" +
+    `<br><br>しきい値は区ごとの優先度の中央値で、母数は区内の全区画です。` +
     `<br><br>徒歩圏に公共施設が無い区画は、全体では ` +
     `<b>${u.count.toLocaleString("ja-JP")} / ${meta.mesh_count.toLocaleString("ja-JP")} 区画` +
     `（${Math.round(u.ratio * 1000) / 10}%）</b>。` +
@@ -612,7 +876,10 @@ export function renderStat(state: AppState): void {
     "<b>区ごとにこの割合を出して並べてはいけません</b>——" +
     "非市街地の面積比でほぼ決まってしまいます。" +
     `<br><br>現在の重みでの上位 ${N} 区画のうち、公共施設が徒歩圏に無いものは ${uncoveredTop} 件。` +
-    '<br><span class="stat-hint">地図の「重ねる」で該当区画を表示できます。</span>';
+    '<br><span class="stat-hint">' +
+    "順位表の「表示」を切り替えると、この " +
+    `${midN.toLocaleString("ja-JP")} 区画を優先度順に並べて出します（地図にも重なります）。` +
+    "</span>";
 }
 
 /**
@@ -710,13 +977,13 @@ export function renderSliders(
       const tag = scaleTag(c);
       wrap.innerHTML = `
         <div class="slider-head">
-          <label for="${id}" title="${escapeAttr(c.rationale)}&#10;&#10;出典: ${escapeAttr(c.source)}">${escapeHtml(c.label)} ${tag}</label>
+          <label for="${id}" title="${escapeAttr(plainMd(c.rationale))}&#10;&#10;出典: ${escapeAttr(plainMd(c.source))}">${escapeHtml(c.label)} ${tag}</label>
           <span class="slider-value" id="${id}-val">${fmt(weights[c.key] ?? c.weight, 1)}</span>
         </div>
         <input type="range" id="${id}" min="0" max="2" step="0.1"
                value="${weights[c.key] ?? c.weight}"
                aria-label="${escapeAttr(c.label)} の重み" />
-        <div class="factor-source slider-source">出典: ${escapeHtml(c.source)}</div>`;
+        <div class="factor-source slider-source">出典: ${boldMd(c.source)}</div>`;
       group.appendChild(wrap);
 
       const input = wrap.querySelector<HTMLInputElement>("input")!;
@@ -837,6 +1104,44 @@ export function renderRankingN(
   }
 }
 
+/**
+ * 順位表の絞り込み。**タブを増やさず、同じ一覧の切り替えにする。**
+ *
+ * 押すと上位がごっそり消える（既定の重みでは上位 50 区画の到達不可は 0 件）。
+ * **その空振りが見えることに意味がある**——重みで決まる順位と、
+ * 重みでほぼ決まらない不足は、別の場所を指しているという観察そのものだから。
+ * 別タブにすると 2 つの独立した機能に見え、この対比が消える。
+ */
+export function renderRankingFilter(
+  state: AppState,
+  onPick: (id: AppState["rankingFilter"]) => void,
+): void {
+  const host = document.getElementById("ranking-filter");
+  if (!host) return;
+  host.innerHTML = '<span class="ranking-n-label">表示</span>';
+  const options: { id: AppState["rankingFilter"]; label: string }[] = [
+    { id: "all", label: "すべての区画" },
+    {
+      id: "unreachable",
+      // **「退避先が無い」と書いてはいけない。** hosts は区の公共施設
+      // （図書館・出張所・児童館）で、**そこにカームダウンスペースが
+      // あるわけではない**。外部照合で、23 区の図書館には 1 館も
+      // 設置されていないことが分かっている（`docs/status.md`）。
+      // 数えているのは「転用しうる屋内の公共空間が近くにあるか」までである。
+      label: `徒歩圏に区の公共施設が無い区画だけ（${num(state.midOrAbove.size)}）`,
+    },
+  ];
+  for (const o of options) {
+    const b = document.createElement("button");
+    b.className = "preset-btn";
+    b.type = "button";
+    b.textContent = o.label;
+    b.setAttribute("aria-pressed", String(o.id === state.rankingFilter));
+    b.addEventListener("click", () => onPick(o.id));
+    host.appendChild(b);
+  }
+}
+
 export function renderPresets(
   meta: Meta,
   active: string,
@@ -860,11 +1165,9 @@ export function renderPresets(
     return;
   }
   // note には **強調** を書ける（etl/config.py 側で書きやすいため）。
-  // エスケープしてから太字だけ戻す。
-  const note = escapeHtml(preset.note).replace(
-    /\*\*(.+?)\*\*/g,
-    "<b>$1</b>",
-  );
+  // エスケープしてから太字だけ戻す。**同じ処理をここに手書きしていた**
+  // ——2 つあると片方だけ直せてしまうので boldMd に寄せる。
+  const note = boldMd(preset.note);
 
   // **既定から何がどれだけ動くかを見せる。** かつてはプリセットを押すと
   // 8 本のスライダーが黙って入れ替わるだけで、「立場が変われば重みも変わる」
@@ -928,12 +1231,27 @@ export function renderDetail(
   onPickLayer: (key: string) => void = () => {},
 ): void {
   const body = document.getElementById("detail-body")!;
+  const pane = document.getElementById("detail")!;
+
+  // **タブごとにスクロール位置を覚える。** 行を押すと「選択中の区画」へ
+  // 移るようにしたので、戻ったときに一覧の頭へ飛ばされると、
+  // **40 行目を調べていた人は毎回 40 行スクロールし直すことになる。**
+  // 順位表は既定 50 行あり、そこを往復するのがこの画面の主な使い方である。
+  if (lastTab && lastTab !== state.tab) scrollMemo[lastTab] = pane.scrollTop;
+
   body.innerHTML = "";
 
   if (state.tab === "ranking") renderRanking(body, state, onPick);
   else if (state.tab === "layers") renderLayerRanking(body, state, onPick, onPickLayer);
   else renderSelected(body, state, onHighlight, onFocusPoint);
+
+  if (lastTab !== state.tab) pane.scrollTop = scrollMemo[state.tab] ?? 0;
+  lastTab = state.tab;
 }
+
+/** タブごとの直近スクロール位置。再描画のたびに頭へ戻さないため。 */
+const scrollMemo: Partial<Record<AppState["tab"], number>> = {};
+let lastTab: AppState["tab"] | null = null;
 
 /**
  * レイヤー別の上位区画。**合成後の順位表からは見えないものを出す。**
@@ -996,7 +1314,7 @@ function renderLayerRanking(
   head.innerHTML =
     `<h3 style="margin:12px 0 4px">${escapeHtml(comp.label)} ${scaleTag(comp)}</h3>` +
     `<p class="factor-source">${boldMd(comp.rationale)}</p>` +
-    `<p class="factor-source">出典: ${escapeHtml(comp.source)}</p>` +
+    `<p class="factor-source">出典: ${boldMd(comp.source)}</p>` +
     (comp.sign < 0
       ? '<p class="card-narrative"><b>この層は減点です。</b>' +
         "値が大きい区画ほど負荷スコアを<b>下げます</b>（既に安らげる場所として）。" +
@@ -1075,22 +1393,31 @@ function renderRanking(
 ): void {
   const { meta } = state;
   const list = rankingRows(state);
+  const filtered = state.rankingFilter === "unreachable";
+  const poolN = filtered ? state.midOrAbove.size : meta.mesh_count;
 
   const intro = document.createElement("p");
   intro.className = "card-narrative";
   intro.style.marginBottom = "10px";
   // **「提言リスト」と「表で見る」を分けていた理由はもう無い。**
   // 提言の単位を区画に戻した時点で、両者は同じ順位表の別表示になった。
-  intro.innerHTML =
-    `現在の重みでの優先順位です。<b>単位は 250m の区画</b>で、` +
-    `全 ${meta.mesh_count.toLocaleString("ja-JP")} 区画から上位 ${list.length} 件を出しています。` +
-    "行を選ぶと地図がその区画へ寄ります。根拠文と実数は" +
-    "「選択中の区画」タブに出ます。" +
-    "<br><br>" +
-    "<b>この打ち切りに根拠はありません。</b>優先度は連続していて、" +
-    "どこにも切れ目がありません（件数を変えて確かめられます）。" +
-    "示すのは区画であって設置先の施設ではありません — この分析は施設の余剰空間も" +
-    "運営体制も測っておらず、特定の建物を評価する根拠を持ちません。";
+  intro.innerHTML = filtered
+    ? `<b>既存施設で届いていない区画だけ</b>を、同じ優先度の順に並べています。` +
+      `徒歩圏（半径 ${num(meta.host_max_distance_m)}m）に区の公共施設が 1 件も無く、` +
+      `かつ区内で優先度が中位以上の <b>${num(poolN)} 区画</b>のうち上位 ${list.length} 件。` +
+      "<br><br>" +
+      "<b>順位はこの " +
+      `${num(poolN)} 区画の中での順位です</b>——全 ${meta.mesh_count.toLocaleString("ja-JP")} 区画の中での` +
+      "順位ではありません（優先度の値がそれを示します）。"
+    : `現在の重みでの優先順位です。<b>単位は 250m の区画</b>で、` +
+      `全 ${meta.mesh_count.toLocaleString("ja-JP")} 区画から上位 ${list.length} 件を出しています。` +
+      "行を選ぶと地図がその区画へ寄ります。根拠文と実数は" +
+      "「選択中の区画」タブに出ます。" +
+      "<br><br>" +
+      "<b>この打ち切りに根拠はありません。</b>優先度は連続していて、" +
+      "どこにも切れ目がありません（件数を変えて確かめられます）。" +
+      "示すのは区画であって設置先の施設ではありません — この分析は施設の余剰空間も" +
+      "運営体制も測っておらず、特定の建物を評価する根拠を持ちません。";
   body.appendChild(intro);
 
   if (!list.length) {
@@ -1145,7 +1472,17 @@ function renderRanking(
     `「徒歩圏の公共施設」は半径 ${num(meta.host_max_distance_m)}m の件数（<b>0 件 = 到達不可</b>）。` +
     `「接する上位区画」は<b>いま表示している ${list.length} 区画のうち</b>` +
     "この区画に隣り合うものの数です（斜めも隣として数えます）。" +
-    "<b>表示件数を変えればこの数も変わります</b> — 場所の性質ではありません。";
+    "<b>表示件数を変えればこの数も変わります</b> — 場所の性質ではありません。" +
+    (filtered
+      ? "<br><br>この絞り込みで残る区画は、<b>需要の定義・供給の定義・" +
+        `徒歩 ${num(meta.host_max_distance_m)}m・「区内で中位以上」という 4 つの決めごとの上に立っています。</b>` +
+        "どれを変えても件数も顔ぶれも変わります。" +
+        "<b>重みでも動きます</b>——「中位以上」の判定に優先度を使っているためです" +
+        "（スライダーで確かめられます）。" +
+        "<br><br>なお、<b>重みを一切通らないのは「徒歩圏に 1 件も無い」という判定だけ</b>で、" +
+        `そちらは ${meta.unreachable.count.toLocaleString("ja-JP")} 区画あります` +
+        "——ただしその大半は人のいない土地です。"
+      : "");
   body.appendChild(note);
 }
 
@@ -1185,8 +1522,16 @@ function facilityListBlock(state: AppState, row: MeshProps): string {
   // **そのことこそ見せるべき事実**である（issues.md A6）。何も出ないと
   // 「押しても動かない行」に見える。
   if (!fc.features.length) {
+    // **緑・公園には円が無い。** 半径ではなく「区画に重なるか」で
+    // 数えているので、「円の中が空です」と書くと存在しない距離を主張する。
+    const empty =
+      state.highlight === "green"
+        ? "この区画に重なる公園は 1 件もありません。" +
+          "<b>隣の区画にある公園は数えていません</b>——地図を少し引くと、" +
+          "すぐ外に円があるかどうかが見えます。"
+        : "この範囲には 1 件もありません（地図の円の中が空です）。";
     return `<div class="fact-list">
-        <div class="fl-head is-empty">この範囲には 1 件もありません（地図の円の中が空です）。</div>
+        <div class="fl-head is-empty">${empty}</div>
       </div>`;
   }
 
@@ -1219,12 +1564,21 @@ function facilityListBlock(state: AppState, row: MeshProps): string {
       // 同じ「規模」の欄に dB を流し込むと、単位の違う 4 つ目の値が
       // 同じ列に入ることになる（在籍者数・定員・乗降客数に続いて）。
       const isNoise = p.layer === "noise";
+      const isPark = p.layer === "park";
       let size = "";
       if (isNoise) {
         const years = p.years ? `${p.years}年度` : "";
         size =
           `<span class="fl-size">${escapeHtml(String(p.laeq_db ?? "—"))} dB (LAeq)</span>` +
           (years ? `<span class="fl-years">${escapeHtml(years)}</span>` : "");
+      } else if (isPark) {
+        // **面積と等価半径を並べる。** 面積だけだと 1,096m² が広いのか
+        // 狭いのか読めないが、「半径 18m 相当の円」と添えれば、
+        // 250m の区画に対してどれだけかが一目で分かる。
+        const a = Number(p.area_m2 ?? 0).toLocaleString("ja-JP");
+        size =
+          `<span class="fl-size">${a} m²</span>` +
+          `<span class="fl-years">半径 ${escapeHtml(String(p.r_m ?? "—"))}m 相当の円</span>`;
       } else {
         const spec = LIST_CAPACITY[String(p.layer ?? "")];
         if (spec && p.capacity != null) {
@@ -1243,7 +1597,9 @@ function facilityListBlock(state: AppState, row: MeshProps): string {
       // 混ぜたことが見えない（docs/issues.md A1）。
       const meta = isNoise
         ? `騒音の測定地点${p.survey ? ` ・ ${p.survey}` : ""}`
-        : String(p.host_kind ?? p.kind ?? "");
+        : isPark
+          ? "公園（退避先として評価したものではありません）"
+          : String(p.host_kind ?? p.kind ?? "");
       return `<li class="fl-item"${hasPoint ? ` data-i="${index}"` : ""} role="button" tabindex="0">
           <div class="fl-name">${escapeHtml(String(p.name ?? ""))}</div>
           <div class="fl-meta">${escapeHtml(meta)}${
@@ -1259,11 +1615,16 @@ function facilityListBlock(state: AppState, row: MeshProps): string {
     ...new Set(fc.features.map((f) => String((f.properties as { source?: string })?.source ?? ""))),
   ].filter(Boolean);
 
+  const isGreen = state.highlight === "green";
   return `<div class="fact-list">
       <div class="fl-head">${fc.features.length.toLocaleString("ja-JP")} 件（地図に出ている点と同じ）・近い順
-        <span class="fl-hint">名前を押すと地図が寄って吹き出しが出ます</span></div>
+        <span class="fl-hint">名前を押すと地図が寄って吹き出しが出ます${
+          isGreen
+            ? "。地図の円は面積の等しい円で、公園の実際の形ではありません"
+            : ""
+        }</span></div>
       <ul class="fl-list">${rows}</ul>
-      ${sources.length ? `<div class="fl-source">出典: ${escapeHtml(sources.join(" / "))}</div>` : ""}
+      ${sources.length ? `<div class="fl-source">出典: ${boldMd(sources.join(" / "))}</div>` : ""}
     </div>`;
 }
 
@@ -1452,7 +1813,7 @@ function renderSelected(
               <i style="width:${Math.round(share * 100)}%"></i>
             </span>
           </div>
-          <div class="factor-source">出典: ${escapeHtml(c.source)}</div>
+          <div class="factor-source">出典: ${boldMd(c.source)}</div>
         </div>
         <div class="factor-num">${fmt(normalized)}</div>`;
       section.appendChild(el);
@@ -1616,6 +1977,23 @@ export function renderLimitations(meta: Meta): void {
         "線路の位置から距離減衰で推定することはできるが、" +
         "その妥当性を検証する実測が無いため入れていない。",
     ],
+    // **この層は 2 つの意味を名乗っていた**（2026-08-06 に整理）。
+    // rationale は「既に安らげる空間が担保されている」＝供給の話だったのに、
+    // 実装は区画に重なる面積の割合＝負荷の低減である。根拠文が
+    // 「屋外に代替の退避先が存在しない」と書けていたのはそのためで、
+    // **被覆の値を供給の言葉で説明していた。** 負荷の低減に統一し、
+    // 元データの弱さもここに出す。
+    [
+      "緑・公園は「区画に重なる面積」で、行ける公園ではない",
+      "この層が見ているのは 250m 区画に重なる公園の面積割合だけで、" +
+        "**隣の区画にある公園は数えていない**（他の 4 層のような徒歩圏では" +
+        "判定していない）。負荷を下げる要素として扱っており、" +
+        "**退避先として評価したものではない**——屋外がその役を果たせるかは" +
+        "当事者に確かめていない。さらに元データ（国土数値情報 P13・2011年）は" +
+        "**点で、公園の形が入っていない**。面積の等しい円に置き換えており、" +
+        "**等価半径の中央値は 18m**（3,835 件のうち 3,738 件は区画より小さい円）。" +
+        "内訳の「緑・公園被覆」を押すと、その円を地図で確かめられる。",
+    ],
     [
       "混雑は昼間人口ではなく従業者数",
       "昼間人口のメッシュ統計が配信されていないため、経済センサス（2021年）の" +
@@ -1718,6 +2096,18 @@ export function renderSensitivity(s: Sensitivity | null, meta?: Meta): void {
   const top10 = rp.overlap_mean["10"] ?? 0;
   // 依存が最も大きい（外すと最も入れ替わる）レイヤー。
   const driver = s.leave_one_out[0];
+
+  // **畳んだ状態でも、いちばん重い数字は見えていること。**
+  // 折りたたみは「読まなくてよい」という意味になりがちなので、
+  // 要約行に残す——ここを隠すと、順位の不安定さが 1 クリック
+  // 向こう側に消える。
+  const lede = document.getElementById("robustness-lede");
+  if (lede) {
+    lede.innerHTML =
+      `重み ±${Math.round(rp.perturbation * 100)}% で上位10件の ` +
+      `<b>${Math.round(top10 * 100)}%</b> が残る / ` +
+      `${pa.preset_ids.length} つのプリセット共通は <b>${pa.common_count} 件</b>`;
+  }
 
   el.innerHTML = `
     <div class="stat">
@@ -1890,7 +2280,7 @@ export function renderMethodology(meta: Meta): void {
         `<li><b>${escapeHtml(c.label)}</b>（${c.side === "demand" ? "需要" : "負荷"}${c.sign < 0 ? "・減点" : ""}）<br>
          ${boldMd(c.rationale)}<br>
          ${scaleBadge(c)}<br>
-         <span class="factor-source">出典: ${escapeHtml(c.source)}</span></li>`,
+         <span class="factor-source">出典: ${boldMd(c.source)}</span></li>`,
     )
     .join("");
 
@@ -2007,6 +2397,29 @@ export function renderMethodology(meta: Meta): void {
       別々の出典から取り、既存の公共施設は 23 区の一覧と児童館（P14）を
       合わせています。
     </p>
+    <!--
+      **「他の自治体でも回せるのか」は必ず聞かれる。** 方法を主役に置く以上、
+      そこが主張の一部になる。**答えられないより、正直に答えるほうが強い**
+      ——回した実績が無いことも含めて書く（docs/reproducibility.md）。
+    -->
+    <p class="card-narrative">
+      <b>更新の手順。</b>集計・スコア・配信・検査はコマンド 1 本で通ります
+      （<code>python -m etl.build --live</code>）。<b>人手が要るのは
+      生ファイルを置く段だけ</b>で、そこを自動化していないのは、
+      出典の側が年度ごとに URL とファイル構成を変えるためです——
+      決め打ちで取りに行くと、年度が変わった瞬間に<b>古いデータで静かに通る</b>
+      ビルドになります。止まるほうを選んでいます。
+      <br><br>
+      いちばん重いのは供給側で、<b>区の公共施設一覧は 23 区で約 30 本を
+      毎回すべて渡します</b>（統合一覧を持たない区・KML の区・xlsx の区・
+      名称の列名が「列1」の区・座標が無い区がそれぞれあります）。
+      対象地域を変えるときに書き換えるのは <code>etl/config.py</code> の
+      3 か所ですが、<b>移した先では重みを決め直す必要があります</b>——
+      この 8 つの重みに外部の根拠は無いので、そのまま使うと
+      出てくるのは東京の価値判断です。
+      <br><br>
+      <b>他の地域で実際に回したことはまだありません。</b>
+    </p>
     <table class="data-table">${sources}</table>
     <p class="card-narrative">
       レジストリには他に ${meta.unused_source_count} 件の出典がありますが、
@@ -2028,6 +2441,18 @@ export function renderMethodology(meta: Meta): void {
  */
 function boldMd(s: string): string {
   return escapeHtml(s).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
+}
+
+/**
+ * `title` 属性など、**太字にできない場所**のための素通し版。
+ *
+ * 属性値に `<b>` は書けないので、記号だけを落として本文を残す。
+ * `boldMd` と対で使い、**`escapeHtml` を素で当てる場所を出典に残さない**
+ * ——残っていたせいで、負荷レイヤーの出典が画面に
+ * `——**道路端の測定点 6 年分**` とアスタリスクごと出ていた。
+ */
+function plainMd(s: string): string {
+  return String(s ?? "").replace(/\*\*(.+?)\*\*/g, "$1");
 }
 
 function escapeHtml(s: string): string {

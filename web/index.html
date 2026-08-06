@@ -10,6 +10,22 @@
     />
   </head>
   <body>
+    <!--
+      **読み込み中に「白い地図」を出さない。** 配信データは合計 1.4MB 前後
+      （gzip 後）あり、回線によっては数秒かかる。その間、画面は凡例だけが
+      浮いた白い地図で、**壊れているのか読み込み中なのか区別が付かなかった。**
+
+      **件数はここに書かない。** 区画数は meta.json が唯一の出所で、
+      その meta.json すら読めていない時点の表示なので、数を名乗れない
+      （書けば必ず古くなる。intro-lead と同じ規則）。
+    -->
+    <div id="boot-overlay">
+      <div class="boot-card">
+        <div class="boot-title">calmgap-tokyo</div>
+        <div class="boot-msg">地図データを読み込んでいます…</div>
+      </div>
+    </div>
+
     <div id="app">
       <aside id="controls" class="panel">
         <div class="panel-section">
@@ -24,6 +40,19 @@
             文面の数値は meta.json から入れる（ここに直接書くと古くなる）。
           -->
           <p class="intro-lead" id="intro-lead"></p>
+
+          <!--
+            **結論を最上部に置く。** ここには以前、方法の説明のあと
+            「使い方 3 行」が来て、その次にようやく見出し数値だった。
+            そこから下は 1 万字あり、**限界の説明が結論の前に立っていた**
+            ——読み終えた人に残るのが「この数字は信じてはいけない」だけ、
+            という状態である。**読まれない誠実さは誠実ではない。**
+
+            **削っていない。順番だけ変えた。** 限界の記述は 1 文字も
+            落とさず、下の折りたたみへ移してある。
+          -->
+          <div class="findings" id="findings"></div>
+
           <ol class="intro-steps">
             <li><b>地図の色が濃い区画</b>ほど優先度が高い（需要 × 負荷）。</li>
             <li>
@@ -38,19 +67,25 @@
         <!-- 模擬データ実行時のみ表示される。build.py が meta.synthetic で制御。 -->
         <div id="synthetic-banner" hidden></div>
 
-        <div class="panel-section">
-          <!--
-            見出し数値は「何の数字か」を数字より先に置く。順番が逆だと、
-            読み手は定義を知らないまま大きい数を見ることになる。
-          -->
+        <!--
+          **順位がどれくらい動くかは、畳んでよい。ただし畳んだ状態でも
+          いちばん重い数字は見えていなければならない。** 要約行に
+          「重み ±30% で上位 10 件の 72% が残る」を出しておき、
+          押した人だけが内訳（プリセット共通 0 件・特別支援学校 1 層依存・
+          固定値 76 個・148 が何に寄りかかっているか）まで読む。
+        -->
+        <details class="panel-section fold" id="robustness">
+          <summary>
+            <span class="fold-title">この順位はどれくらい動くか</span>
+            <span class="fold-lede" id="robustness-lede"></span>
+          </summary>
           <div class="stat">
             <div class="stat-kicker" id="stat-kicker">—</div>
             <div class="stat-value" id="stat-value">—</div>
             <div class="stat-label" id="stat-label">集計中…</div>
           </div>
-        </div>
-
-        <div class="panel-section" id="sensitivity" hidden></div>
+          <div id="sensitivity" hidden></div>
+        </details>
 
         <div class="panel-section">
           <h2>地図に表示する値</h2>
@@ -58,8 +93,8 @@
           <div class="preset-note" id="display-note"></div>
         </div>
 
-        <div class="panel-section">
-          <h2>重みプリセット（立場を変えてみる）</h2>
+        <details class="panel-section fold heavy" open>
+          <summary><span class="fold-title">重みプリセット（立場を変えてみる）</span></summary>
           <div class="presets" id="presets"></div>
           <div class="preset-note" id="preset-note"></div>
           <!--
@@ -67,7 +102,7 @@
             数値にする。感度分析の中に埋もれていると、押した人は辿り着かない。
           -->
           <div class="preset-agreement" id="preset-agreement" hidden></div>
-        </div>
+        </details>
 
         <!--
           **スライダー 8 本がそのままデータの層（レイヤー）である**ことを
@@ -75,25 +110,33 @@
           画面のどこにも書かれていなかった。下の「地図に点を重ねる」の方が
           レイヤーらしく見える、という取り違えが実際に起きた。
         -->
-        <div class="panel-section">
-          <!--
-            **見出しの「8」は meta から入れる。** ここに直接書いていたため、
-            バナーの「実データ 10/10 レイヤー」と数が食い違って見え、
-            外部から「8 なの 10 なの、意味が分からない」と指摘された。
-            数の食い違いは書き換えて消すものではなく、
-            **2 層がスコアに入らないという事実そのものが説明**である
-            （etl/config.py の SUPPORT_LAYERS）。
-          -->
-          <h2 id="layer-heading">評価に使うデータ（レイヤー）</h2>
+        <!--
+          **モバイルでだけ畳む節。** 既定は開いた状態（desktop）で、
+          幅が狭いときに main.ts が open を外す——結論と順位表の間に
+          スライダー 8 本と出典一覧が挟まると、電話では届かない。
+          **畳むのは表示だけで、中身は 1 文字も削っていない。**
+        -->
+        <details class="panel-section fold heavy" open>
+          <summary>
+            <!--
+              **見出しの「8」は meta から入れる。** ここに直接書いていたため、
+              バナーの「実データ 10/10 レイヤー」と数が食い違って見え、
+              外部から「8 なの 10 なの、意味が分からない」と指摘された。
+              数の食い違いは書き換えて消すものではなく、
+              **2 層がスコアに入らないという事実そのものが説明**である
+              （etl/config.py の SUPPORT_LAYERS）。
+            -->
+            <span class="fold-title" id="layer-heading">評価に使うデータ（レイヤー）</span>
+          </summary>
           <p class="section-note" id="layer-roles-note"></p>
           <div id="sliders"></div>
           <button class="ghost-btn" id="reset-btn" style="margin-top: 10px">
             既定値に戻す
           </button>
-        </div>
+        </details>
 
-        <div class="panel-section">
-          <h2>地図に重ねる</h2>
+        <details class="panel-section fold heavy" open>
+          <summary><span class="fold-title">地図に重ねる</span></summary>
           <p class="section-note">
             表示だけの切り替えです。スコアには影響しません。
             <b>点は押すと、名前・規模・出典が出ます。</b>
@@ -117,20 +160,20 @@
             <label class="toggle">
               <input type="checkbox" id="toggle-unreachable" />
               <span class="swatch unreachable"></span>
-              徒歩圏に公共施設が 1 件も無い区画
+              需要があるのに徒歩圏に区の公共施設が無い区画
             </label>
           </div>
-        </div>
+        </details>
 
         <!--
           出典は畳まない。都のオープンデータカタログの可視化事例は例外なく
           「説明 → 使用データセットの全列挙 → 作成日」を本文に出しており、
           出典を折り畳みの中に入れるのは行政向けの様式から外れる。
         -->
-        <div class="panel-section">
-          <h2>算出方法とデータ出典</h2>
+        <details class="panel-section fold heavy" open>
+          <summary><span class="fold-title">算出方法とデータ出典</span></summary>
           <div id="methodology"></div>
-        </div>
+        </details>
 
         <!--
           「できないこと」を画面に出す。文書にしか無いと、画面が最も強く
@@ -180,6 +223,13 @@
           </button>
           <div class="ranking-n" id="ranking-n"></div>
         </div>
+        <!--
+          **順位表の絞り込み。タブではない。**
+          「優先度の順位」と「既存施設で届いていない区画」は、この作品の
+          2 つの出力でありながら別の場所を指している。同じ一覧の切り替えに
+          すると、押した瞬間に上位が消えること自体が観察になる。
+        -->
+        <div class="ranking-n" id="ranking-filter"></div>
         <div class="panel-section" id="detail-body"></div>
       </aside>
     </div>

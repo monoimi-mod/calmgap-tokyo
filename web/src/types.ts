@@ -121,6 +121,28 @@ export interface Meta {
     note: string;
   };
   /**
+   * 既に置かれているカームダウンスペースとの照合（この作品で唯一の外部照合）。
+   * 入力は手で集めた一覧（`data/reference/calm_spaces.json`）で、
+   * **網羅性の保証は無く、スコアには一切入らない。**
+   * ビルドが無い版（--live を通していない出力）では欠ける。
+   */
+  calm_spaces?: {
+    surveyed_at: string;
+    site_count: number;
+    room_count: number;
+    /** access 別の室数。open / members / ticketed / airside。 */
+    rooms_by_access: Record<string, number>;
+    /** 街を歩いている人がその場で使える室数。 */
+    open_rooms: number;
+    rank_min: number | null;
+    rank_median: number | null;
+    rank_max: number | null;
+    in_top_50: number;
+    in_bottom_half: number;
+    mesh_count: number;
+    note: string;
+  };
+  /**
    * 順位表に出す件数の選択肢と既定値。etl/config.py が唯一の出所。
    * **選べるようにしてあるのは、打ち切りに根拠が無いことを隠さないため。**
    */

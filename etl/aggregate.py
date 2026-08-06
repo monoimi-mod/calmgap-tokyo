@@ -15,6 +15,7 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 from shapely.geometry import Polygon
+from shapely.strtree import STRtree
 
 from . import mesh as meshlib
 from .config import (
@@ -429,6 +430,35 @@ def polygon_area_weighted_mean(
     return (
         pd.Series(index.map(mean), index=index, dtype=float).fillna(default)
     )
+
+
+def polygon_overlap_index(
+    mesh_gdf: gpd.GeoDataFrame, polygons: gpd.GeoDataFrame
+) -> pd.Series:
+    """各メッシュに重なるポリゴンの添字（`polygons` の行順）を返す。
+
+    **`polygon_coverage_ratio` と同じ判定でなければならない。** あちらが
+    被覆率を作るときに面積を拾うのは、まさにここで交差すると判定した
+    ポリゴンである。**片方だけ規則を変えると、「被覆率 3.2%」の隣に
+    その 3.2% を作っていない公園が並ぶ**——一覧が説明ではなく矛盾になる。
+
+    そのため融合（union_all）はせず、交差する行を個別に拾う。被覆率の側は
+    重複を避けるために融合してから面積を出すが、**どの公園が関わったか**は
+    融合すると消える。
+    """
+    index = pd.Index(mesh_gdf["mesh_code"], name="mesh_code")
+    if polygons is None or len(polygons) == 0:
+        return pd.Series([[] for _ in range(len(mesh_gdf))], index=index, dtype=object)
+
+    m = mesh_gdf[["mesh_code", "geometry"]].to_crs(CRS_PROJECTED)
+    p = polygons.to_crs(CRS_PROJECTED)
+    tree = STRtree(p.geometry.values)
+
+    hits = [
+        sorted(int(j) for j in tree.query(geom, predicate="intersects"))
+        for geom in m.geometry.values
+    ]
+    return pd.Series(hits, index=index, dtype=object)
 
 
 def polygon_coverage_ratio(

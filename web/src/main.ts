@@ -15,9 +15,11 @@ import {
   clusterOf,
   computeLayerRanks,
   type HighlightKind,
+  midOrAboveSet,
   recompute,
   renderBanner,
   renderDetail,
+  renderFindings,
   renderIntro,
   renderLayerRoles,
   renderLegendNote,
@@ -26,6 +28,7 @@ import {
   renderSensitivity,
   renderPresetAgreement,
   renderPresets,
+  renderRankingFilter,
   renderRankingN,
   renderSliders,
   renderDisplayModes,
@@ -48,7 +51,7 @@ async function loadJSON<T>(name: string): Promise<T> {
 }
 
 async function boot(): Promise<void> {
-  const [meta, meshFC, demandFC, hostsFC, noiseFC] = await Promise.all([
+  const [meta, meshFC, demandFC, hostsFC, noiseFC, parksFC] = await Promise.all([
     loadJSON<Meta>("meta.json"),
     loadJSON<GeoJSON.FeatureCollection>("mesh.geojson"),
     loadJSON<GeoJSON.FeatureCollection>("demand_points.geojson"),
@@ -56,6 +59,10 @@ async function boot(): Promise<void> {
     // 騒音の測定地点。**需要側の点と別ファイルにしてある**——施設ではなく
     // 「調査がそこを測った」という事実で、地図でも白抜きで描き分ける。
     loadJSON<GeoJSON.FeatureCollection>("noise_points.geojson"),
+    // 公園。**これも施設ではない**——負荷を下げる要素として数えているだけで、
+    // 退避先として評価してはいない。行の順序が mesh の `gp`（添字の配列）と
+    // 対応するので、**並べ替えてはいけない。**
+    loadJSON<GeoJSON.FeatureCollection>("parks.geojson"),
   ]);
 
   const rows = meshFC.features.map((f) => f.properties as unknown as MeshProps);
@@ -77,11 +84,26 @@ async function boot(): Promise<void> {
     activePreset: "default",
     displayMode: "priority",
     rankingN: meta.ranking_default_n,
+    rankingFilter: "all",
+    midOrAbove: new Set(),
     highlight: null,
     // 層ごとの順位は重みに依存しないので、起動時に 1 回だけ作る。
     layerRanks: computeLayerRanks(rows, meta.components),
   };
   state.score = recompute(state);
+  state.midOrAbove = midOrAboveSet(state);
+
+  // **既定の重みでは Python の数と一致しなければならない。**
+  // `meta.unreachable.mid_or_above` は etl/hosts.py の reach_report が
+  // 同じ規則（区内の優先度の中央値・母数は区内の全区画）で数えた値である。
+  // 食い違うなら、どちらかが規則から外れている——**黙って違う数を出すのが
+  // いちばん悪い**ので、起動時に 1 回だけ突き合わせる。
+  if (state.midOrAbove.size !== meta.unreachable.mid_or_above) {
+    console.error(
+      "[calmgap] 区内で中位以上の到達不可区画が Python と一致しません: " +
+        `画面 ${state.midOrAbove.size} / 配信 ${meta.unreachable.mid_or_above}`,
+    );
+  }
 
   renderBanner(meta);
   renderIntro(meta);
@@ -117,6 +139,10 @@ async function boot(): Promise<void> {
     frame = requestAnimationFrame(() => {
       frame = 0;
       state.score = recompute(state);
+      // **重みで動く。** しきい値が区内の優先度の中央値なので、
+      // スコアを計算し直したら必ず数え直す。ここで 1 回作って、
+      // 見出し数値・順位表・地図の 3 箇所へ同じものを配る。
+      state.midOrAbove = midOrAboveSet(state);
 
       if (mapToo) {
         // properties を直接書き換えて同じオブジェクトを差し戻す。
@@ -129,6 +155,9 @@ async function boot(): Promise<void> {
           rows[i].load = state.score.load[i];
           // 地図が塗るのは常に `v`。表示モードはここで差し替える。
           rows[i].v = shown[i];
+          // 重ねる層が使う真偽値。**見出しの数と同じ集合**（1 = 区内で
+          // 中位以上の到達不可）。重みで動くので毎回書き直す。
+          rows[i].mid = state.midOrAbove.has(i) ? 1 : 0;
         }
         handles.setMeshData(meshFC);
       }
@@ -137,6 +166,16 @@ async function boot(): Promise<void> {
       // 顔ぶれが変わったのに枠だけ残ると、画面が古い隣接を主張し続ける。
       handles.setCluster(clusterOf(state, state.selected));
       renderStat(state);
+      // **結論も重みで動く。** 上位の顔ぶれも、到達不可の件数も、
+      // スライダーを動かせば変わる。凍らせて置くと、画面の最上部だけが
+      // 古い結論を主張し続けることになる（見出し数値で一度やっている）。
+      renderFindings(
+        state,
+        () => applyRankingFilter("all"),
+        () => applyRankingFilter("unreachable"),
+      );
+      // 件数を見出しに出しているので、重みで動いたら押しボタン側も直す。
+      renderRankingFilter(state, applyRankingFilter);
 
       // **1 回だけ数えて、地図と一覧の両方へ同じ配列を配る。**
       // 一覧を別に組み立てると「表の件数・地図の点・一覧の行数」が
@@ -173,6 +212,35 @@ async function boot(): Promise<void> {
     if (typeof mx !== "number" || typeof my !== "number") return null;
 
     const kind = st.highlight;
+
+    // **公園だけは、ここで数えない。** 被覆率は「この区画に重なる公園」から
+    // 出しており、その判定は円とセル形状の交差である。ブラウザで矩形近似に
+    // すると **9,507 区画のうち 9 区画で件数が食い違った**（うち 6 区画は
+    // 0 件かどうかまで変わる）——投影後のセルは軸に平行ではなく、経度で
+    // 0.6m ほど傾くため。**Python が出した対応表（`gp`）を引くだけにすれば、
+    // 食い違う余地が構造的に無い。**
+    if (kind === "green") {
+      const gp = (row.gp as number[] | undefined) ?? [];
+      const centroid = centroidOf(feature);
+      if (!centroid) return null;
+      return {
+        points: {
+          type: "FeatureCollection",
+          features: gp
+            .map((i) => parksFC.features[i])
+            .filter((f): f is GeoJSON.Feature => Boolean(f))
+            .map((f) => ({
+              ...f,
+              properties: { ...(f.properties ?? {}), side: "green", layer: "park" },
+            })),
+        },
+        center: centroid,
+        // 半径の円は描かない。**この層に半径という概念が無い**ので、
+        // 円を描くと「この距離までを数えた」という嘘になる。
+        radiusM: 0,
+      };
+    }
+
     const isHost = kind === "host";
     // **騒音だけは「徒歩圏に在るもの」ではない。** 光らせるのは
     // この区画の騒音値を作った測定点（IDW の打ち切り 1,500m 以内）で、
@@ -288,6 +356,20 @@ async function boot(): Promise<void> {
     state.selected = meshCode;
     handles.setSelected(meshCode);
 
+    // **同じ「区画を選ぶ」操作が、押した場所で別の結果になっていた。**
+    // 地図をクリックしたときは根拠へ移る（select）のに、順位表の行を
+    // 押したときは移らず、**地図が寄る以外に画面が何も変わらない**。
+    // 根拠を読むにはタブを自分で押す必要があり、それに気付かなければ
+    // 「行を押しても何も起きない」と読める。select と同じ規則にする。
+    //
+    // **「レイヤー別」タブでは移らない**（select も移らない）。あちらは
+    // 層ごとの並びを見ているところで、1 行押すたびに一覧から追い出されると
+    // 層の比較そのものができなくなる。移るのは順位表から選んだときだけ。
+    if (state.tab === "ranking") {
+      state.tab = "selected";
+      syncTabs();
+    }
+
     // 接している上位区画があるなら、その全体が入るように寄せる。
     // 1 区画へ寄ると「接する上位区画 11」と書いてあるものが画面から外れる。
     const cluster = clusterOf(state, meshCode);
@@ -336,6 +418,42 @@ async function boot(): Promise<void> {
   }
   renderRankingN(meta, state.rankingN, applyRankingN);
 
+  /**
+   * 順位表の絞り込み。**地図の重ねる層と連動させる。**
+   *
+   * 一覧が 148 区画を並べている隣で、地図がそれを示していないのでは
+   * 「どこなのか」がまた分からなくなる（数字だけ大きく出して場所を
+   * 見せない状態が長く続いた、というのがこの層を作った理由そのもの）。
+   * 切り替えたら重ねる／戻したら外す、とチェックボックスまで同期する。
+   */
+  function applyRankingFilter(id: AppState["rankingFilter"]): void {
+    state.rankingFilter = id;
+    // 絞り込んだ一覧を先頭から見せる。前の位置に留まると、
+    // 148 件の途中から始まって「切り替わっていない」ように見える。
+    state.tab = "ranking";
+    syncTabs();
+
+    const box = document.getElementById("toggle-unreachable") as HTMLInputElement;
+    const on = id === "unreachable";
+    box.checked = on;
+    handles.toggleLayer("mesh-unreachable", on);
+
+    renderRankingFilter(state, applyRankingFilter);
+    render(false);
+
+    // **押した結果が画面の外にあってはいけない。** モバイルでは
+    // 順位表が結論カードの 1,000px 以上下にあるので、ボタンを押しても
+    // **その場では何も起きていないように見える**（デスクトップは
+    // 右のパネルに出ているので気付かなかった）。
+    if (window.matchMedia("(max-width: 760px)").matches) {
+      document.getElementById("detail")?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    }
+  }
+  renderRankingFilter(state, applyRankingFilter);
+
   function applyDisplayMode(id: "priority" | "demand" | "load"): void {
     state.displayMode = id;
     renderDisplayModes(id, applyDisplayMode);
@@ -373,7 +491,34 @@ async function boot(): Promise<void> {
     });
   }
 
+  // **重い節はモバイルでだけ畳む。** 左パネルを先頭へ移したので、
+  // そのままだとスライダー 8 本と出典一覧が「結論」と「順位表」の間に
+  // 挟まり、電話では順位表まで 5,000px 近くスクロールすることになる。
+  //
+  // **CSS では `open` を外せない**（属性なので）。幅で 1 回だけ判定し、
+  // 以後は触らない——後から広げた人が自分で開いた節を勝手に畳まない。
+  if (window.matchMedia("(max-width: 760px)").matches) {
+    for (const d of document.querySelectorAll<HTMLDetailsElement>("details.heavy")) {
+      d.open = false;
+    }
+  }
+
   render();
+
+  // **読み込み中の覆いを外す。** 最初のタイルまで描けた時点で外すので、
+  // 「白い地図に凡例だけ浮いている」状態を人に見せない。
+  //
+  // **必ず時間でも外す。** `idle` はタイルの取得に失敗すると来ないことが
+  // あり、そのとき覆いが残ると**読み込み中の表示が画面を永久に塞ぐ**
+  // ——読み込みを助けるための表示が、いちばん重い障害になる。
+  const dismissBoot = (): void => {
+    const el = document.getElementById("boot-overlay");
+    if (!el) return;
+    el.classList.add("is-done");
+    window.setTimeout(() => el.remove(), 300);
+  };
+  handles.map.once("idle", dismissBoot);
+  window.setTimeout(dismissBoot, 6000);
 }
 
 /** ポリゴンの外環から重心を求める（メッシュは矩形なので平均で足りる）。 */

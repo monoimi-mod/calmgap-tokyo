@@ -104,6 +104,37 @@ body {
   overflow: hidden;
 }
 
+/* ------------------------------------------------------------ 読み込み中 */
+
+#boot-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  background: var(--surface-1);
+  transition: opacity 0.25s ease;
+}
+
+/* main.ts が最初の描画を終えたら付ける。透過してから DOM を外す。 */
+#boot-overlay.is-done {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.boot-title {
+  font-size: 17px;
+  font-weight: 700;
+  text-align: center;
+  margin-bottom: 6px;
+}
+
+.boot-msg {
+  font-size: 13px;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
 /* ---------------------------------------------------------------- パネル共通 */
 
 .panel {
@@ -217,6 +248,154 @@ p {
 }
 
 /* ---------------------------------------------------------------- 見出し数値 */
+
+/* ------------------------------------------------------- 結論（最上部） */
+
+/*
+  **画面のいちばん上に置く 2 つの結論。** ここが空いていたために、
+  画面は限界の説明から始まっていた。数字は大きく、根拠へ 1 クリックで
+  飛べるようにする——**「で、どこ？」に答えられない結論は結論ではない。**
+*/
+.findings {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0 4px;
+}
+
+.finding {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 11px 13px;
+}
+
+.finding-kicker {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+
+.finding-value {
+  font-size: 30px;
+  font-weight: 700;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+  margin-top: 2px;
+}
+
+.finding-value small {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  letter-spacing: 0;
+}
+
+.finding-note {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  margin-top: 4px;
+}
+
+.finding-btn {
+  margin-top: 9px;
+  width: 100%;
+  padding: 7px 10px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #ffffff;
+  background: var(--accent);
+  border: none;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.finding-btn:hover {
+  filter: brightness(1.08);
+}
+
+.finding-btn:focus-visible {
+  outline: 2px solid var(--text-primary);
+  outline-offset: 2px;
+}
+
+/*
+  外部照合。**カードにしない**——結論そのものではなく、
+  結論を外から確かめた結果なので、2 枚のカードと同じ見た目にすると
+  3 つ目の結論に見える。左の罫線だけで括る。
+*/
+.findings-check {
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-secondary);
+  border-left: 3px solid var(--border-strong);
+  padding: 2px 0 2px 11px;
+  margin: 4px 0 0;
+}
+
+.findings-check b {
+  color: var(--text-primary);
+}
+
+.findings-check-note {
+  display: block;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.findings-check-note b {
+  color: var(--text-secondary);
+}
+
+/* --------------------------------------------------------- 折りたたみ節 */
+
+/*
+  **畳んでよいが、いちばん重い数字は畳んだ状態でも見えること。**
+  折りたたみは「読まなくてよい」という意味になりがちなので、
+  要約行に実数を残す（`robustness-lede`）。
+*/
+details.fold > summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+details.fold > summary::-webkit-details-marker {
+  display: none;
+}
+
+details.fold > summary::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: 6px;
+  color: var(--text-muted);
+  transition: transform 0.15s ease;
+}
+
+details.fold[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.fold-title {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.fold-lede {
+  display: block;
+  margin: 3px 0 0 16px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+details.fold[open] > summary {
+  margin-bottom: 10px;
+}
 
 .stat {
   background: var(--surface-2);
@@ -1161,20 +1340,57 @@ details > summary {
 @media (max-width: 760px) {
   #app {
     grid-template-columns: 1fr;
-    grid-template-rows: 46vh 1fr;
+    /*
+      **行の高さは並び順に合わせる。** 46vh を先頭行に置いたまま
+      左パネルを 1 番目へ移したところ、**パネルが 374px に押し込まれ、
+      2 枚目の結論カードが切れた**（.panel が overflow-y:auto なので
+      内側で勝手にスクロールし、切れていることが見えない）。
+      高さを持たせるのは地図だけでよい。
+    */
+    grid-template-rows: auto 46vh auto;
     height: auto;
     min-height: 100vh;
   }
+  /*
+    **モバイルではページ全体が 1 本のスクロールであること。**
+    パネルが内側でスクロールすると、指の下でどちらが動くのかが
+    予測できず、切れていることにも気付けない。
+  */
+  #controls,
+  #detail {
+    overflow: visible;
+  }
+  /*
+    **モバイルでも「結論が先」でなければ意味がない。**
+    かつては 地図 → 順位表 → 左パネル の順で、**結論カードが
+    5,000px 下**に埋まっていた（左パネルが結論から始まる作りに
+    なる前は、それでよかった——先頭が限界の説明だったので）。
+
+    いまは 左パネル → 地図 → 順位表。ただしそのままだと
+    スライダー 8 本と算出方法で結論と順位表の間が長くなるので、
+    **重い節はモバイルでだけ畳む**（main.ts の collapseHeavySections）。
+  */
   #controls {
     grid-row: auto;
-    order: 3;
+    order: 1;
     border-right: none;
   }
   #map-wrap {
-    order: 1;
+    order: 2;
     min-height: 46vh;
   }
   #detail {
-    order: 2;
+    order: 3;
+    /*
+      **1180px 側の `grid-column: 2` を必ず解除する。** 解除しないと、
+      1 列（`1fr`）しか定義していないグリッドに #detail だけが
+      2 列目を要求し、**暗黙の 2 列目**が生まれる。暗黙列は
+      auto 幅で内容ぶんを取るので、explicit な `1fr` に残りの 0px が
+      配られ、**地図と左パネルが幅 0px で消える**。
+      実測では computed が "0px 375px"、#app の高さが 91,746px まで
+      伸びて、スマートフォンでは実質白紙になっていた。
+      **メディアクエリを足すときは、前段が置いた明示配置も必ず戻す。**
+    */
+    grid-column: auto;
   }
 }

@@ -151,14 +151,22 @@ def check_ckan(dataset_id: str, file_hints: tuple[str, ...]) -> tuple[bool, str]
 def main(argv: list[str]) -> int:
     include_unused = "--all" in argv
 
-    targets = [
-        s
-        for s in SOURCES.values()
-        if s.url and (include_unused or s.layer is not None)
-    ]
+    wanted = [s for s in SOURCES.values() if include_unused or s.layer is not None]
+    targets = [s for s in wanted if s.url]
 
     failures: list[str] = []
     unverified: list[str] = []  # 到達はしたが、中身で裏を取れなかったもの
+
+    # **URL が無い出典を黙って落とさない。** `s.url` で絞っていたため、
+    # 手集計の出典（既存カームダウンスペース）が**使用中なのに検査の対象から
+    # 静かに外れていた**——「検査 13 件」と出るのに使用中は 14 件、という
+    # 状態で、数を数えないと気付けない。**検査できないことと、検査対象に
+    # 入っていないことは違う。** 人が確かめる側の一覧に載せる。
+    for src in wanted:
+        if src.url:
+            continue
+        print(f"[使用中] {src.label}\n    URL なし（{src.kind}）")
+        unverified.append(f"{src.key}（URL の無い出典。中身は人が確かめる）")
 
     for src in targets:
         used = "使用中" if src.layer else "未使用"
@@ -220,8 +228,10 @@ def main(argv: list[str]) -> int:
 
     print()
     print(
-        f"検査 {len(targets)} 件 / "
-        f"中身まで裏を取れたもの {len(targets) - len(unverified)} 件"
+        # **母数は wanted（対象の出典すべて）で数える。** targets（URL のあるもの）で
+        # 割ると、URL の無い出典が分母からも消えて辻褄が合ってしまう。
+        f"検査 {len(wanted)} 件（うちリンクを開いたもの {len(targets)} 件）/ "
+        f"中身まで裏を取れたもの {len(wanted) - len(unverified)} 件"
     )
     if unverified:
         # 隠さない。ここは人が押して確かめるしかない出典である。

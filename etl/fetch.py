@@ -811,6 +811,57 @@ def _assume_geographic(gdf: gpd.GeoDataFrame, path: Path) -> gpd.GeoDataFrame:
     return gdf.set_crs(CRS_GEOGRAPHIC)
 
 
+_JAPANESE = re.compile(r"[぀-ヿ㐀-鿿ｦ-ﾟ]")
+
+
+def _repair_mojibake(gdf: gpd.GeoDataFrame, path: Path) -> gpd.GeoDataFrame:
+    """Shift-JIS の DBF を latin-1 として読んだ文字化けを、**中身で判定して**直す。
+
+    `.cpg` の無い SHP は GDAL が既定の文字コードで読むため、国土数値情報の
+    ように DBF が CP932 のものは日本語が化ける。P13 都市公園がそれで、
+    公園名が `\\x8bî\\x91ò...`（＝「駒沢オリンピック公園」）になっていた。
+    **画面に出していなかったので 1 度も気付かれなかった**——今回、
+    緑・公園の一覧を出すことにして初めて見えた。
+
+    **ファイル名でも拡張子でも決め打たない**（CLAUDE.md「壊れ方の型」）。
+    列の中身が次を全部満たすときだけ直す:
+
+      1. いま日本語が 1 文字も入っていない（入っていれば既に正しい）
+      2. 全ての値が latin-1 → CP932 で往復できる（1 つでも失敗したら触らない）
+      3. 往復した結果、半数以上の値に日本語が現れる
+
+    3 を「半数以上」にしてあるのは、英数字だけの列（コード・URL）が
+    たまたま往復できてしまっても、日本語が出てこないので採らないため。
+    """
+    # **dtype で列を選ばない。** pandas の版によって文字列列の dtype は
+    # `object` にも `str` にもなり、`== object` で絞ると新しい版で
+    # **1 列も見ずに黙って通る**（実際そうなっていて、化けたまま出た）。
+    # 中身に str が入っているかどうかだけで判定する。
+    fixed: list[str] = []
+    for c in [x for x in gdf.columns if x != gdf.geometry.name]:
+        s = gdf[c]
+        vals = [v for v in s.tolist() if isinstance(v, str) and v]
+        if not vals or any(_JAPANESE.search(v) for v in vals):
+            continue
+        try:
+            decoded = [v.encode("latin-1").decode("cp932") for v in vals]
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            continue
+        if sum(1 for v in decoded if _JAPANESE.search(v)) * 2 < len(decoded):
+            continue
+        gdf[c] = s.map(
+            lambda v: v.encode("latin-1").decode("cp932") if isinstance(v, str) and v else v
+        )
+        fixed.append(c)
+
+    if fixed:
+        print(
+            f"[read] {path.name}: DBF が CP932 と判定できたので "
+            f"{len(fixed)} 列を復元（{', '.join(fixed)}）。例: {gdf[fixed[0]].iloc[0]}"
+        )
+    return gdf
+
+
 def read_vector(path: Path) -> gpd.GeoDataFrame:
     """ファイル 1 本、またはディレクトリ配下の全ファイルを読んで結合する。
 
@@ -824,7 +875,7 @@ def read_vector(path: Path) -> gpd.GeoDataFrame:
     GeoJSON があればそちらを優先する（Shift-JIS の DBF を避けられる）。
     """
     if path.is_file():
-        return _assume_geographic(gpd.read_file(path), path)
+        return _repair_mojibake(_assume_geographic(gpd.read_file(path), path), path)
 
     if not path.is_dir():
         raise FileNotFoundError(f"{path} が存在しない")
@@ -890,7 +941,7 @@ def read_vector(path: Path) -> gpd.GeoDataFrame:
         except UnicodeDecodeError:
             g = gpd.read_file(p, encoding="cp932")
         if len(g):
-            frames.append(_assume_geographic(g, p))
+            frames.append(_repair_mojibake(_assume_geographic(g, p), p))
 
     if not frames:
         raise ValueError(f"{path} 配下のファイルがすべて空だった")

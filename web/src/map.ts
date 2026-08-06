@@ -7,6 +7,7 @@
  */
 
 import maplibregl, {
+  type ExpressionSpecification,
   type Map as MLMap,
   type SourceSpecification,
   type StyleSpecification,
@@ -114,6 +115,29 @@ function pointDetailHtml(p: Record<string, unknown>): string {
       }</div>`;
   }
 
+  // **公園も施設ではない。** 数えているのは「この区画に重なる面積」で、
+  // 退避先として評価したものではない（屋外が退避先になるかは当事者に
+  // 確かめていない）。**円であることをここで言う**——元データ（P13）は
+  // 点で、公園の形は入っていない。面積の等しい円に置き換えて被覆率を
+  // 出しており、**その円が地図に描いてあるものそのもの**である。
+  if (p.layer === "park") {
+    const a = Number(p.area_m2 ?? 0);
+    const r = Number(p.r_m ?? 0);
+    return `<div class="popup-card"><b>${name}</b>
+      <div class="popup-kind">公園（緑・公園被覆を作っているもの）</div>
+      <div class="popup-row"><b>面積</b> ${a.toLocaleString("ja-JP")} m²</div>
+      <div class="popup-row popup-sub">地図の円は<b>面積の等しい円（半径 ${r} m 相当）</b>です
+        — 元データは点で、公園の形は入っていません。</div>
+      <div class="popup-role">負荷を下げる要素として数えています。
+        <b>退避先として評価したものではありません</b>（屋内かどうかも、
+        使えるかどうかも測っていません）。</div>
+      ${
+        p.source
+          ? `<div class="popup-source">出典: ${escapeHtml(String(p.source))}</div>`
+          : ""
+      }</div>`;
+  }
+
   const spec = CAPACITY_LABEL[String(p.layer ?? "")];
   let size = "";
   if (spec && p.capacity != null) {
@@ -193,6 +217,48 @@ function hatchImage(): ImageData | null {
   return ctx.getImageData(0, 0, size, size);
 }
 
+/**
+ * コロプレスの不透明度。**値だけでなく縮尺でも決める。**
+ *
+ * 値だけで決めていたため、順位表の行を押して寄った先（zoom 15.2）では
+ * 区画 1 つが 60px を超え、**塗りがベースマップを完全に覆っていた**——
+ * 道路も駅名も建物も見えず、画面に残るのは色の付いた正方形だけになる。
+ * 「江東区 亀戸」と言われた人が、**そこがどこなのかを地図で確かめられない。**
+ * 俯瞰する縮尺では塗りそのものが主題なので落とさず、区画が個々に
+ * 見える縮尺に入ってから落とす。
+ *
+ * **`["zoom"]` は入れ子にできない。** 値の傾斜に縮尺の係数を掛ける形
+ * （`["*", 値の interpolate, zoom の interpolate]`）は MapLibre が
+ * *"zoom" expression may only be used as input to a top-level "step" or
+ * "interpolate" expression* として弾き、**スタイルごと読み込みに失敗する**
+ * ——mesh レイヤーが出ないだけでなく、後続の `setPointData` が
+ * `Style is not done loading.` を投げて起動そのものが止まる。
+ * そのため **`["zoom"]` を最上位に置き、各停止点の出力を値の傾斜にする。**
+ * 傾斜は同じ形を係数違いで 3 つ書くことになるので、コードで作る。
+ */
+const MESH_FILL_OPACITY = (() => {
+  // 値 → 不透明度の傾斜。scale は縮尺ごとの一律の係数。
+  const ramp = (scale: number): ExpressionSpecification =>
+    [
+      "interpolate",
+      ["linear"],
+      ["get", "v"],
+      0.0, 0.12 * scale,
+      0.5, 0.45 * scale,
+      0.85, 0.72 * scale,
+      1.0, 0.86 * scale,
+    ] as ExpressionSpecification;
+
+  return [
+    "interpolate",
+    ["linear"],
+    ["zoom"],
+    13, ramp(1.0),
+    15, ramp(0.62),
+    16.5, ramp(0.38),
+  ] as ExpressionSpecification;
+})();
+
 /** 空の GeoJSON ソース。実データは setMeshData / setPointData が後から差し込む。 */
 function emptySource(): SourceSpecification {
   return {
@@ -265,15 +331,8 @@ function baseStyle(): StyleSpecification {
             1.0, SEQ[700],
           ],
           // 低優先度はベースマップへ後退させ、地理的文脈を読めるようにする。
-          "fill-opacity": [
-            "interpolate",
-            ["linear"],
-            ["get", "v"],
-            0.0, 0.12,
-            0.5, 0.45,
-            0.85, 0.72,
-            1.0, 0.86,
-          ],
+          // 寄るほど全体を薄くする（MESH_FILL_OPACITY を参照）。
+          "fill-opacity": MESH_FILL_OPACITY,
         },
       },
 
@@ -297,9 +356,15 @@ function baseStyle(): StyleSpecification {
         type: "fill",
         source: "mesh",
         layout: { visibility: "none" },
-        // host は「最寄りのホスト施設名」。徒歩圏に 1 件も無い区画では
-        // props ごと省かれる（etl/build.py の _feature_properties）。
-        filter: ["!", ["has", "host"]],
+        // **見出しの数と同じ集合を出す。** かつては `["!", ["has","host"]]`
+        // ＝到達不可すべて（1,058 区画）を重ねていたが、見出しに出ている数は
+        // **区内で優先度が中位以上のもの（148 区画）**だった。
+        // 「地図の『重ねる』で該当区画を表示できます」と書いた隣で、
+        // **7 倍の区画が光っていた**——皇居や埋立地まで含めて。
+        //
+        // `mid` は main.ts が毎回書き込む（1 = 区内で中位以上の到達不可）。
+        // **重みで動く**ので、`v` と同じく描画のたびに差し替える値である。
+        filter: ["==", ["get", "mid"], 1],
         paint: {
           "fill-pattern": "hatch",
           "fill-opacity": 0.85,
@@ -403,9 +468,16 @@ function baseStyle(): StyleSpecification {
           // 斜線ハッチと同じ考え方で、区別は色ではなく塗りの有無で付ける
           //（3 つ目の色を出すと「この色は施設の色と関係があるのか」という
           // 問いが生まれる）。輪郭は他と同じ黒。
+          //
+          // **公園も白抜きにする。** 規則は「施設として評価していないもの」で、
+          // 測定点と同じ側である——公園は負荷を下げる要素として数えており、
+          // **退避先として評価してはいない**（`config.py` の green）。
+          // 橙（需要側）でも緑（供給側）でもないので、ここに入る。
           "circle-color": [
             "case",
-            ["==", ["get", "side"], "noise"],
+            ["any",
+              ["==", ["get", "side"], "noise"],
+              ["==", ["get", "side"], "green"]],
             "#ffffff",
             ["==", ["get", "side"], "host"],
             CAT_HOST,
@@ -414,6 +486,41 @@ function baseStyle(): StyleSpecification {
           "circle-opacity": 1,
           "circle-stroke-width": 2,
           "circle-stroke-color": "#0b0b0b",
+        },
+      },
+      // --- 公園の等価円（緑・公園被覆をハイライトしたときだけ） ---
+      //
+      // **点だけでは、この層の一番の限界が見えない。** 被覆率は
+      // 「面積の等しい円」から出しており、**等価半径の中央値は 18m**
+      //（3,835 件のうち 3,738 件は 250m 区画より小さい円）。
+      // 点で描くと「公園がそこに在る」としか読めず、**その円が区画に
+      // どれだけ重なっているのか**——つまり被覆率が何から出た数字なのかが
+      // 分からない。実寸の円を描けば、0% の区画の隣に円があることも見える。
+      //
+      // 半径はメートルなので、縮尺に合わせて画素へ直す。
+      // 緯度 35.7° の zoom 20 で 1px ≒ 0.1213m → r_px = r_m × 8.244。
+      // `["exponential", 2]` は縮尺 1 段ごとに 2 倍という意味で、
+      // これが「地図上の実寸で固定する」書き方になる。
+      {
+        id: "green-circles",
+        type: "circle",
+        source: "highlight-points",
+        filter: ["==", ["get", "side"], "green"],
+        paint: {
+          "circle-radius": [
+            "interpolate",
+            ["exponential", 2],
+            ["zoom"],
+            10, ["*", ["get", "r_m"], 8.244 / 1024],
+            20, ["*", ["get", "r_m"], 8.244],
+          ],
+          // 中を塗らない。**塗ると「この中が均等に効いている」と読める**が、
+          // 効いているのは区画と重なった部分の面積だけである
+          //（徒歩圏の円を塗らないのと同じ理由）。
+          "circle-opacity": 0,
+          "circle-stroke-width": 1,
+          "circle-stroke-color": "#0b0b0b",
+          "circle-stroke-opacity": 0.55,
         },
       },
       {
@@ -673,9 +780,13 @@ export async function initMap(
         return;
       }
       setSourceData(map, "highlight-points", h.points);
+      // **半径 0 のときは円を描かない。** 緑・公園は「この区画に重なる
+      // 公園」を数える層で、半径という概念を持たない。0 の円を描くと
+      // 選択中の区画の中心に点が落ち、**「ここまでを数えた」という
+      // 存在しない距離を主張する**ことになる。
       setSourceData(map, "highlight-ring", {
         type: "FeatureCollection",
-        features: [circleFeature(h.center, h.radiusM)],
+        features: h.radiusM > 0 ? [circleFeature(h.center, h.radiusM)] : [],
       });
     },
     toggleLayer: (id, visible) => {
