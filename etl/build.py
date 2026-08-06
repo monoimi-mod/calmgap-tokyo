@@ -34,6 +34,7 @@ import pandas as pd
 from . import aggregate, fixtures, hosts as hostlib, mesh as meshlib, score, sensitivity
 from .schema import ZONING_NAME
 from .config import (
+    A1_TRACKED_PAIR,
     ALL_COMPONENTS,
     BANDWIDTH_M,
     DEMAND_COMPONENTS,
@@ -448,6 +449,62 @@ def _unreachable_summary(scored: pd.DataFrame) -> dict:
     }
 
 
+def _ward_dependence_summary(scored: pd.DataFrame) -> dict:
+    """区ダミーとの相関の要約（`docs/issues.md` A1 の診断指標）。
+
+    **層ごとに「絶対値が最大の区」だけを載せる。** 全 8 層 × 23 区の
+    行列を配信すると、区の間で並べられる形になる——到達不可の内訳を
+    配信しないのと同じ理由で（`_unreachable_summary`）、ここで知りたいのは
+    「その層が 1 つの区に張り付いていないか」であって区の順位ではない。
+
+    `noise_ward_mean` だけは値の側も載せる。相関は「どの区に紐づくか」
+    しか答えず、**「世田谷区の内挿平均 68.7dB は 23 区で最も高い」**
+    という主張には平均そのものが要るため。騒音に限るのは、この層だけが
+    測定設計の偏りを既知の問題として抱えているから（A1・A6）。
+    """
+    table = score.ward_dependence_report(scored)
+    components = [
+        {
+            "key": row["key"],
+            "label": row["構成要素"],
+            "ward": row["ward"],
+            "corr": float(row["相関"]),
+        }
+        for _, row in table.iterrows()
+    ]
+
+    summary: dict = {
+        "components": components,
+        "note": "区ダミーとの相関。層ごとに絶対値が最大の区。"
+        "0 から離れるほど、その層は実質その区のダミーとして働いている。",
+    }
+
+    # A1 が 5 ビルド並べてきた組（騒音 × 世田谷区）。**決め打ちだが要る**
+    # ——系列として比べる以上、途中で見る区を変えたら比較にならない
+    #（score.ward_dummy_correlation のコメント）。
+    tracked_corr = score.ward_dummy_correlation(scored, *A1_TRACKED_PAIR)
+    if tracked_corr is not None:
+        summary["tracked"] = {
+            "key": A1_TRACKED_PAIR[0],
+            "ward": A1_TRACKED_PAIR[1],
+            "corr": round(tracked_corr, 4),
+            "note": "docs/issues.md A1 が経緯を並べてきた組。区を決め打ちして"
+            "いるのは系列を比較するためで、偏りの現在地は components を見ること。",
+        }
+
+    spread = score.ward_value_spread(scored, "f_noise_db")
+    if len(spread) >= 2:
+        lo, hi = spread.iloc[0], spread.iloc[-1]
+        summary["noise_ward_mean"] = {
+            "min_ward": lo["区"],
+            "min_db": float(lo["f_noise_db"]),
+            "max_ward": hi["区"],
+            "max_db": float(hi["f_noise_db"]),
+            "spread_db": round(float(hi["f_noise_db"]) - float(lo["f_noise_db"]), 1),
+        }
+    return summary
+
+
 def write_outputs(
     mesh_gdf: gpd.GeoDataFrame,
     scored: pd.DataFrame,
@@ -583,6 +640,15 @@ def write_outputs(
         # **画面で計算し直さない**——しきい値の取り方（区ごと・母数は区内の
         # 全メッシュ）を TypeScript にもう 1 つ書くと、静かに食い違う。
         "unreachable": _unreachable_summary(scored),
+        # 各層が特定の区とどれだけ紐づいているか（docs/issues.md A1）。
+        #
+        # **配信する理由は検査のため。** 騒音の「世田谷ダミーとの相関」は
+        # 5 回引用してきた数値なのに、**出す経路がコードの側に無く**、
+        # 文書に貼った再現スクリプトだけが頼りだった。しかもその手順は
+        # 区の割り当てが本体と違い、文書の値を再現できなかった
+        #（score.ward_dependence_report のコメント）。
+        # ここへ載せると `tools/doc_numbers.py` が status.md と突き合わせる。
+        "ward_dependence": _ward_dependence_summary(scored),
         "priority_alpha": PRIORITY_ALPHA,
         "priority_beta": PRIORITY_BETA,
         "host_max_distance_m": HOST_MAX_DISTANCE_M,
@@ -999,6 +1065,36 @@ def main(argv: list[str] | None = None) -> int:
         print(vif_df.to_string(index=False))
         print("\n[点検] 主成分（同符号で並ぶ層が、同じ現象を数え直している層）")
         print(pc_df.to_string())
+
+        # 「この層は実質○○区ダミーではないか」（docs/issues.md A1）。
+        # **文書が 5 回引用してきた指標なのに、出す経路がここに無かった。**
+        # 区は決め打ちしない——決め打つと、偏りが別の区へ移ったときに
+        # 気付けない（score.ward_dependence_report のコメント）。
+        wd = score.ward_dependence_report(scored)
+        if not wd.empty:
+            print("\n[点検] 区ダミーとの相関（層が 1 つの区に張り付いていないか）")
+            print(wd.drop(columns=["key", "ward"]).to_string(index=False))
+            print("       0 から離れているほど、その層はその区のダミーとして働いている")
+            # 上の表は区を決め打たない。こちらは決め打つ——A1 の系列を
+            # 途中で見る区を変えずに続けるため（config.A1_TRACKED_PAIR）。
+            tracked = score.ward_dummy_correlation(scored, *A1_TRACKED_PAIR)
+            if tracked is not None:
+                key, ward = A1_TRACKED_PAIR
+                label = next(
+                    (c.label for c in ALL_COMPONENTS if c.key == key), key
+                )
+                print(
+                    f"       issues.md A1 が並べてきた組: {label} × {ward} "
+                    f"{tracked:+.3f}（系列の比較用に区を固定している）"
+                )
+            spread = score.ward_value_spread(scored, "f_noise_db")
+            if len(spread) >= 2:
+                lo, hi = spread.iloc[0], spread.iloc[-1]
+                print(
+                    f"       騒音の内挿平均は {lo['区']} {lo['f_noise_db']:.1f}dB 〜 "
+                    f"{hi['区']} {hi['f_noise_db']:.1f}dB（"
+                    f"{hi['f_noise_db'] - lo['f_noise_db']:.1f}dB の開き）"
+                )
 
         # 到達不可は生の件数を区の間で並べても意味を持たない
         #（非市街地の面積比でほぼ決まる）。hosts.reach_report のコメント参照。

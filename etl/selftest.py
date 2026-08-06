@@ -1786,6 +1786,68 @@ def _ranking_states_adjacency_with_denominator():
     assert got[1]["unreachable"] is True, got[1]
 
 
+@check("A1 が追い続けている「層 × 区」の組が、実在する層と区を指している")
+def _a1_tracked_pair_is_real():
+    """`config.A1_TRACKED_PAIR` が実体を失っていないこと。
+
+    **これが無いと、検査が黙って消える。** `doc_numbers.py` は
+    `meta.ward_dependence.tracked` が在るときだけ相関を突き合わせ、
+    `score.ward_dummy_correlation` は層名か区名が見つからなければ
+    `None` を返す。つまり **`TARGET_WARDS` から世田谷区が抜けたり
+    構成要素のキーを変えたりすると、A1 の系列の検査だけが静かに
+    外れる**——落ちるのではなく、項目ごと表から消える。
+
+    A1 の指標は 5 ビルド並べてきた数値で、消えても出力は何も変わらない。
+    **間違っていても動く**種類の壊れ方なので、ここで止める。
+    """
+    from .config import A1_TRACKED_PAIR, TARGET_WARDS
+
+    key, ward = A1_TRACKED_PAIR
+    keys = [c.key for c in ALL_COMPONENTS]
+    assert key in keys, f"A1_TRACKED_PAIR の層 {key!r} が構成要素に無い（{keys}）"
+    assert ward in TARGET_WARDS, f"A1_TRACKED_PAIR の区 {ward!r} が対象区に無い"
+
+    # 相関が実際に取れること（定数列を渡したときだけ None になる）。
+    df = pd.DataFrame(
+        {
+            f"n_{key}": [0.0, 1.0, 0.5, 0.2],
+            "ward": [ward, ward, "千代田区", "千代田区"],
+        }
+    )
+    r = score.ward_dummy_correlation(df, key, ward)
+    assert r is not None and -1.0 <= r <= 1.0, r
+
+    # 区が見つからなければ None。**doc_numbers はこれを「項目なし」として
+    # 素通りさせるので、上の TARGET_WARDS 検査が最後の砦になる。**
+    assert score.ward_dummy_correlation(df, key, "存在しない区") is None
+
+
+@check("区ダミーとの相関は、区を決め打たずに全区から選ぶ")
+def _ward_dependence_scans_all_wards():
+    """`ward_dependence_report` が、名指しの区ではなく最大の区を返すこと。
+
+    **A1 は「世田谷ダミー」という区を名指した指標**で、名指したまま
+    追い続けると偏りが別の区へ移ったときに気付けない（実際いま騒音の
+    最大は練馬区で、符号も逆）。決め打たない側が本当に決め打っていない
+    ことを、世田谷区より強い区を仕込んで確かめる。
+    """
+    key = ALL_COMPONENTS[0].key
+    df = pd.DataFrame(
+        {
+            f"n_{key}": [1.0, 1.0, 0.0, 0.0, 0.5, 0.5],
+            "ward": ["練馬区", "練馬区", "世田谷区", "世田谷区", "港区", "港区"],
+        }
+    )
+    out = score.ward_dependence_report(df)
+    assert not out.empty, out
+    row = out.iloc[0]
+    assert row["ward"] == "練馬区", f"最大の区を選んでいない: {row.to_dict()}"
+    assert row["相関"] > 0, row.to_dict()
+
+    # ward 列が無ければ空を返す（例外にしない——模擬モードでも呼ばれる）
+    assert score.ward_dependence_report(df.drop(columns="ward")).empty
+
+
 def main() -> int:
     print("calmgap-tokyo セルフテスト\n")
     # モジュール読み込み時に @check が実行済み。

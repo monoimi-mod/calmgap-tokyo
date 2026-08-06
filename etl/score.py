@@ -292,6 +292,125 @@ def correlation_report(df: pd.DataFrame) -> pd.DataFrame:
     return df[cols].corr().round(3)
 
 
+def ward_dependence_report(df: pd.DataFrame, ward_col: str = "ward") -> pd.DataFrame:
+    """各層が特定の区とどれだけ強く紐づいているかを、区ダミーとの相関で出す。
+
+    **この指標は `docs/issues.md` A1 の診断そのもの。** 騒音レイヤーが
+    実質「世田谷区ダミー」として働いていることを、この相関で見つけた
+    （+0.484 → 是正して +0.448 → 23 区化で +0.234 → 常時監視 5 年分で
+    +0.133 → 要請限度を戻して +0.249）。**5 回引用してきた数値である。**
+
+    ところが**この数字を出す経路がコードの側に無かった**。あったのは
+    issues.md A1 に貼った再現スクリプトだけで、しかもそれは区の割り当てを
+    **重心の `within`** で作っており、パイプライン本体
+    （`aggregate.polygon_dominant_class`＝面積優占）と食い違う。
+    実測すると +0.2477 対 +0.2486 で、**文書の値を、その文書が載せている
+    再現手順では再現できない**状態だった（0.001 だが、経緯の比較に使う
+    数値が手順ごとに違うのは、比較そのものを壊す）。
+    ここへ移して `--report` と `meta.json` の両方から出す。
+
+    **区は決め打ちしない。** 全対象区 × 全構成要素で相関を取り、層ごとに
+    絶対値が最大の区を返す。「世田谷区を見る」と書いてしまうと、
+    **答えが分かっている区だけを見張ることになり**、測定の偏りが別の区へ
+    移ったときに気付けない——出典を入れ替えるたびに動く指標なので、
+    移ること自体が現実に起きうる。
+
+    **相関を取るのは正規化後の `n_*`**（スコアに入る値そのもの）。
+    生値ではない——生値の単位は層ごとに違い、絶対尺度の層では
+    クリップの外側が相関に効かないという性質もそのまま見たい。
+
+    Returns
+    -------
+    構成要素 / 最も紐づく区 / 相関 / 次点の区 / 相関 の表。
+    相関の絶対値の降順。
+    """
+    if ward_col not in df.columns:
+        return pd.DataFrame(
+            columns=["構成要素", "区", "相関", "次点の区", "次点の相関", "key", "ward"]
+        )
+
+    wards = sorted(w for w in df[ward_col].dropna().unique() if w)
+    rows = []
+    for comp in ALL_COMPONENTS:
+        col = f"n_{comp.key}"
+        if col not in df.columns:
+            continue
+        values = df[col].to_numpy(dtype=float)
+        if values.std() == 0:
+            continue
+        # 区ダミー（その区なら 1）との相関を、区の数だけ取る。
+        pairs = []
+        for ward in wards:
+            dummy = (df[ward_col] == ward).to_numpy(dtype=float)
+            if dummy.std() == 0:
+                continue
+            r = float(np.corrcoef(values, dummy)[0, 1])
+            pairs.append((ward, r))
+        if not pairs:
+            continue
+        pairs.sort(key=lambda p: -abs(p[1]))
+        (w1, r1), (w2, r2) = pairs[0], pairs[1]
+        rows.append(
+            {
+                "構成要素": comp.label,
+                "区": w1,
+                "相関": round(r1, 3),
+                "次点の区": w2,
+                "次点の相関": round(r2, 3),
+                "key": comp.key,
+                "ward": w1,
+            }
+        )
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return out
+    return out.reindex(out["相関"].abs().sort_values(ascending=False).index).reset_index(
+        drop=True
+    )
+
+
+def ward_dummy_correlation(
+    df: pd.DataFrame, component_key: str, ward: str, ward_col: str = "ward"
+) -> float | None:
+    """名指しの組（層 × 区）の相関。**`ward_dependence_report` と役割が違う。**
+
+    あちらは区を決め打ちしないための出力で、こちらは**決め打つための**出力。
+    `docs/issues.md` A1 は「騒音 × 世田谷区」という 1 つの組を 5 ビルドに
+    わたって並べてきた（+0.484 → +0.448 → +0.234 → +0.133 → +0.249）。
+    **系列として比べる以上、途中で見る区を変えたら比較にならない。**
+
+    だから 2 つとも出す。決め打ちの側は経緯を追うため、決め打たない側は
+    偏りが別の区へ移ったときに気付くため。実際、いまは移っている——
+    騒音の相関が最大の区は世田谷区ではなく練馬区（負）である。
+    """
+    col = f"n_{component_key}"
+    if col not in df.columns or ward_col not in df.columns:
+        return None
+    values = df[col].to_numpy(dtype=float)
+    dummy = (df[ward_col] == ward).to_numpy(dtype=float)
+    if values.std() == 0 or dummy.std() == 0:
+        return None
+    return float(np.corrcoef(values, dummy)[0, 1])
+
+
+def ward_value_spread(
+    df: pd.DataFrame, value_col: str, ward_col: str = "ward"
+) -> pd.DataFrame:
+    """区ごとの平均と、その開き。**「区ごとに 3.8dB 開く」を手計算しないため。**
+
+    `ward_dependence_report` と対で使う。相関は「どの区に紐づくか」しか
+    答えないが、**紐づいた結果その区の値がどれだけ高いのか**は別に要る
+    （騒音なら「世田谷区の内挿平均 68.7dB は 23 区で最も高い」の側）。
+
+    どちらも同じ再現スクリプトの中で手計算されていた数値で、
+    `CLAUDE.md` が繰り返し書いている **手計算しないこと** に当たる。
+    """
+    if ward_col not in df.columns or value_col not in df.columns:
+        return pd.DataFrame(columns=["区", value_col])
+    means = df.groupby(ward_col)[value_col].mean().sort_values()
+    return means.round(1).rename_axis("区").reset_index()
+
+
 def collinearity_report(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     """VIF と主成分。**2 変数間の相関では見えない多重計上**を捕まえる。
 

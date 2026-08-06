@@ -141,6 +141,41 @@ def main() -> int:
         ("規模が仮の値の点", f"{len(assumed):,} 件"),
         ("selftest の件数", f"{selftest_count()} 件"),
     ]
+
+    # 区ダミーとの相関（`docs/issues.md` A1）。**この検査が最後まで無かった。**
+    # A1 は騒音 × 世田谷区の相関を 5 ビルド並べてきたのに、その数値を出す
+    # 経路がコードの側に無く、文書に貼った再現スクリプトだけが頼りだった。
+    # しかもそのスクリプトは区の割り当てが本体と違い（重心 within 対 面積優占）、
+    # **文書の値をその文書の手順では再現できなかった**（+0.2477 対 +0.2486）。
+    #
+    # **2 つとも見る。** tracked は決め打ちの組で、経緯の比較用。
+    # components は区を決め打たない側で、**偏りが別の区へ移ったことに
+    # 気付くため**にある——実際いま騒音の最大は世田谷区ではなく練馬区で、
+    # この検査を入れるまで文書はそれを一度も書いていなかった。
+    wd = meta.get("ward_dependence")
+    if wd:
+        comps = {c["key"]: c for c in wd.get("components", [])}
+        tracked = wd.get("tracked")
+        if tracked:
+            checks.append(
+                (f"A1 の組（{tracked['key']} × {tracked['ward']}）", f"{tracked['corr']:+.3f}")
+            )
+        if "noise" in comps:
+            c = comps["noise"]
+            checks.append(("騒音の区依存が最大の区", c["ward"]))
+            checks.append(("騒音の区依存が最大の相関", f"{c['corr']:+.3f}"))
+        # 8 層の中で最も強く 1 つの区に張り付いている層。**騒音とは限らない**
+        # ——いまは用途地域で、A1 が騒音の話として書いてきたことの外にある。
+        if wd.get("components"):
+            top = wd["components"][0]
+            checks.append(("区依存が最大の層", top["label"]))
+            checks.append(("区依存が最大の層の相関", f"{top['corr']:+.3f}"))
+        nwm = wd.get("noise_ward_mean")
+        if nwm:
+            # 「区ごとに 4.0dB 開く」も同じ再現スクリプトの中で手計算されていた
+            checks.append(("騒音の区平均の下端", f"{nwm['min_db']:.1f}dB"))
+            checks.append(("騒音の区平均の上端", f"{nwm['max_db']:.1f}dB"))
+            checks.append(("騒音の区平均の開き", f"{nwm['spread_db']:.1f}dB"))
     if shibuya is not None:
         checks.append(("渋谷駅前の順位", f"{shibuya:,} 位"))
         # **優先度の値も見る。** 2026-08-03 に最後のパーセンタイル化を外して
@@ -190,11 +225,34 @@ def main() -> int:
                 ("帯域・特別支援学校の単独", pct(band["sped_school"]["alone"]["overlap_mean"]["10"]))
             )
 
-    text = STATUS.read_text()
+    # **負の相関を入れたので、マイナス記号を寄せる。** 文書は全角相当の
+    # U+2212（−0.632）で書き、Python の書式は ASCII のハイフン（-0.283）を出す。
+    # 見た目が同じで一致しない——この検査でいちばん出したくない偽陽性なので、
+    # 突き合わせる前に片側へ正規化する（文書側の書き方は変えない）。
+    text = STATUS.read_text().replace("−", "-")
+
+    def contains(value: str) -> bool:
+        """`value` が status.md に在るか。**数字の途中に当たったら在ると見なさない。**
+
+        素の部分一致だと、**別の数の末尾に当たって黙って通る**。実際に踏んだ:
+        selftest が 71 件になったとき、検査は ok を出したが status.md は
+        69 件のままで、当たっていたのは `高齢系 971 件` の中の「71 件」だった。
+        **検査が通ったのに文書は古い**——この道具がいちばん出してはいけない結果。
+
+        直前の文字が数字・カンマ・小数点なら、その一致は別の数の一部である。
+        書式には踏み込まない（この検査は文書の書き方を縛らない方針）。
+        """
+        start = 0
+        while (i := text.find(value, start)) != -1:
+            if i == 0 or text[i - 1] not in "0123456789,.":
+                return True
+            start = i + 1
+        return False
+
     failures = [
         f"{label}: 現在値 {value!r} が {STATUS.relative_to(ROOT)} に無い"
         for label, value in checks
-        if value not in text
+        if not contains(value)
     ]
 
     # 画面の staleness 検知と同じ条件。配信物どうしの整合。
@@ -207,7 +265,7 @@ def main() -> int:
 
     print(f"現況の数値と配信データの照合（{STATUS.relative_to(ROOT)}）")
     for label, value in checks:
-        mark = "ok  " if value in text else "FAIL"
+        mark = "ok  " if contains(value) else "FAIL"
         print(f"  {mark}  {label:<28} {value}")
 
     if failures:
