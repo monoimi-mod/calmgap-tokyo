@@ -18,8 +18,17 @@
     "  ticketed  … 入館料・利用料・イベントのチケットが要る",
     "  airside   … 保安検査後。搭乗券が要る",
     "",
-    "確認日 2026-08-06。追加・訂正したら docs/status.md の数値も直すこと",
-    "（tools/doc_numbers.py が突き合わせる）。"
+    "fee は『その空間の利用そのものに料金を課しているか』（2026-08-07 に",
+    "一次情報で確認）。**access とは別の軸である**——博物館は入館料が要るが、",
+    "入ったあとその部屋を使うのに追加の料金は要らない。",
+    "  none_stated … 一次情報に料金の記述が無い",
+    "  paid        … 利用料を課している（該当なし）",
+    "  unchecked   … 一次情報に当たれていない（未確認。none_stated と混ぜない）",
+    "**『無料と書いてある』ではない。** どの一次情報も料金という論点を",
+    "立てていない。有料の事例は 1 件も見つからなかった（docs/operation-idea.md）。",
+    "",
+    "確認日 2026-08-06（料金と室数の再確認 2026-08-07）。追加・訂正したら",
+    "docs/status.md の数値も直すこと（tools/doc_numbers.py が突き合わせる）。"
   ],
   "surveyed_at": "2026-08-06",
   "sites": [
@@ -30,7 +39,9 @@
       "lon": 139.783883,
       "rooms": 2,
       "access": "airside",
-      "note": "保安検査後の 2 か所（2階 9番付近 / 17番付近）"
+      "note": "保安検査後の 2 か所（2階 9番付近 / 17番付近）",
+      "fee": "none_stated",
+      "fee_source": "https://tokyo-haneda.com/service/facilities/calmdown-cooldown.html"
     },
     {
       "name": "羽田空港 第2ターミナル",
@@ -39,7 +50,9 @@
       "lon": 139.784448,
       "rooms": 2,
       "access": "airside",
-      "note": "保安検査後の 2 か所（2階 59番付近 / 61番付近）"
+      "note": "保安検査後の 2 か所（2階 59番付近 / 61番付近）",
+      "fee": "none_stated",
+      "fee_source": "https://tokyo-haneda.com/service/facilities/calmdown-cooldown.html"
     },
     {
       "name": "羽田空港 第3ターミナル",
@@ -48,7 +61,9 @@
       "lon": 139.767289,
       "rooms": 2,
       "access": "airside",
-      "note": "保安検査後の 2 か所（3階 110付近 / 147付近）"
+      "note": "保安検査後の 2 か所（3階 110付近 / 147付近）",
+      "fee": "none_stated",
+      "fee_source": "https://tokyo-haneda.com/service/facilities/calmdown-cooldown.html"
     },
     {
       "name": "港区役所 本庁舎",
@@ -57,7 +72,9 @@
       "lon": 139.751535,
       "rooms": 1,
       "access": "open",
-      "note": "1階 芝地区総合支所。職員に声をかけて利用（2024年8月設置）"
+      "note": "1階 芝地区総合支所。職員に声をかけて利用（2024年8月設置）",
+      "fee": "none_stated",
+      "fee_source": "https://www.city.minato.tokyo.jp/shougaifukushi/calmdowncooldown.html"
     },
     {
       "name": "東京理科大学 神楽坂キャンパス",
@@ -66,7 +83,9 @@
       "lon": 139.741354,
       "rooms": 1,
       "access": "members",
-      "note": "学生相談室"
+      "note": "学生相談室",
+      "fee": "none_stated",
+      "fee_source": "https://www.tus.ac.jp/tuslife/campuslife/academy/calmdown/"
     },
     {
       "name": "東京大学 先端科学技術研究センター",
@@ -75,7 +94,8 @@
       "lon": 139.67665,
       "rooms": 1,
       "access": "members",
-      "note": "駒場リサーチキャンパス 4号館1階エントランス"
+      "note": "駒場リサーチキャンパス 4号館1階エントランス",
+      "fee": "unchecked"
     },
     {
       "name": "東京科学大学 大岡山キャンパス",
@@ -84,7 +104,9 @@
       "lon": 139.683132,
       "rooms": 3,
       "access": "members",
-      "note": "80年記念館1階 / 西9号館 / 南6号館"
+      "note": "80年記念館1階 / 西9号館 / 南6号館",
+      "fee": "none_stated",
+      "fee_source": "https://www.isct.ac.jp/ja/news/s5kphjep4ky9"
     },
     {
       "name": "東京アクアティクスセンター",
@@ -93,16 +115,19 @@
       "lon": 139.814819,
       "rooms": 1,
       "access": "ticketed",
-      "note": "観客エリア"
+      "note": "観客エリア",
+      "fee": "unchecked"
     },
     {
       "name": "東京国立博物館",
       "address": "東京都台東区上野公園13-9",
       "lat": 35.718683,
       "lon": 139.774707,
-      "rooms": 1,
+      "rooms": 2,
       "access": "ticketed",
-      "note": "1階（B室・C室隣の階段室）"
+      "note": "本館1階・階段を正面にして左右の 2 か所（2026-08-07 に訂正。1 室と数えていた）",
+      "fee": "none_stated",
+      "fee_source": "https://kabin.life/column/13626/"
     },
     {
       "name": "葛西臨海水族園",
@@ -111,7 +136,8 @@
       "lon": 139.855338,
       "rooms": 1,
       "access": "ticketed",
-      "note": "2階 エスカレーター横"
+      "note": "2階 エスカレーター横",
+      "fee": "unchecked"
     },
     {
       "name": "TOYOTA ARENA TOKYO",
@@ -120,7 +146,9 @@
       "lon": 139.780898,
       "rooms": 1,
       "access": "ticketed",
-      "note": "イベント開催時"
+      "note": "イベント開催時",
+      "fee": "unchecked"
     }
-  ]
+  ],
+  "fee_surveyed_at": "2026-08-07"
 }
