@@ -191,8 +191,26 @@ Claude Code（Claude Opus）で設計・実装・文書まで通しました。�
 
 ## 5. プレゼン資料
 
-- 5-1 スライド（PowerPoint/PDF・**2分**・16:9・最大100MB）— 未作成
-- 5-2 画面キャプチャ（JPEG/PNG・最大3枚・1600×900px 推奨）— 未作成
+| 欄 | 提出するファイル |
+|---|---|
+| 5-1 スライド（**2分**・16:9・最大100MB） | [`docs/slides.pdf`](slides.pdf) — 7 枚・960×540pt・6.1MB |
+| 5-2 画面キャプチャ（最大3枚・1600×900px 推奨） | [`docs/captures/`](captures/) — 3 枚・1600×900 |
+
+**どちらも 1 コマンドで作り直せる。** 数値の入っているのはスライドだけ。
+
+```bash
+node tools/shoot_captures.mjs    # docs/captures/ の 3 枚
+node tools/slides_pdf.mjs        # docs/slides.html → docs/slides.pdf
+```
+
+> **スライドは PDF で出す。** PPTX はフォントが相手の環境に無いと
+> 行が折り返してレイアウトごと崩れ、**作った側の画面では正しく見える**ので
+> 気付けない。5-1 は PowerPoint / PDF のどちらでも可。
+> 原稿は [`docs/slides.html`](slides.html) で、**PDF を直接直さないこと。**
+>
+> **スライドの数値は `tools/doc_numbers.py` の検査対象に入っていない**
+> （見ているのは `docs/status.md` だけ）。本ファイルの数値も同じ。
+> 提出直前に手で突き合わせること。
 
 ---
 

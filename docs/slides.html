@@ -1,0 +1,554 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <title>calmgap-tokyo — 提出用スライド（2 分・16:9）</title>
+    <!--
+      提出フォーム 5-1（スライド・2 分・16:9・最大 100MB）。
+
+      **PDF が提出物で、この HTML が原稿である。** 書き出しは:
+
+          node tools/slides_pdf.mjs        → docs/slides.pdf
+
+      PPTX にしなかった理由は 2 つある。**フォントの置き換わりが起きない**
+      （日本語のスライドは、相手の環境に無いフォントだと行が折り返して
+      レイアウトごと崩れる。PDF は字形を埋め込む）ことと、
+      **数値が diff に出る**こと——この作品は「過去の数字を引用しない」を
+      機械で守る仕組みを持っており、原稿がテキストならそこに載せられる。
+
+      **数値はビルドごとに動く。** 本ファイルの数値は
+      `generated_at` 2026-08-06T08:36:00+00:00 のビルドで、
+      `docs/status.md` と `python tools/doc_numbers.py` が出所。
+      画像は `node tools/shoot_captures.mjs` で撮り直せる。
+    -->
+    <style>
+      /* 13.333in × 7.5in = 16:9。@page と .slide を必ず同じ寸法にする
+         （違うと最後の 1 行が次ページへこぼれ、空白ページが増える）。 */
+      @page {
+        size: 13.333in 7.5in;
+        margin: 0;
+      }
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      :root {
+        --ink: #1b2a33;
+        --teal: #2c7a8c;
+        --sage: #8fb9a8;
+        --warm: #c2542f;
+        --muted: #5f727d;
+        --line: #d9e0e3;
+      }
+      html {
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+      }
+      body {
+        font-family: "Hiragino Kaku Gothic ProN", "Hiragino Sans", "Yu Gothic",
+          Meiryo, sans-serif;
+        color: var(--ink);
+        background: #fff;
+      }
+      .slide {
+        position: relative;
+        width: 13.333in;
+        height: 7.5in;
+        padding: 0.62in 0.7in;
+        overflow: hidden;
+        page-break-after: always;
+        break-after: page;
+        display: flex;
+        flex-direction: column;
+      }
+      .slide:last-child {
+        page-break-after: auto;
+        break-after: auto;
+      }
+      .dark {
+        background: var(--ink);
+        color: #fff;
+      }
+
+      /* 章番号の札。**下線や色帯は使わない**（見出しの下に線を引くのを
+         やめている。区切りは余白で作る）。 */
+      .chip {
+        display: inline-block;
+        font-size: 11pt;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        color: var(--teal);
+        margin-bottom: 0.16in;
+      }
+      .dark .chip {
+        color: var(--sage);
+      }
+      h1 {
+        font-size: 40pt;
+        line-height: 1.22;
+        font-weight: 700;
+        letter-spacing: -0.01em;
+      }
+      h2 {
+        font-size: 27pt;
+        line-height: 1.3;
+        font-weight: 700;
+        margin-bottom: 0.28in;
+      }
+      p,
+      li {
+        font-size: 13pt;
+        line-height: 1.65;
+      }
+      .lead {
+        font-size: 15pt;
+        line-height: 1.6;
+      }
+      .muted {
+        color: var(--muted);
+      }
+      .dark .muted {
+        color: #a9bcc6;
+      }
+      b {
+        font-weight: 700;
+      }
+      .warm {
+        color: var(--warm);
+      }
+      .dark .warm {
+        color: #f0a184;
+      }
+
+      .cols {
+        display: flex;
+        gap: 0.5in;
+        flex: 1;
+        min-height: 0;
+      }
+      .cols > .txt {
+        flex: 0 0 4.5in;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+      }
+      .cols > .fig {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        min-width: 0;
+      }
+      .fig img {
+        width: 100%;
+        border: 1px solid var(--line);
+      }
+      .cap {
+        font-size: 9.5pt;
+        color: var(--muted);
+        margin-top: 0.1in;
+        line-height: 1.45;
+      }
+
+      /* 数字を主役にする札。棒や枠線ではなく、字の大きさで差をつける。 */
+      .stat {
+        margin: 0.1in 0 0.24in;
+      }
+      .stat .n {
+        font-size: 52pt;
+        font-weight: 700;
+        line-height: 1;
+        letter-spacing: -0.02em;
+      }
+      .stat .n small {
+        font-size: 17pt;
+        font-weight: 400;
+        color: var(--muted);
+        letter-spacing: 0;
+      }
+      .dark .stat .n small {
+        color: #a9bcc6;
+      }
+      .stat .k {
+        font-size: 12pt;
+        line-height: 1.5;
+        margin-top: 0.07in;
+      }
+
+      .rows {
+        display: flex;
+        flex-direction: column;
+        gap: 0.2in;
+        margin-top: 0.06in;
+      }
+      .row {
+        display: flex;
+        gap: 0.26in;
+        align-items: baseline;
+      }
+      .row .num {
+        flex: 0 0 0.42in;
+        font-size: 15pt;
+        font-weight: 700;
+        color: var(--teal);
+      }
+      .dark .row .num {
+        color: var(--sage);
+      }
+
+      .card {
+        background: #f4f7f7;
+        padding: 0.3in 0.34in;
+        border-radius: 0.09in;
+      }
+      .dark .card {
+        background: #26383f;
+      }
+
+      .grid2 {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 0.34in 0.5in;
+      }
+
+      .kv {
+        display: flex;
+        justify-content: space-between;
+        gap: 0.3in;
+        padding: 0.13in 0;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.16);
+        font-size: 13pt;
+      }
+      .kv:last-child {
+        border-bottom: 0;
+      }
+      .kv b {
+        white-space: nowrap;
+      }
+
+      .foot {
+        margin-top: auto;
+        padding-top: 0.2in;
+        font-size: 10pt;
+        color: var(--muted);
+        display: flex;
+        justify-content: space-between;
+        gap: 0.3in;
+      }
+      .dark .foot {
+        color: #8fa5b0;
+      }
+      code {
+        font-family: "SFMono-Regular", Consolas, monospace;
+        font-size: 0.92em;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- ============================================ 1 タイトル（0–15秒） -->
+    <section class="slide dark">
+      <div class="chip">都知事杯オープンデータ・ハッカソン 2026 ／ 自由課題</div>
+      <h1>
+        カームダウン・クールダウンスペース<br />
+        設置優先度マップ
+      </h1>
+      <p class="lead" style="margin-top: 0.3in; max-width: 9.6in">
+        「どこに置くべきか」を<b>オープンデータだけで説明可能に算出する方法</b>と、
+        それを東京 23 区に当てはめた地図です。
+      </p>
+
+      <!-- **余白は片側へ寄せる。** 上に詰めると下半分が空いて
+           「途中で終わっている」ように見え、下端へ寄せると
+           本文との間に用の無い帯ができた。間隔を決め打ちして、
+           余りは footer の側（margin-top:auto）へ渡す。 -->
+      <div class="grid2" style="margin-top: 0.75in; max-width: 11.2in; gap: 0.3in 0.6in">
+        <div>
+          <div style="font-size: 23pt; font-weight: 700; line-height: 1.3">
+            250m メッシュ 9,507 区画
+          </div>
+          <p class="muted" style="font-size: 12pt">東京 23 区・5 次メッシュ</p>
+        </div>
+        <div>
+          <div style="font-size: 23pt; font-weight: 700; line-height: 1.3">
+            データ 10 レイヤー
+          </div>
+          <p class="muted" style="font-size: 12pt">
+            うちスコアに入るのは 8 層。すべて実データ
+          </p>
+        </div>
+      </div>
+
+      <div class="foot">
+        <span>monoimi</span>
+        <span>calmgap-tokyo.hiroaki-kuwabara.workers.dev</span>
+      </div>
+    </section>
+
+    <!-- ============================================ 2 課題（0–15秒の続き） -->
+    <section class="slide">
+      <div class="chip">01 着目した課題</div>
+      <h2>置く場所を決める基準が、組織ごとにバラバラだった</h2>
+
+      <div class="rows" style="max-width: 11.4in">
+        <div class="row">
+          <div class="num">1</div>
+          <p>
+            感覚過敏のある人（発達障害・精神障害・PTSD 等）にとって、都市の音・光・混雑は
+            <b>過負荷</b>になりやすく、その最中に<b>一時退避できる場所</b>が要ります。
+          </p>
+        </div>
+        <div class="row">
+          <div class="num">2</div>
+          <p>
+            障害者差別解消法の改正（2024 年 4 月から民間事業者にも合理的配慮が義務化）を
+            追い風に、<b>整備は進み始めました</b>。
+          </p>
+        </div>
+        <div class="row">
+          <div class="num">3</div>
+          <p>
+            しかし設置場所の判断基準は自治体・事業者ごとに異なり、
+            <b>都全体の需給を俯瞰した公開資料は確認できませんでした。</b>
+          </p>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top: auto; max-width: 11.4in">
+        <p class="lead">
+          困っているのは当事者ですが、<b>置く場所を決めるのは行政・鉄道事業者・施設運営者</b>です。
+          決める側に、議論の出発点になる<b>共通の物差しが無い</b>。そこが空いていました。
+        </p>
+      </div>
+
+      <div class="foot">
+        <span>calmgap-tokyo</span><span>2</span>
+      </div>
+    </section>
+
+    <!-- ============================================ 3 方法（15–35秒） -->
+    <section class="slide">
+      <div class="chip">02 算出方法</div>
+      <h2>優先度 ＝ 需要 × 負荷</h2>
+
+      <div class="cols">
+        <div class="txt">
+          <p style="margin-bottom: 0.2in">
+            需要を「住んでいる場所」ではなく
+            <b>「通わざるを得ず、かつ過負荷になりやすい場所」</b>で定義し直しました。
+          </p>
+
+          <p style="margin-bottom: 0.06in">
+            <b style="color: var(--teal)">需要（4 層）</b>
+          </p>
+          <p class="muted" style="margin-bottom: 0.18in">
+            障害福祉サービス事業所の定員 ／ 特別支援学校の在籍者数 ／ 駅乗降規模 ／
+            精神科・心療内科
+          </p>
+
+          <p style="margin-bottom: 0.06in">
+            <b style="color: var(--teal)">負荷（4 層）</b>
+          </p>
+          <p class="muted" style="margin-bottom: 0.22in">
+            用途地域 ／ 自動車騒音 ／ 従業者数 ／ 緑・公園被覆（減点）
+          </p>
+
+          <p>
+            <b>足し算にしていません。</b>掛け算なので、
+            片側だけが極端な場所は上位に入りません。
+          </p>
+        </div>
+
+        <div class="fig">
+          <div>
+            <img src="captures/01-overview.png" alt="全体地図と結論 2 枚" />
+            <p class="cap">
+              9,507 区画すべてに優先度が付く。上位 50 区画を提言として出している——
+              <b>この打ち切りに根拠はありません</b>（優先度は連続していて切れ目が無い）。
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div class="foot">
+        <span>calmgap-tokyo</span><span>3</span>
+      </div>
+    </section>
+
+    <!-- ============================================ 4 根拠（35–65秒） -->
+    <section class="slide">
+      <div class="chip">03 根拠が全部辿れる</div>
+      <h2>1 区画を開くと、実数・出典・順位・寄与が並ぶ</h2>
+
+      <div class="cols">
+        <div class="txt">
+          <p class="muted" style="font-size: 12pt; margin-bottom: 0.04in">
+            第 1 位・江東区 亀戸（<code>5339463631</code>）
+          </p>
+          <!-- **1 行に収まらないので、割る場所をこちらで決める。**
+               自動改行に任せると「負荷 0.985」が「荷 0.985」で折れた。 -->
+          <p style="font-size: 19pt; font-weight: 700; line-height: 1.35; margin-bottom: 0.22in">
+            優先度 0.974<br />
+            ＝ 需要 0.989 × 負荷 0.985
+          </p>
+
+          <div class="rows" style="gap: 0.13in">
+            <p>障害福祉サービス事業所 <b>44 件</b>（定員計 394 人）</p>
+            <p>精神科・心療内科 <b>6 件</b></p>
+            <p>駅 <b>1 駅</b>（乗降計 135,911 人／日・最寄りは亀戸）</p>
+            <p>用途地域 <b>商業地域</b> ／ 推定騒音 <b>67.6 dB</b></p>
+          </div>
+
+          <p style="margin-top: 0.26in">
+            数えた施設は<b>地図上で光り、下に一覧でも開きます。</b>
+            <b>表の件数・地図の点・一覧の行数は必ず一致します</b>——
+            全 9,507 区画で機械的に検査しています。
+          </p>
+        </div>
+
+        <div class="fig">
+          <div>
+            <img src="captures/02-evidence.png" alt="1 区画の根拠と内訳" />
+            <p class="cap">
+              各層に出典・地域内順位・「この重みでの寄与」が付く。示すのは
+              <b>区画</b>であって特定の施設ではない。
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div class="foot">
+        <span>calmgap-tokyo</span><span>4</span>
+      </div>
+    </section>
+
+    <!-- ============================================ 5 重みで変わる（65–85秒） -->
+    <section class="slide">
+      <div class="chip">04 唯一の正解は出さない</div>
+      <h2>立場が変われば、順位も提言も変わる</h2>
+
+      <div class="grid2" style="max-width: 11.6in; gap: 0.3in 0.7in">
+        <div class="stat">
+          <div class="n warm">0 <small>件</small></div>
+          <p class="k">
+            <b>4 つの重みプリセットすべてで上位 20 件に入る区画。</b>
+            「重みの選び方に関係なく上位に来る場所」はもうありません。
+          </p>
+        </div>
+        <div class="stat">
+          <div class="n">72.1 <small>%</small></div>
+          <p class="k">
+            重み 8 個を <b>±30% 揺さぶった 200 回</b>で、上位 10 件に残る割合。
+            重み以外の固定値 76 個でも同時に測っています。
+          </p>
+        </div>
+      </div>
+
+      <p class="lead" style="max-width: 11.6in; margin-top: 0.1in">
+        重みはスライダーで動かせます。<b>動かすと順位も提言も変わります。</b>
+        どこを優先すべきかは「何を重視するか」に依存する——
+        <b>その依存そのものを、同じ画面に出しています。</b>
+      </p>
+
+      <div class="card" style="margin-top: auto; max-width: 11.6in">
+        <p>
+          <b>限界も画面に書いてあります。</b>上位の顔ぶれは
+          <b>特別支援学校というレイヤー 1 枚</b>でほぼ決まります（外すと上位 10 件が
+          全部入れ替わる。23 区に 45 校しかないため）。
+          <b>順位を固定の答えとして読まないでください。</b>
+        </p>
+      </div>
+
+      <div class="foot">
+        <span>calmgap-tokyo</span><span>5</span>
+      </div>
+    </section>
+
+    <!-- ============================================ 6 148 区画（85–105秒） -->
+    <section class="slide">
+      <div class="chip">05 もう一つの出力</div>
+      <h2>既存施設で届いていない場所は、別に決まる</h2>
+
+      <div class="cols">
+        <div class="txt">
+          <div class="stat" style="margin-top: 0">
+            <div class="n">148 <small>／ 9,507 区画</small></div>
+            <p class="k">
+              需要が高いのに、<b>徒歩 700m に区の公共施設が 1 件も無い</b>区画。
+            </p>
+          </div>
+
+          <p style="margin-bottom: 0.2in">
+            <b>全体の上位 50 区画とは 1 件も重なりません。</b>
+            重みで決まる順位と、既存施設で届いていない区画は、別の場所を指しています。
+          </p>
+
+          <p class="muted">
+            この数も<b>重みで動きます</b>（プリセットで 133〜171 件）。
+            また<b>公共施設があっても、そこにカームダウンスペースがあるとは限りません</b>——
+            数えているのは転用しうる場所の有無です。
+          </p>
+        </div>
+
+        <div class="fig">
+          <div>
+            <img src="captures/03-unreachable.png" alt="到達不可の区画だけに絞った状態" />
+            <p class="cap">
+              絞り込むと上位がごっそり消え、斜線の 148 区画が現れる。
+              <b>「公共施設 0 件」がその場で確かめられる。</b>
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div class="foot">
+        <span>calmgap-tokyo</span><span>6</span>
+      </div>
+    </section>
+
+    <!-- ============================================ 7 外部照合と結び（105–120秒） -->
+    <section class="slide dark">
+      <div class="chip">06 外から確かめた</div>
+      <h2 style="margin-bottom: 0.22in">
+        既に置かれている場所と、この地図が指す場所は一致しない
+      </h2>
+
+      <div class="cols" style="gap: 0.6in">
+        <div style="flex: 0 0 5.5in">
+          <div class="kv"><span>確認できた設置</span><b>11 か所・16 室</b></div>
+          <div class="kv"><span>優先度順位の中央値</span><b>4,765 位 / 9,507</b></div>
+          <div class="kv"><span>上位 50 に入るもの</span><b class="warm">0 件</b></div>
+          <div class="kv">
+            <span>街を歩いている人がその場で使える室</span><b class="warm">1 室</b>
+          </div>
+          <p class="muted" style="font-size: 11pt; margin-top: 0.18in">
+            残りは大学の関係者のみ 5 室・保安検査後 6 室・入館料やチケットが要るもの 4 室。
+            公表情報からの手集計で、スコアには一切入れていません。
+          </p>
+        </div>
+
+        <div style="flex: 1; display: flex; flex-direction: column; justify-content: center">
+          <p class="lead">
+            既存のカームダウンスペースは<b>「その施設の利用者向けの設備」</b>であって、
+            <b>街にいる人の退避先ではありません。</b>
+          </p>
+          <p class="lead" style="margin-top: 0.2in">
+            この地図は、その差を <b>148 区画</b>として示します。
+          </p>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top: 0.34in">
+        <p style="font-size: 12pt">
+          <b>9,507 区画を、人が話し合える十数区画まで絞る道具です。</b>
+          どこに置くかを決める道具ではありません——決めるのは人で、その会議に出せる根拠を作ります。
+          ETL・スコアリング・地図 UI・検証ツールは OSS として公開しています。
+        </p>
+      </div>
+
+      <div class="foot">
+        <span>monoimi ／ github.com/monoimi-mod/calmgap-tokyo</span>
+        <span>calmgap-tokyo.hiroaki-kuwabara.workers.dev</span>
+      </div>
+    </section>
+  </body>
+</html>
