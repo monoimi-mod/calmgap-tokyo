@@ -210,8 +210,18 @@ def main(argv: list[str]) -> int:
             continue
 
         if not src.file_hint:
-            unverified.append(f"{src.key}（file_hint が空）")
-            print("    ○ HTTP 200（中身の照合は無し。file_hint が空）")
+            # **「書けない」と「まだ書いていない」を区別する。**
+            # 空欄だけを見て「file_hint が空」と言っていたため、
+            # 都教委の在籍者数が**確かめずに書いた理由**（「一覧ページに
+            # ファイル名は出ていない」——出ていた）で 1 件ぶん緩いまま
+            # 残っていた。理由が書いてあるものは「試して駄目だった」、
+            # 空のものは「まだ試していない」である。
+            if src.unverifiable:
+                unverified.append(f"{src.key}（{src.unverifiable}）")
+                print(f"    △ HTTP 200・照合できない理由あり: {src.unverifiable}")
+            else:
+                unverified.append(f"{src.key}（file_hint が空・理由も未記入）")
+                print("    ○ HTTP 200（中身の照合は無し。file_hint が空）")
             continue
 
         missing = [h for h in src.file_hints if h not in body]

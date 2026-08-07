@@ -355,6 +355,34 @@ def _source_labels_have_no_separator():
             assert SOURCE_JOIN not in alias, f"{s.key} の alias に {SOURCE_JOIN!r}"
 
 
+@check("「照合できない理由」は、照合できる出典に書かれていない")
+def _unverifiable_only_without_hint():
+    """`Source.unverifiable` は「そのページで試したが裏を取れなかった」理由。
+
+    **`file_hint` があるなら、それは照合できているということ**なので、
+    理由が書いてあっても `link_check` は読まない——**誰も読まない文字列が
+    「検査してあります」の顔で残る**。理由を書いた出典が実際に
+    照合されていないことを、ここで固定する。
+
+    逆向き（理由が無いのに file_hint も無い）は**未着手**であって誤りでは
+    ないので落とさない。実際 2026-08-07 まで都教委の在籍者数がそれで、
+    「一覧ページにファイル名は出ていない」という**確かめずに書いた理由**が
+    コメントに残っていた（ページには載っていた）。
+    """
+    from .config import SOURCES
+
+    for s in SOURCES.values():
+        if not s.unverifiable:
+            continue
+        assert not s.file_hint, (
+            f"{s.key}: file_hint があるのに unverifiable が書いてある。"
+            "照合できているなら理由は要らない（読まれない文字列になる）"
+        )
+        assert s.unverifiable.strip() == s.unverifiable and len(s.unverifiable) > 10, (
+            f"{s.key}: unverifiable が理由になっていない（{s.unverifiable!r}）"
+        )
+
+
 @check("絶対尺度の層は基準の出典を必ず持つ")
 def _absolute_requires_basis():
     """lo / hi をどの法令から取ったか書けない層に絶対尺度を使うと、
