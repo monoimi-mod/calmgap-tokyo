@@ -41,7 +41,7 @@ source .venv/bin/activate      # geopandas pandas numpy shapely pyproj requests
 python -m etl.selftest           # 69 件。不変条件と「間違いが黙って通らないこと」
 node tools/parity_check.mjs      # Python と TypeScript のスコア一致（全メッシュ）
 node tools/facility_parity.mjs   # 数えた件数と、地図に光る点の数の一致（全メッシュ・6 群）
-python tools/doc_numbers.py      # docs/status.md の現況値が配信データと合っているか
+python tools/doc_numbers.py      # 文書と提出物の数値が配信データと合っているか
 python tools/link_check.py       # 出典リンクが「そのデータのある場所」を指しているか
 ```
 
@@ -253,6 +253,17 @@ Python と TypeScript でズレない）。
 どれも間違っていても動く。**古い値が残っていないかは検査しない**——
 この作品は経過の数値を意図的に残しており、機械的に禁じると
 経過の記録と消し忘れが区別できず偽陽性だらけになる（試したら 17 件中 16 件が偽陽性）。
+
+**提出物（`docs/slides.html`・`presentation.md`・`submission-form.md`）は
+向きが逆である。** `status.md` は「現在値がすべて書かれていること」を求めるが、
+**資料は数値の一部しか引かない**ので、全部を求めると
+「区平均の開き 4.0dB がスライドに無い」で落ちる。必要なのは
+**その資料が引いている数値が、いまのビルドと合っているか**で、
+資料ごとに「載っている値」を明示的に並べる（`SUBMISSION_CHECKS`・47 項目）。
+**資料から主張ごと消したときだけ、一覧からも消すこと。**
+**配信データから出せない数を資料に書かない**——手で測った
+「プリセットで 133〜171 件」は検査できないのでスライドから外した
+（画面も同じ理由でこれを出していない）。**出したいなら先に ETL から配信する。**
 
 **「既存施設では到達不可」は失敗ではなく提言。** ホスト施設が 700m 以内に無い
 メッシュのこと。現在 1,058/9,507 件（11.1%）。ただし **23 区すべてで公共施設一覧を

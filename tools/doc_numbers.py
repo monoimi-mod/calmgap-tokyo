@@ -35,11 +35,33 @@
 書く場所なので、現在値が無ければそれは反映漏れである。
 
 新しい指標を出したらここへ足すこと。足さなければ守られない。
+
+## 提出物（スライド・台本・記入案）は向きが逆である
+
+`docs/status.md` は**現在値がすべて書かれている**ことを求める文書なので、
+「配信データの値が文書に在るか」を見れば足りる。
+
+**提出物はそうではない。** スライドが引くのは数値の一部だけで、
+全部を求めると「区平均の開き 4.0dB がスライドに無い」で落ちる。
+必要なのは逆向きの検査——**その資料が引いている数値が、いまのビルドと
+合っているか**である。だから資料ごとに「載っている値」を明示的に
+並べる（`SUBMISSION_CHECKS`）。
+
+**資料から主張を消したら、この一覧からも消すこと。** 一覧に残ったまま
+資料から消えると落ちる。それは正しい落ち方で、**資料を直したのに
+一覧を直していない**ことを指している。
+
+**配信データから出せない数を資料に書かないこと。** 「プリセットごとに
+133〜171 件」は 2026-08-06 に手で測った値で、`meta.json` にも
+`sensitivity.json` にも無い。検査できないうえ、ビルドが変われば黙って
+古くなる——画面が同じ理由でこれを出していないので、スライドからも外した
+（2026-08-07）。**出したいなら先に ETL から配信すること。**
 """
 
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from decimal import Decimal, ROUND_HALF_UP
@@ -51,6 +73,11 @@ WEB_DATA = ROOT / "web" / "public" / "data"
 # 現況の数値を書く場所。ここに現在値が無ければ反映漏れとみなす。
 STATUS = ROOT / "docs" / "status.md"
 
+# 提出物。**審査員が読むのはこちらで、status.md は読まれない。**
+SLIDES = ROOT / "docs" / "slides.html"
+SCRIPT = ROOT / "docs" / "presentation.md"
+FORM = ROOT / "docs" / "submission-form.md"
+
 
 def load(name: str):
     path = WEB_DATA / name
@@ -60,6 +87,186 @@ def load(name: str):
             "先に `python -m etl.build --live --sensitivity` を実行すること。"
         )
     return json.loads(path.read_text())
+
+
+def read_doc(path: Path) -> str:
+    """文書を読み、突き合わせる前に表記を寄せる。
+
+    **マイナス記号。** 文書は全角相当の U+2212（−0.632）で書き、Python の
+    書式は ASCII のハイフン（-0.283）を出す。**見た目が同じで一致しない**
+    ——この検査でいちばん出したくない偽陽性なので片側へ正規化する
+    （文書側の書き方は変えない）。
+
+    **HTML の改行。** `slides.html` は 1 つの数値が
+    `135,911 人<br />／日` のようにタグで割れることがある。タグを
+    落としてから突き合わせる——**落とさないと「資料に書いてあるのに
+    無い」と言う検査**になり、直しようがない指摘が出る。
+    """
+    text = path.read_text()
+    if path.suffix == ".html":
+        text = re.sub(r"<[^>]+>", "", text)
+    return squash(text.replace("−", "-"))
+
+
+def squash(s: str) -> str:
+    """空白を落とす。**単位の前の空白は書き手の自由にする。**
+
+    同じ値が資料ごとに `67.6dB` と `67.6 dB`、`10レイヤー` と `10 レイヤー` の
+    両方で書かれている。**どちらも正しい**——この検査は文書の書き方を
+    縛らない方針なので、突き合わせる前に両側から空白を落とす。
+
+    `slides.html` では 1 つの数値がタグで割れる（`72.1 <small>%</small>`）。
+    タグを落とすと `72.1 %` が残るので、ここでも同じ処理で吸収される。
+
+    **数字の途中に当たる誤判定は増えない**——`contains` は直前の文字が
+    数字・カンマ・小数点かどうかで見ており、空白を落としても
+    `44件` の前が `4` であることは変わらない。
+    """
+    return re.sub(r"[\s　]+", "", s)
+
+
+def contains(text: str, value: str) -> bool:
+    """`value` が `text` に在るか。**数字の途中に当たったら在ると見なさない。**
+
+    素の部分一致だと、**別の数の末尾に当たって黙って通る**。実際に踏んだ:
+    selftest が 71 件になったとき、検査は ok を出したが status.md は
+    69 件のままで、当たっていたのは `高齢系 971 件` の中の「71 件」だった。
+    **検査が通ったのに文書は古い**——この道具がいちばん出してはいけない結果。
+
+    直前の文字が数字・カンマ・小数点なら、その一致は別の数の一部である。
+    書式には踏み込まない（この検査は文書の書き方を縛らない方針）。
+
+    `text` は `read_doc` が空白を落としたもの。**期待値の側も同じ規則を
+    通す**——片側だけだと「67.6 dB」が永久に一致しない。
+    """
+    value = squash(value)
+    start = 0
+    while (i := text.find(value, start)) != -1:
+        if i == 0 or text[i - 1] not in "0123456789,.":
+            return True
+        start = i + 1
+    return False
+
+
+def pct(x: float) -> str:
+    """0.7334 → '73.3%' / 0.65 → '65%'。文書の書き方に合わせる。
+
+    **組み込みの `round` を使わない。** 「ちょうど半分」を偶数側へ
+    丸めるため 75.25 が 75.2 になる（`CLAUDE.md` の丸めの項と同じ理由）。
+    文書に書くのは大きい側——`score.publish_round` と規則を揃える。
+    """
+    v = Decimal(str(x * 100)).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+    return f"{v.normalize():f}%"
+
+
+def d3(x: float) -> str:
+    """0.9889 → '0.989'。画面が出すのと同じ 3 桁に丸める。
+
+    **組み込みの `round` を使わない**（`CLAUDE.md` の丸めの項）。
+    """
+    return f"{Decimal(str(x)).quantize(Decimal('0.001'), rounding=ROUND_HALF_UP):f}"
+
+
+def submission_checks(meta: dict, sens: dict | None, order: list[dict]) -> list[tuple[Path, str, str]]:
+    """提出物が引いている数値を、いまのビルドから組み立てる。
+
+    **1 位の区画を決め打たない。** 優先度が最大の区画を取り、その区名・
+    最寄り駅名・メッシュコードも検査対象に入れる。上位が入れ替わったら
+    資料の側が落ちる——**それが起きてほしい落ち方**である
+    （特別支援学校の規模を入れただけで提言 8 件のうち 4 件が入れ替わった、
+    という履歴のある作品なので、上位はいつでも動く前提で組む）。
+
+    **実数は配信された `f_*` から採る。** これは `demand_points.geojson`
+    から数え直したものと全区画で一致することを `tools/facility_parity.mjs`
+    が検査しているので、ここで数え直すと**同じ規則の 3 本目の実装**に
+    なってしまう（`CLAUDE.md` が繰り返し警告している型）。
+    """
+    top = order[0]
+    u = meta["unreachable"]
+    score_layers = sum(1 for r in meta["layer_roles"] if r["role"] == "score")
+
+    # **模擬データでは資料の数値を検査できない。** 区名・駅名・外部照合は
+    # 実データ側にしか無いので、**無いことを黙って飛ばさずに止める**
+    # （飛ばすと「提出物 ok」と出たまま何も見ていない状態になる）。
+    if meta.get("synthetic") or "calm_spaces" not in meta:
+        sys.exit(
+            "提出物の検査は実データのビルドでのみ行える。"
+            "`python -m etl.build --live --sensitivity` を実行すること"
+        )
+    for key in ("f_station_name", "f_zoning_name", "f_welfare_n", "f_welfare_cap"):
+        if top.get(key) is None:
+            sys.exit(f"1 位の区画 {top['c']} に {key} が無い。配信データが想定と違う")
+
+    ward = meta["target_wards"][top["w"]]
+    cs = meta["calm_spaces"]
+    rooms = sum(s["rooms"] for s in cs["sites"])
+    ranks = sorted(s["rank"] for s in cs["sites"])
+    median_rank = ranks[len(ranks) // 2]
+    by_access: dict[str, int] = {}
+    for s in cs["sites"]:
+        by_access[s["access"]] = by_access.get(s["access"], 0) + s["rooms"]
+
+    # (ファイル, 説明, 在るべき文字列)
+    out: list[tuple[Path, str, str]] = []
+
+    def need(files: tuple[Path, ...], label: str, value: str) -> None:
+        for f in files:
+            out.append((f, label, value))
+
+    ALL = (SLIDES, SCRIPT, FORM)
+
+    # --- 規模。3 つの資料すべてが名乗っている ---
+    need(ALL, "メッシュ数", f"{meta['mesh_count']:,}")
+    need((SLIDES, FORM), "データの層", f"{meta['layer_total']} レイヤー")
+    need((SLIDES,), "スコアに入る層", f"{score_layers} 層")
+
+    # --- 記入案 4-1 の備考欄が騒音の数を引いている。**年度を足すたびに動く** ---
+    need((FORM,), "騒音の測定点", f"{meta['layer_counts']['noise']:,} 点")
+    need(
+        (FORM,),
+        "騒音の観測圏外セル",
+        f"{sum(1 for r in order if not r.get('f_noise_n')):,} 区画",
+    )
+
+    # --- 1 位の区画。**スライドと台本が実数を並べている行** ---
+    need((SLIDES, SCRIPT), "1 位のメッシュコード", top["c"])
+    need((SLIDES, SCRIPT), "1 位の区", ward)
+    need((SLIDES, SCRIPT), "1 位の最寄り駅", top["f_station_name"])
+    need((SLIDES,), "1 位の優先度", d3(top["priority"]))
+    need((SLIDES,), "1 位の需要", d3(top["demand"]))
+    need((SLIDES,), "1 位の負荷", d3(top["load"]))
+    need((SLIDES, SCRIPT), "1 位の事業所件数", f"{top['f_welfare_n']} 件")
+    need((SLIDES,), "1 位の事業所定員計", f"{top['f_welfare_cap']:,} 人")
+    need((SLIDES,), "1 位の精神科件数", f"{top['f_clinic_n']} 件")
+    need((SLIDES, SCRIPT), "1 位の駅の乗降計", f"{top['f_station_sum']:,} 人")
+    need((SLIDES, SCRIPT), "1 位の用途地域", top["f_zoning_name"])
+    need((SLIDES, SCRIPT), "1 位の推定騒音", f"{top['f_noise_db']} dB")
+
+    # --- 2 つの出力 ---
+    need(ALL, "到達不可のうち区内で中位以上", f"{u['mid_or_above']} 区画")
+    need((SLIDES,), "提言の既定件数", f"上位 {meta['ranking_default_n']} 区画")
+    need((SLIDES,), "徒歩圏の半径（供給側）", f"{meta['fact_radius_m']['host']:.0f}m")
+
+    # --- 外部照合。**この作品で唯一、外の物差しで確かめた部分** ---
+    need((SLIDES, SCRIPT), "既存の設置か所", f"{len(cs['sites'])} か所")
+    need((SLIDES, SCRIPT), "既存の設置室数", f"{rooms} 室")
+    need((SLIDES, SCRIPT), "既存の設置の順位の中央値", f"{median_rank:,} 位")
+    need((SLIDES,), "その場で使える室数", f"{by_access.get('open', 0)} 室")
+    need((SLIDES,), "関係者のみの室数", f"{by_access.get('members', 0)} 室")
+    need((SLIDES,), "保安検査後の室数", f"{by_access.get('airside', 0)} 室")
+    need((SLIDES,), "有料の室数", f"{by_access.get('ticketed', 0)} 室")
+
+    # --- 順位の不安定さ。**ここを落とすと資料が作品より強く見える** ---
+    if sens:
+        pa = sens["preset_agreement"]
+        need((SLIDES,), "プリセット共通の母数", f"上位 {pa['top_k']} 件")
+        need((SLIDES,), "重み ±30% の上位10", pct(sens["random_perturbation"]["overlap_mean"]["10"]))
+        groups = {g["id"]: g for g in sens["fixed_values"]["groups"]}
+        need((SLIDES,), "揺さぶった固定値の数", f"{groups['all']['constants']} 個")
+        need((SLIDES,), "重みの数", f"重み {len(meta['components'])} 個")
+    need((SLIDES,), "特別支援学校の校数", f"{meta['layer_counts']['schools']} 校")
+
+    return out
 
 
 def selftest_count() -> int:
@@ -201,16 +408,6 @@ def main() -> int:
         # bandwidth_profile は fixed_values の下にある（トップレベルではない）
         band = {b["key"]: b for b in fv.get("bandwidth_profile", [])}
 
-        def pct(x: float) -> str:
-            """0.7334 → '73.3%' / 0.65 → '65%'。文書の書き方に合わせる。
-
-            **組み込みの `round` を使わない。** 「ちょうど半分」を偶数側へ
-            丸めるため 75.25 が 75.2 になる（`CLAUDE.md` の丸めの項と同じ理由）。
-            文書に書くのは大きい側——`score.publish_round` と規則を揃える。
-            """
-            v = Decimal(str(x * 100)).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
-            return f"{v.normalize():f}%"
-
         checks += [
             ("重み ±30% の上位10", pct(rp["overlap_mean"]["10"])),
             ("固定値 76 個の上位10", pct(groups["all"]["overlap_mean"]["10"])),
@@ -225,34 +422,12 @@ def main() -> int:
                 ("帯域・特別支援学校の単独", pct(band["sped_school"]["alone"]["overlap_mean"]["10"]))
             )
 
-    # **負の相関を入れたので、マイナス記号を寄せる。** 文書は全角相当の
-    # U+2212（−0.632）で書き、Python の書式は ASCII のハイフン（-0.283）を出す。
-    # 見た目が同じで一致しない——この検査でいちばん出したくない偽陽性なので、
-    # 突き合わせる前に片側へ正規化する（文書側の書き方は変えない）。
-    text = STATUS.read_text().replace("−", "-")
-
-    def contains(value: str) -> bool:
-        """`value` が status.md に在るか。**数字の途中に当たったら在ると見なさない。**
-
-        素の部分一致だと、**別の数の末尾に当たって黙って通る**。実際に踏んだ:
-        selftest が 71 件になったとき、検査は ok を出したが status.md は
-        69 件のままで、当たっていたのは `高齢系 971 件` の中の「71 件」だった。
-        **検査が通ったのに文書は古い**——この道具がいちばん出してはいけない結果。
-
-        直前の文字が数字・カンマ・小数点なら、その一致は別の数の一部である。
-        書式には踏み込まない（この検査は文書の書き方を縛らない方針）。
-        """
-        start = 0
-        while (i := text.find(value, start)) != -1:
-            if i == 0 or text[i - 1] not in "0123456789,.":
-                return True
-            start = i + 1
-        return False
+    text = read_doc(STATUS)
 
     failures = [
         f"{label}: 現在値 {value!r} が {STATUS.relative_to(ROOT)} に無い"
         for label, value in checks
-        if not contains(value)
+        if not contains(text, value)
     ]
 
     # 画面の staleness 検知と同じ条件。配信物どうしの整合。
@@ -265,13 +440,41 @@ def main() -> int:
 
     print(f"現況の数値と配信データの照合（{STATUS.relative_to(ROOT)}）")
     for label, value in checks:
-        mark = "ok  " if contains(value) else "FAIL"
+        mark = "ok  " if contains(text, value) else "FAIL"
         print(f"  {mark}  {label:<28} {value}")
+
+    # ------------------------------------------------ 提出物（審査員が読む側）
+    #
+    # **status.md より優先度が高い。** status.md は作業再開の起点で、
+    # 古くなっても直せる。**提出物は 8月23日17時に固定される。**
+    subs = submission_checks(meta, sens, order)
+    docs = {path: read_doc(path) for path in {p for p, _, _ in subs}}
+    print("\n提出物の数値と配信データの照合")
+    for path in sorted(docs, key=lambda p: p.name):
+        rows = [(lab, val) for p, lab, val in subs if p == path]
+        bad = sum(1 for lab, val in rows if not contains(docs[path], val))
+        head = "ok  " if not bad else "FAIL"
+        print(f"  {head}  {path.relative_to(ROOT)}  {len(rows)} 項目"
+              + (f" / 食い違い {bad} 件" if bad else ""))
+        for lab, val in rows:
+            if not contains(docs[path], val):
+                print(f"          - {lab}: 現在値 {val!r} が無い")
+    failures += [
+        f"{path.relative_to(ROOT)} — {label}: 現在値 {value!r} が無い"
+        for path, label, value in subs
+        if not contains(docs[path], value)
+    ]
 
     if failures:
         print(f"\n{len(failures)} 件の食い違い\n")
         for f in failures:
             print(f"  {f}")
+        # **落ちたときに直すのは資料であって、この検査ではない。**
+        # 一覧から消すのは「資料からその主張ごと消した」ときだけ。
+        print(
+            "\n提出物の側が落ちたときは、資料の数値を新しいビルドに合わせること。"
+            "\n主張ごと消した場合だけ、tools/doc_numbers.py の一覧からも消す。"
+        )
         return 1
     print("\nすべて一致")
     return 0

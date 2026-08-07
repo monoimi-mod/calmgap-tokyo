@@ -208,9 +208,10 @@ node tools/slides_pdf.mjs        # docs/slides.html → docs/slides.pdf
 > 気付けない。5-1 は PowerPoint / PDF のどちらでも可。
 > 原稿は [`docs/slides.html`](slides.html) で、**PDF を直接直さないこと。**
 >
-> **スライドの数値は `tools/doc_numbers.py` の検査対象に入っていない**
-> （見ているのは `docs/status.md` だけ）。本ファイルの数値も同じ。
-> 提出直前に手で突き合わせること。
+> **本ファイルとスライドと台本の数値は、`python tools/doc_numbers.py` が
+> 配信データと突き合わせる**（2026-08-07 に追加）。手で確かめる必要は無い。
+> ただし**引いていない数値は検査されない**ので、新しく数値を書いたら
+> `tools/doc_numbers.py` の `SUBMISSION_CHECKS` にも足すこと。
 
 ---
 
