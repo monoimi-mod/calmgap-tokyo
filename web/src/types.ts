@@ -157,6 +157,15 @@ export interface Meta {
     label: string;
     url: string;
     license: string;
+    /**
+     * **著作権表示（作者名）。** CC BY が最初に求めるもので、`label`（データの
+     * 名前）でも `license`（条件）でも代わりにならない。公共施設一覧は
+     * 「東京都オープンデータカタログ CC BY 4.0」と名乗っていたが、
+     * **著作者は各区であって東京都ではなかった**（2026-08-13 に是正）。
+     */
+    rights_holder: string;
+    /** ライセンス条文の URL。空なのは「名前の付いたライセンスではない」出典だけ。 */
+    license_url: string;
     note: string;
     /** 生成に使ったレイヤー名。 */
     layer: string;
@@ -166,6 +175,11 @@ export interface Meta {
   }[];
   /** レジストリにあるが使っていない出典の件数。「N 出典を使った」と誤読させないため。 */
   unused_source_count: number;
+  /**
+   * **改変した旨の明記。** CC BY も PDL1.0 も e-Stat 利用規約も明文で求めている。
+   * `etl/config.py` の `MODIFICATION_NOTICE` が唯一の出所で、画面に直接書かない。
+   */
+  modification_notice: string;
   layer_counts: Record<string, number>;
 }
 

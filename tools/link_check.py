@@ -236,6 +236,28 @@ def main(argv: list[str]) -> int:
             )
             print(f"    ✗ 「{lack}」がページ内に無い（{len(src.file_hints)} 件中）")
 
+    # --- ライセンス条文のリンク ---
+    #
+    # **画面が押せるようにした以上、ここも検査の対象である**（2026-08-13）。
+    # 出典 URL で踏んだのと同じで、**リンク切れは黙って通る**——しかも
+    # ライセンスのリンクは、出典のリンクよりさらに押されにくい位置にある。
+    #
+    # ここは `file_hint` のような中身の照合をしない。**条文のページに
+    # 何が書いてあるかを機械で確かめる意味は薄く**（CC BY 4.0 の deed は
+    # 版が固定されている）、やるなら「その条文が本当にその出典に
+    # 適用されているか」を確かめたいが、それはページの外側にある事実で、
+    # このリポジトリが確かめられる種類のことではない。**開けることだけ見る。**
+    licenses = sorted({s.license_url for s in wanted if s.license_url})
+    for url in licenses:
+        keys = ", ".join(s.key for s in wanted if s.license_url == url)
+        status, _ = fetch(url)
+        print(f"[ライセンス] {url}\n    ({keys})")
+        if status == 200:
+            print("    ✓ HTTP 200")
+        else:
+            failures.append(f"ライセンス条文: HTTP {status} — {url}")
+            print(f"    ✗ HTTP {status}")
+
     print()
     print(
         # **母数は wanted（対象の出典すべて）で数える。** targets（URL のあるもの）で
@@ -243,6 +265,7 @@ def main(argv: list[str]) -> int:
         f"検査 {len(wanted)} 件（うちリンクを開いたもの {len(targets)} 件）/ "
         f"中身まで裏を取れたもの {len(wanted) - len(unverified)} 件"
     )
+    print(f"ライセンス条文のリンク {len(licenses)} 本")
     if unverified:
         # 隠さない。ここは人が押して確かめるしかない出典である。
         print("中身の照合ができなかったもの（人が確かめる）:")

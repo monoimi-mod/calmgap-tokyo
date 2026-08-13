@@ -413,6 +413,68 @@ def _unverifiable_only_without_hint():
         )
 
 
+@check("使っている出典は著作権表示（作者名）を必ず持つ")
+def _used_sources_have_rights_holder():
+    """**CC BY が最初に求めるのは「作者名」で、`label` も `license` も違う。**
+
+    公共施設一覧は `license="東京都オープンデータカタログ CC BY 4.0"` と
+    書いてあり、それらしく見えていた。だが `label` はデータの名前、`license` は
+    条件で、**どちらも「誰の著作物か」を言っていない**——実際の著作者は
+    23 の区それぞれで、東京都ではなかった（2026-08-13 に是正）。
+
+    **欄を作っただけでは、次に足す出典で静かに空欄に戻る。** 画面は
+    `rights_holder` が空なら行ごと出さないので、**出典一覧は今まで通りに
+    見えたまま、その 1 件だけ帰属が消える**。ここで止める。
+    """
+    from .config import SOURCES
+
+    for s in SOURCES.values():
+        if s.layer is None:  # 検討しただけで使っていない出典は画面に出ない
+            continue
+        assert s.rights_holder.strip(), (
+            f"{s.key}: 使っている出典なのに rights_holder が空。"
+            "経由したカタログ名ではなく、著作者を書くこと"
+        )
+
+
+@check("CC BY を名乗る出典は、ライセンス条文の URL を必ず持つ")
+def _named_license_needs_url():
+    """**名前の付いたライセンスを名乗るなら、条文の場所まで出す**
+    （事務局の案内が挙げている 4 点目）。
+
+    逆向きは落とさない。**空にできる出典が実在する**——環境局の騒音は
+    口頭で得た利用の許諾で、指せる条文が存在しない（issues.md C5）。
+    そこを一律に埋めさせると、**確かめていない条件まで断言する**ことになり、
+    C5 で避けたはずの誤りに戻る。空欄の理由は `license` の本文に書いてある。
+    """
+    from .config import SOURCES
+
+    for s in SOURCES.values():
+        if s.layer is None:
+            continue
+        if "CC BY" not in s.license:
+            continue
+        assert s.license_url.startswith("http"), (
+            f"{s.key}: CC BY を名乗っているのに license_url が無い"
+        )
+
+
+@check("改変した旨の明記が、画面へ配信する文言として在る")
+def _modification_notice_exists():
+    """CC BY・国土数値情報の利用約款（PDL1.0）・e-Stat 利用規約が
+    そろって明文で求めている条件。**この作品は素のデータを 1 バイトも
+    出していない**（名寄せ・除外・座標化・内挿・メッシュ集計・重み付き合成）。
+
+    **画面に直接書かないための定数**なので、空になったら画面から黙って
+    消える。出典名と同じで、config が唯一の出所である。
+    """
+    from .config import MODIFICATION_NOTICE
+
+    assert "編集・加工" in MODIFICATION_NOTICE, (
+        "MODIFICATION_NOTICE が「編集・加工した」と言っていない"
+    )
+
+
 @check("絶対尺度の層は基準の出典を必ず持つ")
 def _absolute_requires_basis():
     """lo / hi をどの法令から取ったか書けない層に絶対尺度を使うと、
@@ -662,6 +724,44 @@ def _drop_assumed_actually_changes_demand():
     got = dropped["welfare_capacity"].to_numpy()
     assert got.sum() < base.sum(), "仮定員を落としたのに需要が減っていない"
     assert (got <= base + 1e-9).all(), "落としたのに増えたメッシュがある"
+
+
+@check("模擬データは、配信が実データに要求する列を欠かさない")
+def _fixture_has_published_columns():
+    """**実データ側にしか無い列に依存すると、模擬モードでだけ壊れる。**
+
+    模擬の公園には `area_m2` が無く、`write_outputs` は P13（点＋面積）の
+    形を前提に `r = √(A/π)` で円の半径を復元していたため、
+    **模擬モードのビルドが parks.geojson の書き出しで落ちていた**
+    （2026-08-13 に是正。ライセンスの洗い直しで両モードを通そうとして発覚）。
+    `parity_check` は書き出し済みのファイルを読むので、**書き出しの前で
+    落ちる壊れ方はどの検査にも掛かっていなかった。**
+
+    落ちてくれたのはまだ良いほうである。**同じ形で「既定値が静かに乗る」
+    ほうが悪い**——A29 の列名を決め打って全件 NaN になったときと同型で、
+    出力を見ても気付けない。
+
+    ここで見るのは配信列だけ。**模擬と実データの列を全部そろえろ、では
+    ない**——模擬にしか無い印（`synthetic`）も、実データにしか無い出所の
+    記録もあってよい。
+    """
+    from . import build as buildlib
+
+    with _quiet():
+        layers, _ = buildlib.load_layers(live=False)
+
+    # build.write_outputs が名指しで読む列。増えたらここに足す。
+    required = {
+        "parks": ("name", "area_m2", "source"),
+        "hosts": ("name", "host_kind", "source"),
+        "noise": ("name", "laeq_db", "source"),
+    }
+    for layer, cols in required.items():
+        got = set(layers[layer].columns)
+        missing = [c for c in cols if c not in got]
+        assert not missing, (
+            f"模擬の {layer} に配信列が無い: {missing}（実在: {sorted(got)}）"
+        )
 
 
 # ---------------------------------------------------------------------------

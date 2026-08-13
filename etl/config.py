@@ -686,6 +686,37 @@ HOST_MAX_DISTANCE_M = 700.0
 # データソース レジストリ
 # ---------------------------------------------------------------------------
 
+# **CC BY が求めるのは「出典名」ではなく「著作権表示（作者名）」である。**
+#
+# 2026-08-13、ハッカソン事務局からライセンスの案内が出たのを機に全出典を
+# 洗い直したところ、`license` 欄が満たしていない条件が 2 つあった。
+#
+#   1. **作者名**。公共施設一覧は「東京都オープンデータカタログ CC BY 4.0」と
+#      名乗っていたが、**著作者は各区であって東京都ではない**。しかも実際に
+#      読んだファイルの一部は都のカタログに載っておらず（北区・足立区・
+#      渋谷区・目黒区の新しい版）、**カタログの表記を、カタログに無いものにまで
+#      名乗らせていた**。騒音のライセンス（issues.md C5）で一度踏んだのと
+#      同じ形である——**そう見えることと、そう書いてあることは別**。
+#   2. **改変した旨**。この作品は名寄せ・除外・座標化・内挿・メッシュ集計を
+#      通しており、素のデータは 1 バイトも出していない。国土数値情報（PDL1.0）も
+#      e-Stat も「編集・加工等を行ったことを記載してください」を明文で求めている。
+#
+# そこで `rights_holder`（作者名）と `license_url`（ライセンス URL）を欄として
+# 分け、改変の明記は下の `MODIFICATION_NOTICE` を画面と README に出す。
+# **`selftest` が「使っている出典に作者名があること」「CC BY を名乗るなら
+# ライセンス URL があること」を検査する**——欄を作っただけでは、
+# 次に足す出典で静かに空欄に戻る。
+MODIFICATION_NOTICE: str = (
+    "このサイトが出している数値・地図・順位は、いずれも下記の出典データを"
+    "**編集・加工したもの**です（対象の絞り込み・名寄せ・住所からの座標化・"
+    "距離重み付き内挿・250m メッシュへの集計・重み付き合成）。"
+    "**加工の責任はこのサイトにあり、出典の提供元は加工結果について"
+    "一切の責任を負いません。**"
+)
+
+# CC BY 4.0 のライセンス条文（日本語）。`license_url` に何度も書くので定数にする。
+CC_BY_4_0_URL: str = "https://creativecommons.org/licenses/by/4.0/deed.ja"
+
 
 @dataclass(frozen=True)
 class Source:
@@ -699,6 +730,18 @@ class Source:
     note: str = ""
     api_key_env: str | None = None
     params: dict = field(default_factory=dict)
+
+    # **著作権表示（作者名）。** CC BY が最初に求めるものだが、`label` でも
+    # `license` でも代わりにならない——`label` はデータの名前、`license` は
+    # 条件であって、**どちらも「誰の著作物か」を言っていない**。
+    # 経由したカタログの名前を書かないこと（公共施設一覧でそれをやった）。
+    rights_holder: str = ""
+
+    # **ライセンス条文の URL。** 事務局の案内が挙げている 4 点目。
+    # 名前の付いたライセンスを名乗るなら、条文の場所まで出す。
+    # 空にしてよいのは「名前の付いたライセンスではない」ものだけで、
+    # いま該当するのは環境局の騒音（口頭の許諾）と手集計の 2 件。
+    license_url: str = ""
 
     # --- ここから下は「画面に出すため」の欄 ---
     #
@@ -774,7 +817,9 @@ SOURCES: dict[str, Source] = {
         # 実際に使った 2024 年版は載っていない（2026-08-04 に是正）。
         url="https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-N03-2024.html",
         kind="shp",
-        license="国土数値情報 利用約款（出典表示）",
+        license="国土数値情報 利用約款（出典表示・編集加工の明記が必要）",
+        rights_holder="国土交通省",
+        license_url="https://nlftp.mlit.go.jp/ksj/other/agreement.html",
         note="メッシュを張る範囲・区名・区ごとの集計の基準。"
         "名称とコード（N03_007）の両方で対象 23 区を判定する。",
         layer="area",
@@ -787,9 +832,19 @@ SOURCES: dict[str, Source] = {
         label="障害福祉サービス等事業所一覧（所在地・定員）",
         url="https://www.wam.go.jp/content/wamnet/pcpub/top/sfkopendata/",
         kind="csv",
-        license="WAM NET 二次利用可（出典表示）",
+        # 配信ページに「利用規約の条件の下、自由にご利用いただけます」
+        # 「営利目的、非営利目的を問わず二次利用可能」「無償で利用できるもの」
+        # と明記されている（2026-08-13 に本文を取得して確認）。
+        license="二次利用可（営利・非営利を問わず無償。配信ページに明記）",
+        rights_holder="独立行政法人福祉医療機構（WAM NET 障害福祉サービス等情報公表システム）",
+        license_url="https://www.wam.go.jp/content/wamnet/pcpub/top/sfkopendata/",
         note="サービス種別ごとに 29 分割された全国 CSV（都道府県別ではない）。"
-        "事業所緯度・経度を持つのでジオコーディングは不要。",
+        "事業所緯度・経度を持つのでジオコーディングは不要。"
+        "**配信元が「利用したら一報を」と求めている**——ただし"
+        "**許諾ではなく任意の報告依頼**で、利用条件そのものは"
+        "「営利・非営利を問わず無償で自由に」と同じページに明記されている。"
+        "2026-08-13 に見送りを決定（ユーザー判断）。応じる先は `license_url` の"
+        "ページの「掲載データ利用のご連絡」フォーム。",
         layer="welfare",
         vintage="2026年3月",
         file_hint="sfkopendata",
@@ -803,7 +858,9 @@ SOURCES: dict[str, Source] = {
         # **どの版のページを指しているかが特に効く。**
         url="https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-P29-2023.html",
         kind="shp",
-        license="国土数値情報 利用約款（出典表示）",
+        license="国土数値情報 利用約款（出典表示・編集加工の明記が必要）",
+        rights_holder="国土交通省",
+        license_url="https://nlftp.mlit.go.jp/ksj/other/agreement.html",
         note="P29_003 学校分類コード 16012 = 特別支援学校。"
         "**在籍者数は持たない**ので規模は tokyo_sped_enrollment から当てる。",
         layer="schools",
@@ -816,7 +873,15 @@ SOURCES: dict[str, Source] = {
         url="https://www.kyoiku.metro.tokyo.lg.jp/about/statistics_and_research"
         "/list_of_public_school/school_lists2025/report2025_csv",
         kind="csv",
-        license="東京都 オープンデータ（出典表示）",
+        # **「東京都 オープンデータ」で済ませていたが、確かめていなかった。**
+        # 2026-08-13 に都のカタログ（CKAN API）で照合したところ、
+        # `公立学校統計調査報告書【東京都公立学校一覧】` が東京都教育庁の
+        # 登録として **CC-BY-4.0** で載っており、登録の url も
+        # `school_lists2025` でこちらが読んでいるページと一致した。
+        # **確かめたので名前で書ける**（issues.md C5 の逆側）。
+        license="CC BY 4.0（東京都オープンデータカタログに登録）",
+        rights_holder="東京都教育庁",
+        license_url=CC_BY_4_0_URL,
         note="令和7年度・5月1日現在。**公立のみ**が対象で国立・私立は載らない。"
         "1 行 = 学校 × 障害種別で、併置校は同じ学校番号が複数行に分かれる。",
         layer="schools",
@@ -833,7 +898,9 @@ SOURCES: dict[str, Source] = {
         label="国土数値情報 P14 福祉施設（定員つき）",
         url="https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-P14-v2_1.html",
         kind="shp",
-        license="国土数値情報 利用約款（出典表示）",
+        license="国土数値情報 利用約款（出典表示・編集加工の明記が必要）",
+        rights_holder="国土交通省",
+        license_url="https://nlftp.mlit.go.jp/ksj/other/agreement.html",
         note="需要側は WAM NET へ置き換えた。現在はホスト施設（児童館）の出典。",
         layer="hosts",
         vintage="2022年度",
@@ -846,7 +913,9 @@ SOURCES: dict[str, Source] = {
         # ——リンク切れは黙って通る（2026-08-04 に是正。tools/link_check.py）。
         url="https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-P04-v3_0.html",
         kind="shp",
-        license="国土数値情報 利用約款（出典表示）",
+        license="国土数値情報 利用約款（出典表示・編集加工の明記が必要）",
+        rights_holder="国土交通省",
+        license_url="https://nlftp.mlit.go.jp/ksj/other/agreement.html",
         note="診療科目欄から精神科・心療内科を抽出する。",
         layer="clinics",
         vintage="2020年度",
@@ -857,7 +926,9 @@ SOURCES: dict[str, Source] = {
         label="国土数値情報 S12 駅別乗降客数",
         url="https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-S12-2024.html",
         kind="shp",
-        license="国土数値情報 利用約款（出典表示）",
+        license="国土数値情報 利用約款（出典表示・編集加工の明記が必要）",
+        rights_holder="国土交通省",
+        license_url="https://nlftp.mlit.go.jp/ksj/other/agreement.html",
         note="ODPT の代替。アクセストークンが要らず、乗降客数が年次で入る。"
         "1 行が「駅×事業者×路線」なのでグループコードで束ねて合算する。",
         layer="stations",
@@ -898,7 +969,9 @@ SOURCES: dict[str, Source] = {
         label="国土数値情報 A29 用途地域",
         url="https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-A29-v2_1.html",
         kind="shp",
-        license="国土数値情報 利用約款（出典表示）",
+        license="国土数値情報 利用約款（出典表示・編集加工の明記が必要）",
+        rights_holder="国土交通省",
+        license_url="https://nlftp.mlit.go.jp/ksj/other/agreement.html",
         note="reinfolib_youto の代替。用途地域コードは A29-19_13 では A29_004"
         "（列名は年度で変わるため中身から自動判定する）。",
         layer="zoning",
@@ -953,6 +1026,10 @@ SOURCES: dict[str, Source] = {
         license="東京都環境局サイトでの公開"
         "（2026-08-05 に環境局 環境改善部 自動車環境課へ電話で照会し、"
         "公表データとして二次利用可の回答を得た。測定地点と騒音レベルの利用も可）",
+        rights_holder="東京都環境局",
+        # **ここだけは空でよい。** 名前の付いたライセンスが付与されておらず、
+        # 指せる条文が存在しない。空にした理由が `license` の本文である。
+        license_url="",
         note="測定地点の点データ。等価騒音レベル LAeq を距離重み付き内挿する。"
         "**都のオープンデータカタログには平成25年度までしか無い**"
         "（平成12〜25年度の 14 件で配信が止まっている）。令和以降は環境局の"
@@ -994,7 +1071,9 @@ SOURCES: dict[str, Source] = {
         kind="csv",
         # 環境局の令和元〜5年度で一度踏んだので、ここは登録ページの表記を
         # そのまま採る。**「たぶん CC BY」で書かない**（issues.md C5）。
-        license="CC BY（e-Gov データポータルの登録に明記。2025-10-28 更新）",
+        license="CC BY 4.0（e-Gov データポータルの登録に明記。2025-10-28 更新）",
+        rights_holder="環境省（環境GIS＋の配信は国立環境研究所）",
+        license_url=CC_BY_4_0_URL,
         note="都道府県等が騒音規制法第18条にもとづき行う常時監視の結果を、"
         "環境省の集計として全国・年度単位で配信しているもの（2002〜2024年度）。"
         "**使うのは令和6年度（2024）だけ**——令和元〜5年度は都の資料から"
@@ -1036,7 +1115,9 @@ SOURCES: dict[str, Source] = {
         label="国土数値情報 P13 都市公園",
         url="https://nlftp.mlit.go.jp/ksj/gml/datalist/KsjTmplt-P13.html",
         kind="shp",
-        license="国土数値情報 利用約款（出典表示）",
+        license="国土数値情報 利用約款（出典表示・編集加工の明記が必要）",
+        rights_holder="国土交通省",
+        license_url="https://nlftp.mlit.go.jp/ksj/other/agreement.html",
         note="ポリゴンの面積被覆率をメッシュ単位で算出する。",
         layer="parks",
         vintage="2011年度",
@@ -1052,7 +1133,9 @@ SOURCES: dict[str, Source] = {
         # （2026-08-04 に是正）。取得そのものは api_key_env の API で行う。
         url="https://www.e-stat.go.jp/gis/statmap-search?page=1&type=1&toukeiCode=00200553",
         kind="api",
-        license="政府統計 e-Stat 利用規約（出典表示）",
+        license="政府統計 e-Stat 利用規約（商用可・出典表示・編集加工の明記が必要）",
+        rights_holder="総務省統計局（経済センサス－活動調査）",
+        license_url="https://www.e-stat.go.jp/terms-of-use",
         api_key_env="ESTAT_APP_ID",
         note="メッシュコードで直接結合できる唯一のレイヤー。空間補間が不要。",
         layer="population",
@@ -1079,7 +1162,28 @@ SOURCES: dict[str, Source] = {
         # そこから採ったように読める）。
         url="https://catalog.data.metro.tokyo.lg.jp/dataset?q=公共施設",
         kind="csv",
-        license="東京都オープンデータカタログ CC BY 4.0",
+        # **「東京都オープンデータカタログ CC BY 4.0」と名乗っていた。二重に誤り。**
+        # （2026-08-13、事務局のライセンス案内を機に洗い直して是正）
+        #
+        #   1. **著作者は各区であって東京都ではない。** カタログは経由地であり、
+        #      作者名ではない。CC BY が最初に求めるものが抜けていた。
+        #   2. **実際に読んだファイルの一部は、そのカタログに載っていない。**
+        #      CKAN API で 23 区すべての登録を数えたところ、北区は 7 件で
+        #      施設系が 0 件、足立区は 10 件で KML 3 本に該当なし、渋谷区は
+        #      個別の施設一覧を持たない（SHIBUYA OPEN DATA / ArcGIS Hub から
+        #      取っている）。目黒区は登録が 2021/2022 年版で、使ったのは
+        #      区の側にしかない 2024 年版。**カタログの表記を、カタログに
+        #      無いものにまで名乗らせていた**——騒音（issues.md C5）と同型。
+        #
+        # **許諾そのものは不要だと確認できている。** 都カタログ側は 23 区の
+        # 全登録が例外なく `CC-BY-4.0`（同日 API で確認）、カタログ外の 3 区も
+        # 区の独自規約が CC BY 互換だった（足立区・渋谷区・北区の
+        # オープンデータ利用規約）。**直したのは書き方だけである。**
+        license="CC BY 4.0（都カタログ登録分。カタログ外の区も区の規約が CC BY 互換）",
+        # **23 区を並べて書く。** 「各区」では作者名にならない——CC BY が
+        # 求めるのは誰の著作物かであって、何区分あるかではない。
+        rights_holder="／".join(TARGET_WARDS),
+        license_url=CC_BY_4_0_URL,
         note="区市町村ごとに様式が異なるため normalize 側で名寄せする。"
         "実際に読み込んだファイルの区ごとの一覧は docs/handoff-hosts.md。"
         "北区は区が一覧を公開しておらず、P14 の児童館しか入っていない。",
@@ -1102,6 +1206,12 @@ SOURCES: dict[str, Source] = {
         url="",
         kind="manual",
         license="各施設の公表情報（施設ごとに出典が異なる）",
+        # **著作物の複製ではない。** 集めたのは施設の名称・所在地・設置者という
+        # 事実だけで、説明文や写真は 1 件も採っていない。名前の付いたライセンスの
+        # 下にあるデータではないので `license_url` は空——**空にできる理由が
+        # あるものだけを空にする**（環境局の騒音と同じ扱い）。
+        rights_holder="施設ごとに異なる（名称・所在地の事実のみ）",
+        license_url="",
         layer="calm_spaces",
         vintage="2026年8月時点",
         note="中央集約されたオープンデータが存在しないため手で集めた。"

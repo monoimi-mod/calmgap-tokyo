@@ -45,6 +45,7 @@ from .config import (
     HOST_MAX_DISTANCE_M,
     LOAD_COMPONENTS,
     MESH_LEVEL,
+    MODIFICATION_NOTICE,
     NOISE_IDW_MAX_DISTANCE_M,
     PRIORITY_ALPHA,
     PRIORITY_BETA,
@@ -744,6 +745,13 @@ def write_outputs(
         np.sqrt(parks_out["area_m2"].to_numpy() / math.pi), 1
     )
     # 円の中心＝元の点。面積から作った円なので centroid で元に戻る。
+    #
+    # **重心を緯度経度のまま取っている**（mesh.geojson は投影座標で取る）。
+    # geopandas が毎回警告を出す。投影して取り直すと 3,835 件のうち一部で
+    # 配信座標が動くので（最大 3.4e-8 度 ≒ 3mm。丸めの小数第6位に載る）、
+    # **ライセンスの洗い直しのついでに触るには影響の測り方が別**なので
+    # 残してある（`docs/issues.md` の独立項目）。円は小さく、中心の
+    # ズレは中央値 4.2e-11 度なので、いま出ている値が誤りというわけではない。
     parks_out = parks_out.set_geometry(parks_out.geometry.centroid)
     _write_geojson(
         WEB_DATA / "parks.geojson",
@@ -892,6 +900,11 @@ def write_outputs(
                 "label": s.label,
                 "url": s.url,
                 "license": s.license,
+                # **CC BY が求めるのは出典名ではなく作者名。** `label` は
+                # データの名前、`license` は条件で、どちらも「誰の著作物か」を
+                # 言っていない（config.MODIFICATION_NOTICE の上に経緯）。
+                "rights_holder": s.rights_holder,
+                "license_url": s.license_url,
                 "note": s.note,
                 "layer": s.layer,
                 "vintage": s.vintage,
@@ -901,6 +914,10 @@ def write_outputs(
             if s.layer is not None
         ],
         "unused_source_count": sum(1 for s in SOURCES.values() if s.layer is None),
+        # **改変した旨の明記。** CC BY・PDL1.0・e-Stat 利用規約がそろって
+        # 明文で求めている条件で、この作品は素のデータを 1 バイトも出していない。
+        # **画面に直接書かない**——出典名と同じで、config が唯一の出所である。
+        "modification_notice": MODIFICATION_NOTICE,
         "layer_counts": {
             k: int(len(v))
             for k, v in layers.items()

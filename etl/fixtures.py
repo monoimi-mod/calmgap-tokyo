@@ -23,6 +23,8 @@
 
 from __future__ import annotations
 
+import math
+
 import geopandas as gpd
 import numpy as np
 import pandas as pd
@@ -370,6 +372,16 @@ def parks() -> gpd.GeoDataFrame:
         recs.append(
             {
                 "name": f"{name}（模擬形状）",
+                # **実データ（P13）が持つ列は、模擬でも持たせる。**
+                # P13 は点＋面積なので `write_outputs` は `area_m2` から
+                # 円の半径を復元して配信する。この列が無かったため
+                # **模擬モードのビルドが parks.geojson の書き出しで落ちていた**
+                # （2026-08-13 に是正。ライセンスの洗い直しで両モードを
+                # 通そうとして見つかった）。実データ側にしか無い列に
+                # 依存するコードは、模擬モードでだけ落ちる——
+                # **落ちてくれたのはまだ良いほうで、既定値で静かに通るほうが悪い。**
+                # 円なので面積は厳密（形状と食い違わない）。
+                "area_m2": round(math.pi * radius_m**2, 1),
                 "source": SYNTHETIC_SOURCE,
                 "synthetic": True,
             }

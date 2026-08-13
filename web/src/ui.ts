@@ -2286,13 +2286,24 @@ export function renderMethodology(meta: Meta): void {
 
   const absolute = meta.components.filter((c) => c.absolute);
 
+  // **出典名とライセンス条件だけでは、CC BY の要求を満たさない。**
+  // 求められているのは「著作権表示（作者名）／作品タイトル／ライセンス URL」で、
+  // ここには作者名が無く、ライセンスは押せない文字列だった（2026-08-13 に是正）。
+  // **作者名は経由したカタログの名前ではない**——公共施設一覧は
+  // 「東京都オープンデータカタログ CC BY 4.0」と名乗っていたが、
+  // 著作者は 23 の区それぞれである。
   const sources = meta.sources
     .map(
       (s) =>
         `<tr>
            <th style="text-transform:none;letter-spacing:0">
              ${s.url ? `<a href="${escapeAttr(s.url)}" target="_blank" rel="noopener">${escapeHtml(s.label)}</a>` : escapeHtml(s.label)}
-             <span class="factor-source">${escapeHtml(s.license)}</span>
+             ${s.rights_holder ? `<span class="factor-source">${escapeHtml(s.rights_holder)}</span>` : ""}
+             <span class="factor-source">${
+               s.license_url
+                 ? `<a href="${escapeAttr(s.license_url)}" target="_blank" rel="noopener">${escapeHtml(s.license)}</a>`
+                 : escapeHtml(s.license)
+             }</span>
            </th>
            <td class="num">${escapeHtml(s.vintage)}<br>
              <span class="factor-source">${s.count != null ? `${s.count.toLocaleString("ja-JP")}件` : ""}</span>
@@ -2420,6 +2431,14 @@ export function renderMethodology(meta: Meta): void {
       <br><br>
       <b>他の地域で実際に回したことはまだありません。</b>
     </p>
+    <!--
+      **改変した旨の明記は、表の下ではなく上に置く。** CC BY・国土数値情報の
+      利用約款（PDL1.0）・e-Stat 利用規約がそろって明文で求めている条件で、
+      **表を読む前に効いていないと意味がない**——読み手が下の数字を
+      「出典がそう言っている」と読んだあとで但し書きが来ても遅い。
+      文言は etl/config.py の MODIFICATION_NOTICE が唯一の出所。
+    -->
+    <p class="card-narrative">${boldMd(meta.modification_notice)}</p>
     <table class="data-table">${sources}</table>
     <p class="card-narrative">
       レジストリには他に ${meta.unused_source_count} 件の出典がありますが、
