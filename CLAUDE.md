@@ -38,7 +38,7 @@ source .venv/bin/activate      # geopandas pandas numpy shapely pyproj requests
 ## 変更したら必ず通す
 
 ```bash
-python -m etl.selftest           # 72 件。不変条件と「間違いが黙って通らないこと」
+python -m etl.selftest           # 73 件。不変条件と「間違いが黙って通らないこと」
 node tools/parity_check.mjs      # Python と TypeScript のスコア一致（全メッシュ）
 node tools/facility_parity.mjs   # 数えた件数と、地図に光る点の数の一致（全メッシュ・6 群）
 python tools/doc_numbers.py      # 文書と提出物の数値が配信データと合っているか
@@ -128,7 +128,7 @@ Python が数えるのと同じ平面直角座標（EPSG:6677）を `x`/`y`・`m
 **除外パターンを足して再正規化しても出力が 1 バイトも変わらない**状態に
 なっていた（古い行が「別の出典」として残り、新しい行が「同名かつ 100m 以内」で
 全部消える。**しかも「1,541件を書き出した」と成功と表示される**）。
-2026-08-07 に是正。**同じ事故を防ぐために書いたコードが、改名でもう一度
+2026-08-13 に是正。**同じ事故を防ぐために書いたコードが、改名でもう一度
 開いていた**——判定を 2 箇所に持つと、片方だけ古くなる。
 
 **同じ数式が Python と TypeScript に 2 つある。** 重みスライダーのため。
