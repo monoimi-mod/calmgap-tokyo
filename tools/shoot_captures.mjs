@@ -17,7 +17,7 @@
  * 同じ URL を人がブラウザで開いても同じ画面になる。
  */
 import { spawn } from "node:child_process";
-import { writeFileSync, mkdirSync } from "node:fs";
+import { writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 
 const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -30,7 +30,11 @@ const SHOTS = [
   ["#f=unreachable", "docs/captures/03-unreachable.png", "徒歩圏に区の公共施設が無い区画だけ"],
 ];
 
-const WAIT_MS = 12000;
+// **下絵のタイルが入りきらないことがある。** 12 秒では地理院タイルが
+// 半分しか届かず、メッシュだけが浮いた画像が出た（2026-08-07）。
+// 撮り直すと直ることがあるので**時間で殴る**しかない。
+// CALMGAP_SHOT_WAIT_MS で伸ばせる。
+const WAIT_MS = Number(process.env.CALMGAP_SHOT_WAIT_MS || 20000);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function shoot(url, out) {
@@ -114,6 +118,11 @@ async function shoot(url, out) {
 
   ws.close();
   chrome.kill();
+  // **前の実行の残骸が下絵を落とす。** 落ちた実行のヘッドレスが生きたまま
+  // 溜まると、地理院タイルが半分しか届かず**メッシュだけが浮いた画像**が
+  // 出た（25 秒待っても直らず、残骸を落としたら直った。2026-08-07）。
+  // 検査では捕まらない——順位表は埋まっているので「成功」と出る。
+  rmSync(profile, { recursive: true, force: true });
 
   if (state.boot) throw new Error(`${out}: 読み込み中の画面のまま撮れた`);
   if (!state.rows) throw new Error(`${out}: 順位表が空のまま撮れた`);

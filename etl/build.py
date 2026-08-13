@@ -52,6 +52,7 @@ from .config import (
     RANKING_DEFAULT_N,
     RANKING_OPTIONS,
     CRS_GEOGRAPHIC,
+    current_source_label,
     CRS_PROJECTED,
     PUBLISH_XY_DECIMALS,
     SOURCES,
@@ -1024,33 +1025,11 @@ def _write_json(path, obj) -> None:
     print(f"[write] {path.relative_to(path.parents[3])} ({path.stat().st_size:,} B)")
 
 
-@lru_cache(maxsize=1)
-def _source_alias_map() -> dict[str, str]:
-    """旧 label → 現在の label。SOURCES から組み立てる。"""
-    out: dict[str, str] = {}
-    for src in SOURCES.values():
-        for old in src.aliases:
-            out[old] = src.label
-    return out
-
-
-def _current_source_label(stored: str) -> str:
-    """`data/processed` に焼き付いた出典名を、現在の label へ寄せる。
-
-    **一致しないものはそのまま返す。** 学校の規模には
-    「愛育学園 公表値（令和7年度4月1日現在）」「規模不明」のように
-    レジストリに無い出典が正当に入っており、ここで止めると
-    **出典を個別に書いたことそのものが罰になる**。
-    """
-    # **1 つの点に出典が 2 つ並ぶことがある**（騒音は令和元〜5年度が都の資料、
-    # 令和6年度が環境GIS＋で、同じ地点を両方が測っている）。まとめて引くと
-    # 一致せず、両方が古い名前のまま残る。分けて寄せてから並べ直す。
-    if SOURCE_JOIN in stored:
-        mapping = _source_alias_map()
-        return SOURCE_JOIN.join(
-            mapping.get(part, part) for part in stored.split(SOURCE_JOIN)
-        )
-    return _source_alias_map().get(stored, stored)
+# **判定は config.py に置いてある。** ここに実装を持っていた頃、
+# `fetch.py` の `--append` 側は現在の label しか見ておらず、
+# **改名した出典を再正規化しても出力が変わらない**状態になっていた
+# （2026-08-07 に発覚）。同じ判定が 2 箇所に要るなら片方だけ古くなる。
+_current_source_label = current_source_label
 
 
 def _write_geojson(

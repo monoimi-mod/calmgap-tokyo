@@ -43,6 +43,7 @@ from .config import (
     CLIP_BUFFER_M,
     CRS_GEOGRAPHIC,
     CRS_PROJECTED,
+    current_source_label,
     DATA_PROCESSED,
     DATA_RAW,
     NOISE_GIS_YEARS,
@@ -3610,7 +3611,21 @@ def _merge_with_existing(
     # 入れ直した出典の古い行は先に捨てる。残したまま統合すると、同名・同位置の
     # 組では**先に並んでいる古い行が残り、正規化を直しても結果が変わらない**
     # （区名の表記を揃える修正が効かず、件数も出力サイズも同じままだった）。
-    stale = existing["source"].isin(set(gdf["source"]))
+    #
+    # **旧 label（`Source.aliases`）も同じ出典として見る。** ここが現在の
+    # label しか見ておらず、**同じ壊れ方が alias 経由で再発していた**
+    # （2026-08-07 に発覚）。公共施設一覧の label を
+    # 「公共施設一覧（図書館・文化施設・区民センター等）」から
+    # 「各区の公共施設一覧（23 区・様式は区ごとに異なる）」へ改名した結果:
+    #
+    #   1. 古い行が stale に当たらず残る
+    #   2. 新しい行は「同名かつ 100m 以内」で**全部**重複として消える
+    #   3. **1,207 件を読み直しても出力が 1 バイトも変わらない**
+    #
+    # しかも「1,541件を書き出した」と成功と表示される。**除外パターンを
+    # 足しても効かない**ので、供給側が過大なまま静かに固定される。
+    # 上のコメントが警告しているのと同じ事故を、改名がもう一度開けていた。
+    stale = existing["source"].map(current_source_label).isin(set(gdf["source"]))
     if stale.any():
         print(f"[merge] 入れ直した出典の既存 {int(stale.sum()):,}件は捨てる")
     existing = existing[~stale]

@@ -9,6 +9,7 @@ ETL の各モジュールはここだけを参照し、定数をハードコー�
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -1108,3 +1109,49 @@ SOURCES: dict[str, Source] = {
         "この方法が指す場所と、実際に置かれている場所の照合にだけ使う。",
     ),
 }
+
+
+# ---------------------------------------------------------------------------
+# 出典名の寄せ（旧 label → 現在の label）
+# ---------------------------------------------------------------------------
+#
+# `data/processed/*.geojson` の `source` 列は**正規化した時点の label を
+# 焼き付けたスナップショット**なので、label を直しても古い名前が残る。
+# `Source.aliases` に旧 label を書き、読む側で寄せる。
+#
+# **ここを唯一の出所にしてある。** かつて `build.py` の中だけに在り、
+# `fetch.py` の `--append` は現在の label しか見ていなかった。その結果
+# **公共施設一覧を改名した後、再正規化しても出力が 1 バイトも変わらない**
+# 状態になっていた（古い行が「別の出典」として残り、新しい行が全部
+# 重複として消える。しかも成功と表示される）。2026-08-07 に発覚。
+# **同じ判定が 2 箇所に要るなら、片方だけ古くなる。**
+
+
+@lru_cache(maxsize=1)
+def source_alias_map() -> dict[str, str]:
+    """旧 label → 現在の label。SOURCES から組み立てる。"""
+    out: dict[str, str] = {}
+    for src in SOURCES.values():
+        for old in src.aliases:
+            out[old] = src.label
+    return out
+
+
+def current_source_label(stored: str) -> str:
+    """焼き付いた出典名を、現在の label へ寄せる。
+
+    **一致しないものはそのまま返す。** 学校の規模には
+    「愛育学園 公表値（令和7年度4月1日現在）」「規模不明」のように
+    レジストリに無い出典が正当に入っており、ここで止めると
+    **出典を個別に書いたことそのものが罰になる**。
+
+    **1 つの点に出典が 2 つ並ぶことがある**（騒音は令和元〜5年度が都の資料、
+    令和6年度が環境GIS＋で、同じ地点を両方が測っている）。まとめて引くと
+    一致せず、両方が古い名前のまま残る。分けて寄せてから並べ直す。
+    """
+    mapping = source_alias_map()
+    if SOURCE_JOIN in stored:
+        return SOURCE_JOIN.join(
+            mapping.get(part, part) for part in stored.split(SOURCE_JOIN)
+        )
+    return mapping.get(stored, stored)

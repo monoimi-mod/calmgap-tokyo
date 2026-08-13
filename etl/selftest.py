@@ -355,6 +355,36 @@ def _source_labels_have_no_separator():
             assert SOURCE_JOIN not in alias, f"{s.key} の alias に {SOURCE_JOIN!r}"
 
 
+@check("旧 label で保存された行も「入れ直した出典」として扱う")
+def _append_matches_source_aliases():
+    """`--append` の「古い行を捨てる」判定が `Source.aliases` を見ているか。
+
+    **見ていないと、再正規化が黙って効かなくなる。** 公共施設一覧を改名して
+    旧名を `aliases` に入れた結果、こうなっていた（2026-08-07 に発覚）:
+
+      1. 古い 1,082 行が「別の出典」として残る
+      2. 新しい 1,207 行は「同名かつ 100m 以内」で全部重複として消える
+      3. 出力は改名前と同一。**「1,541件を書き出した」と成功と表示される**
+
+    除外パターンを足しても効かないので、供給側が過大なまま静かに固定される。
+    **同じ事故を防ぐために入れた処理が、改名でもう一度開いていた。**
+    """
+    from .config import SOURCES, current_source_label
+
+    # 実際に alias を持つ出典が在ること（無いとこの検査は空振りする）
+    aliased = [s for s in SOURCES.values() if s.aliases]
+    assert aliased, "alias を持つ出典が 1 つも無い。この検査は空振りしている"
+
+    for s in aliased:
+        for old in s.aliases:
+            assert current_source_label(old) == s.label, (
+                f"{s.key}: 旧 label {old!r} が現在の label へ寄らない"
+            )
+            # `--append` が使う経路そのもの。旧 label で保存された行が
+            # 「入れ直した出典」に当たらなければ、古い行が残る。
+            assert current_source_label(old) in {s.label}, f"{s.key}: stale 判定が効かない"
+
+
 @check("「照合できない理由」は、照合できる出典に書かれていない")
 def _unverifiable_only_without_hint():
     """`Source.unverifiable` は「そのページで試したが裏を取れなかった」理由。
