@@ -226,6 +226,41 @@
         white-space: nowrap;
       }
 
+      /* 8 枚目（導入経路）の帯。**主役は矢印ではなく 3 つの帯である**——
+         ①② は根拠がある / ③④ は仮説の上に立つ / ⑤⑥ はまだ無い、を
+         1 枚で言うために描いている。色は既存の 3 色から借り、
+         新しい色相は作らない。 */
+      .band {
+        border-left: 2px solid var(--line);
+        padding-left: 0.24in;
+        margin-bottom: 0.14in;
+      }
+      .band.now {
+        border-left-color: var(--teal);
+      }
+      .band.human {
+        border-left-color: var(--warm);
+      }
+      .band .lbl {
+        font-size: 10pt;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        color: var(--muted);
+        margin-bottom: 0.08in;
+      }
+      .band .rows {
+        gap: 0.08in;
+        margin-top: 0;
+      }
+      .band .row .num {
+        flex: 0 0 0.28in;
+        font-size: 13pt;
+      }
+      .band .row p {
+        font-size: 12pt;
+        line-height: 1.5;
+      }
+
       .foot {
         margin-top: auto;
         padding-top: 0.2in;
@@ -544,7 +579,8 @@
       <div class="card" style="margin-top: 0.34in">
         <p style="font-size: 12pt">
           <b>9,507 区画を、人が話し合える十数区画まで絞る道具です。</b>
-          どこに置くかを決める道具ではありません——決めるのは人で、その会議に出せる根拠を作ります。
+          どこに置くかを決める道具ではありません——決めるのは人で、計画の改定・改修の設計・
+          予算要求という<b>既にある判断の場</b>に出せる根拠を作ります。
           ETL・スコアリング・地図 UI・検証ツールは OSS として公開しています。
         </p>
       </div>
@@ -552,6 +588,111 @@
       <div class="foot">
         <span>monoimi ／ github.com/monoimi-mod/calmgap-tokyo</span>
         <span>calmgap-tokyo.hiroaki-kuwabara.workers.dev</span>
+      </div>
+    </section>
+
+    <!-- ============================================ 8 導入経路（口頭では触れない）
+
+         **この 1 枚だけ、2 分の台本に対応する区間を持たない。**
+         社会実装は根拠の種類が違う話なので、口で足すと 35–85 秒の
+         「根拠が全部辿れる」実演が薄まる（`docs/presentation.md` 2 節）。
+         読む人のための 1 枚として、**限界の後**に置いてある——
+         前に置くと、限界が実装の限界に見える。
+
+         **数値を入れないこと。** `tools/doc_numbers.py` はこの枚だけ
+         検査項目を持たない（載せる値が無いため）。書けば黙って古くなる。
+         詳細と削った理由は `docs/implementation.md`。 -->
+    <section class="slide">
+      <div class="chip">07 この先 — 導入経路（提案・未実施）</div>
+      <h2 style="margin-bottom: 0.16in">
+        分析の次に、誰が何を判断するか
+      </h2>
+
+      <div class="cols" style="gap: 0.55in">
+        <div style="flex: 0 0 6.5in">
+          <div class="band now">
+            <div class="lbl">分析で言えること</div>
+            <div class="rows">
+              <div class="row">
+                <span class="num">①</span>
+                <p><b>優先区画の抽出</b>（自動）— 需要 × 負荷。出典と内訳まで辿れる</p>
+              </div>
+              <div class="row">
+                <span class="num">②</span>
+                <p>
+                  <b>候補の確認</b> — <b>ルート A</b>：徒歩圏の区の施設を見る ／
+                  <b class="warm">ルート B</b>：徒歩 700m に区の施設が無い区画は
+                  <b class="warm">供給主体を探す話になる</b>
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div class="band human">
+            <div class="lbl">ここから先は人の判断</div>
+            <div class="rows">
+              <div class="row">
+                <span class="num">③</span>
+                <p><b>実証設置場所の選定</b> — <b>区画 → 施設はこの道具が決めない</b>（施設の適否を測っていない）</p>
+              </div>
+              <div class="row">
+                <span class="num">④</span>
+                <p><b>小規模な実証設置</b> — 既存公共施設の一角。<b>運営方式は仮説</b></p>
+              </div>
+            </div>
+          </div>
+
+          <div class="band">
+            <div class="lbl">実証で初めて分かること</div>
+            <div class="rows">
+              <div class="row">
+                <span class="num">⑤</span>
+                <p><b>利用実態の取得</b> — 件数・滞在・満室断念。<b>利用者の属性は記録しない</b></p>
+              </div>
+              <div class="row">
+                <span class="num">⑥</span>
+                <p><b>次の設置判断へ反映</b> — その結果で <b>①</b> の重みと需要の定義を見直す</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div style="flex: 1; display: flex; flex-direction: column; justify-content: center">
+          <p class="lbl" style="font-size: 10pt; font-weight: 700; letter-spacing: 0.06em; color: var(--muted)">
+            想定導入主体（照会も合意もしていません）
+          </p>
+          <p style="margin-top: 0.1in">
+            <b>区の障害福祉主管課</b>（施策・予算要求）<br />
+            <b>区の施設所管課／指定管理者</b>（空間・運営）
+          </p>
+          <p class="cap" style="margin-top: 0.12in">
+            23 区で唯一「街を歩いている人がその場で使える」1 室は港区役所本庁舎で、
+            一次情報を出しているのは区の障害者福祉課。<b>実在する 1 例が、この 2 者の組み合わせ。</b>
+          </p>
+
+          <p class="lbl" style="font-size: 10pt; font-weight: 700; letter-spacing: 0.06em; color: var(--muted); margin-top: 0.28in">
+            使う場面
+          </p>
+          <p style="margin-top: 0.1in">
+            計画の改定 ／ 改修の設計 ／ 予算要求
+          </p>
+          <p class="cap" style="margin-top: 0.12in">
+            <b>新しい会議は前提にしない。</b>既にある判断の場に出す資料として使う。
+          </p>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top: 0.16in">
+        <p style="font-size: 12pt">
+          <b class="warm">実証設置・自治体との合意・当事者による検証は、いずれも行っていません。</b>
+          <b>この道具が示すのは候補地域の絞り込みまで</b>で、利用者のニーズそのものを
+          証明するものではありません——<b>需要は公開データの代理変数</b>です。
+        </p>
+      </div>
+
+      <div class="foot">
+        <span>calmgap-tokyo ／ 導入経路の詳細と、レビューで削った案は docs/implementation.md</span>
+        <span>8</span>
       </div>
     </section>
   </body>

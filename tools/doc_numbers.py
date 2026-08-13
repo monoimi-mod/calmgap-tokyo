@@ -245,10 +245,19 @@ def submission_checks(meta: dict, sens: dict | None, order: list[dict]) -> list[
     # --- 2 つの出力 ---
     need(ALL, "到達不可のうち区内で中位以上", f"{u['mid_or_above']} 区画")
     need((SLIDES,), "提言の既定件数", f"上位 {meta['ranking_default_n']} 区画")
-    need((SLIDES,), "徒歩圏の半径（供給側）", f"{meta['fact_radius_m']['host']:.0f}m")
+    need((SLIDES, FORM), "徒歩圏の半径（供給側）", f"{meta['fact_radius_m']['host']:.0f}m")
 
     # --- 外部照合。**この作品で唯一、外の物差しで確かめた部分** ---
-    need((SLIDES, SCRIPT), "既存の設置か所", f"{len(cs['sites'])} か所")
+    # 記入案 1-9（導入経路）が、想定導入主体の根拠として同じ一覧を引いている。
+    # **`fee` の確認済み件数もここで見る**——「有料の事例は 1 件も無い」と
+    # 書ける範囲は確認した 7 か所までで、**未確認の 4 か所を混ぜると
+    # 確かめずに書いたことになる**（`docs/operation-idea.md`）。
+    need((SLIDES, SCRIPT, FORM), "既存の設置か所", f"{len(cs['sites'])} か所")
+    need(
+        (FORM,),
+        "料金を一次情報で確かめたか所",
+        f"{sum(1 for s in cs['sites'] if s.get('fee') != 'unchecked')} か所",
+    )
     need((SLIDES, SCRIPT), "既存の設置室数", f"{rooms} 室")
     need((SLIDES, SCRIPT), "既存の設置の順位の中央値", f"{median_rank:,} 位")
     need((SLIDES,), "その場で使える室数", f"{by_access.get('open', 0)} 室")
