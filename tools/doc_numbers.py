@@ -167,6 +167,33 @@ def d3(x: float) -> str:
     return f"{Decimal(str(x)).quantize(Decimal('0.001'), rounding=ROUND_HALF_UP):f}"
 
 
+TOEI_PATH = ROOT / "data/reference/toei_stations.json"
+
+
+def toei_reach(meta: dict, order: list[dict]) -> tuple[int, list[str]]:
+    """上位区画のうち、最寄り駅が都営地下鉄の駅であるものを数える。
+
+    **スコアの話ではない。** 資料（スライド 8 枚目・`1-9`）が
+    「上位区画の最寄り駅に都営地下鉄の駅が並ぶ」と書いているので、
+    **その主張が次のビルドで黙って古くならないように**数え直す。
+    上位の顔ぶれはこの作品でいちばんよく動くところで、
+    **特別支援学校の規模を実数にしただけで提言 8 件のうち 4 件が
+    入れ替わった**履歴がある（`CLAUDE.md`）。
+
+    **駅名の一致で数える。** S12 は駅グループコードで束ねるので、
+    同名で他社と共用の駅を含む——**「都営専用の駅」ではなく
+    「都営地下鉄が乗り入れる駅」**であり、資料もそう書いてある。
+
+    **駅構内の優先度ではない。** 最寄り駅は 1,500m 以内の「区画の呼び名」で、
+    この作品は駅について何も述べていない。
+    """
+    doc = json.loads(TOEI_PATH.read_text(encoding="utf-8"))
+    toei = {name for names in doc["lines"].values() for name in names}
+    top = order[: meta["ranking_default_n"]]
+    hit = [r for r in top if r.get("f_station_name") in toei]
+    return len(hit), sorted({r["f_station_name"] for r in hit})
+
+
 def submission_checks(meta: dict, sens: dict | None, order: list[dict]) -> list[tuple[Path, str, str]]:
     """提出物が引いている数値を、いまのビルドから組み立てる。
 
@@ -275,6 +302,16 @@ def submission_checks(meta: dict, sens: dict | None, order: list[dict]) -> list[
         need((SLIDES,), "重みの数", f"重み {len(meta['components'])} 個")
     need((SLIDES,), "特別支援学校の校数", f"{meta['layer_counts']['schools']} 校")
 
+    # --- 導入経路の一例（都営地下鉄）が、いまの上位と本当につながっているか ---
+    # **ここが落ちたら直すのは資料のほうである。** 上位の顔ぶれが動いて
+    # 都営の駅が減ったのなら、**8 枚目の一例そのものを考え直す**——
+    # 数字だけ書き換えると「つながっている」という主張が中身を失う。
+    n_toei, toei_names = toei_reach(meta, order)
+    need((SLIDES, FORM), "上位区画のうち最寄りが都営地下鉄の駅", f"{n_toei} 区画")
+    need((SLIDES,), "都営地下鉄の駅の数", f"{len(toei_names)} 駅")
+    for name in toei_names:
+        need((SLIDES,), f"名指しした都営の駅（{name}）", name)
+
     return out
 
 
@@ -325,6 +362,30 @@ def main() -> int:
         sys.exit(
             f"proposals.json の件数 {len(proposals)} が "
             f"meta.ranking_default_n {meta['ranking_default_n']} と違う"
+        )
+
+    # **「23 区で確認できた 11 か所に鉄道駅は 1 件も無い」を守る番人**
+    # （2026-08-14）。スライド 2 枚目・2-4・1-9 がこれを書いているが、
+    # **これは数値ではないので `contains` では検査できない。**
+    # 一覧に駅が 1 件でも入ったら、資料 3 本が黙って嘘になる。
+    #
+    # **名称で種別を判定してはいけない**（`CLAUDE.md`）ので、これは
+    # 分類ではなく**引っかけ**である——名前に「駅」を含む行が現れたら
+    # 止めて、人に読ませる。`calm_spaces.json` に種別の欄は無く、
+    # 足すほどの用も無い（11 行しかない）。
+    # 模擬ビルドには calm_spaces が無い（提出物の検査自体が実データ限定）。
+    station_like = [
+        s["name"]
+        for s in meta.get("calm_spaces", {}).get("sites", [])
+        if "駅" in s["name"]
+    ]
+    if station_like:
+        sys.exit(
+            "既存設置の一覧に駅らしい行がある: "
+            + "、".join(station_like)
+            + "。資料 3 本（slides.html 2 枚目・submission-form の 2-4 と 1-9）が"
+            "「鉄道駅は 1 件も入っていません」と書いているので、"
+            "その記述を先に直すこと"
         )
 
     # **到達不可がどのあたりの順位にいるか。** 2026-08-04 に見出し数値を
