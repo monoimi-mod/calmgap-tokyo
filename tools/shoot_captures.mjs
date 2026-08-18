@@ -21,13 +21,30 @@ import { writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 
 const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-const SITE = "https://calmgap-tokyo.hiroaki-kuwabara.workers.dev";
+// **既定は公開中のサイト。** 撮るものと審査員が見るものを同じにするため。
+// `CALMGAP_SITE` で差し替えられるのは、**回線が落ちて公開サイトから
+// 撮れないときの逃げ道**である（`npm run dev` の localhost など）。
+// 配信データは `web/public/data/` が同一なので同じ画面になるが、
+// **使ったときは記録に残すこと。**
+const SITE = process.env.CALMGAP_SITE || "https://calmgap-tokyo.hiroaki-kuwabara.workers.dev";
 
-/** docs/presentation.md の「キャプチャ 3 枚」と同じ順・同じ URL。 */
+/** docs/presentation.md の「キャプチャ 3 枚」と同じ順・同じ URL。
+ *
+ * 4 つ目だけは提出フォーム 5-2 ではなく**スライド 7 枚目のための素材**で、
+ * 3 つ目と同じ URL を**地図だけ・2 倍解像度**で切り出す。
+ * **切り出す矩形はこのファイルに書かない**——`#map-wrap` の実寸を
+ * ページに聞く（レイアウトを直したときに片方だけ古くならないように）。
+ *
+ * **なぜ地図だけ要るのか。** 148 区画の斜線は 250m 四方なので、
+ * 23 区全域では 1 区画が 4px しかない。左パネルごと縮めて置くと
+ * **「斜線がある」ことが画面から読み取れない。**
+ */
 const SHOTS = [
   ["", "docs/captures/01-overview.png", "結論 2 枚と全体地図"],
   ["#c=5339463631", "docs/captures/02-evidence.png", "1 区画の根拠（1 位・江東区 亀戸）"],
   ["#f=unreachable", "docs/captures/03-unreachable.png", "徒歩圏に区の公共施設が無い区画だけ"],
+  ["#f=unreachable", "docs/captures/04-unreachable-map.png", "同じ状態の地図だけ（2 倍）", "#map-wrap"],
+  ["", "docs/captures/05-overview-map.png", "既定の状態の地図だけ（2 倍）", "#map-wrap"],
 ];
 
 // **下絵のタイルが入りきらないことがある。** 12 秒では地理院タイルが
@@ -37,7 +54,7 @@ const SHOTS = [
 const WAIT_MS = Number(process.env.CALMGAP_SHOT_WAIT_MS || 20000);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function shoot(url, out) {
+async function shoot(url, out, clip) {
   const port = 9222 + Math.floor(Math.random() * 500);
   const profile = `/tmp/calmgap-shoot-${port}`;
   const chrome = spawn(CHROME, [
@@ -112,7 +129,22 @@ async function shoot(url, out) {
   });
   const state = JSON.parse(probe?.result?.value ?? "{}");
 
-  const shotData = await send("Page.captureScreenshot", { format: "png" });
+  // 地図だけを切り出す指定があれば、その要素の実寸をページに聞いてから撮る。
+  let shotParams = { format: "png" };
+  if (clip) {
+    const box = await send("Runtime.evaluate", {
+      expression: `(() => {
+        const e = document.querySelector(${JSON.stringify(clip)});
+        if (!e) return null;
+        const r = e.getBoundingClientRect();
+        return JSON.stringify({ x: r.left, y: r.top, width: r.width, height: r.height });
+      })()`,
+      returnByValue: true,
+    });
+    if (!box?.result?.value) throw new Error(`${out}: ${clip} が見つからない`);
+    shotParams.clip = { ...JSON.parse(box.result.value), scale: 2 };
+  }
+  const shotData = await send("Page.captureScreenshot", shotParams);
   mkdirSync(dirname(out), { recursive: true });
   writeFileSync(out, Buffer.from(shotData.data, "base64"));
 
@@ -122,19 +154,24 @@ async function shoot(url, out) {
   // 溜まると、地理院タイルが半分しか届かず**メッシュだけが浮いた画像**が
   // 出た（25 秒待っても直らず、残骸を落としたら直った。2026-08-13）。
   // 検査では捕まらない——順位表は埋まっているので「成功」と出る。
-  rmSync(profile, { recursive: true, force: true });
+  // **落とし切ってから消す。** kill 直後だと Chrome がまだ書いていて
+  // ENOTEMPTY で落ちる（**画像は書けているのに最後に例外で終わる**）。
+  await sleep(900);
+  rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
 
   if (state.boot) throw new Error(`${out}: 読み込み中の画面のまま撮れた`);
   if (!state.rows) throw new Error(`${out}: 順位表が空のまま撮れた`);
   return state;
 }
 
-const [, , argUrl, argOut] = process.argv;
-const list = argUrl && argOut ? [[argUrl.replace(SITE, ""), argOut, "指定"]] : SHOTS;
+// 3 つ目の引数は切り出す要素（省略すると画面全体）。**SHOTS と同じ形**にする
+// ——1 枚だけ撮り直したときと一括で撮ったときで、出てくる画像が違っては困る。
+const [, , argUrl, argOut, argClip] = process.argv;
+const list = argUrl && argOut ? [[argUrl.replace(SITE, ""), argOut, "指定", argClip]] : SHOTS;
 
-for (const [hash, out, what] of list) {
+for (const [hash, out, what, clip] of list) {
   const url = hash.startsWith("http") ? hash : `${SITE}/${hash}`;
-  const state = await shoot(url, out);
+  const state = await shoot(url, out, clip);
   console.log(`✓ ${out}  ${what}  順位表 ${state.rows} 行`);
 }
 console.log("\n**必ず画像を目で見ること。** 自動で確かめられるのは");

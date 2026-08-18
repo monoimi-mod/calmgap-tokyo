@@ -2,24 +2,49 @@
 <html lang="ja">
   <head>
     <meta charset="UTF-8" />
-    <title>calmgap-tokyo — 提出用スライド（2 分・16:9）</title>
+    <title>CalmGap Tokyo — 提出用スライド（2 分・16:9）</title>
     <!--
       提出フォーム 5-1（スライド・2 分・16:9・最大 100MB）。
 
-      **PDF が提出物で、この HTML が原稿である。** 書き出しは:
+      **提出物は 2 つあり、原稿はこの HTML 1 本である。**
 
-          node tools/slides_pdf.mjs        → docs/slides.pdf
+          node tools/shoot_demo.mjs        → docs/demo/（先に動画を撮る）
+          node tools/slides_pptx.mjs       → docs/slides.pptx（動画が再生される）
+          node tools/slides_pdf.mjs        → docs/slides.pdf （静止画）
 
-      PPTX にしなかった理由は 2 つある。**フォントの置き換わりが起きない**
-      （日本語のスライドは、相手の環境に無いフォントだと行が折り返して
-      レイアウトごと崩れる。PDF は字形を埋め込む）ことと、
-      **数値が diff に出る**こと——この作品は「過去の数字を引用しない」を
-      機械で守る仕組みを持っており、原稿がテキストならそこに載せられる。
+      **PPTX にフォントの心配が無いのは、文字を 1 つも入れていないから**である。
+      各ページはこの HTML を画像に焼いたもので、動画だけをその上に置く。
 
-      **数値はビルドごとに動く。** 本ファイルの数値は
-      `generated_at` 2026-08-06T08:36:00+00:00 のビルドで、
-      `docs/status.md` と `python tools/doc_numbers.py` が出所。
-      画像は `node tools/shoot_captures.mjs` で撮り直せる。
+      ## 書き方の決めごと
+
+      **スライドは「見るもの」、`docs/presentation.md` は「喋るもの」。**
+      短いタイトル・大きな数字・図・画面・動画と最小限の補足だけを置く。
+      **読ませる段落を作らない。** 説明は台本へ移す。
+
+      **タイトルは画面でいちばん目立つ情報の 1 つにする。**
+
+      **ダッシュ（——）を使わない。** 短い文・改行・見出し・図で書く。
+
+      ## 並びは「何を作ったか」から始める（2026-08-17 その3・ユーザー判断）
+
+      **問題提起 → 方法論 → 結果 ではない。**
+
+          何を作ったか → なぜ価値があるか → どう実現したか
+          → 実際に使う → 条件を変える → 何が分かったか → 社会実装
+
+      問題を大げさに語るより、**作ったものの価値をスマートに見せる。**
+      表紙（0）は説明しない。1 枚目で「これは何か」を一瞬で決着させる。
+
+      **証明していない因果を課題にしない。** かつて 2 枚目は
+      「なぜ置き場所を決められないのか」で、**「決められないから設置されない」
+      という因果をこの作品は証明していない。** 同じ理由で
+      「逃げ場が要るのは移動している最中」も落とした（比較の主張の裏が取れない）。
+      **駅の話は 7 枚目**で、一次情報のある事実だけで組み立てる。
+
+      **数値はビルドごとに動く。** 出所は `docs/status.md` と
+      `python tools/doc_numbers.py`。**4・5 枚目の数値が落ちたら、
+      動画も撮り直すこと**（動画の中身は機械で検査できないので、
+      キャプションの数値がその代わりをしている）。
     -->
     <style>
       /* 13.333in × 7.5in = 16:9。@page と .slide を必ず同じ寸法にする
@@ -40,6 +65,7 @@
         --warm: #c2542f;
         --muted: #5f727d;
         --line: #d9e0e3;
+        --wash: #f4f7f7;
       }
       html {
         -webkit-print-color-adjust: exact;
@@ -55,7 +81,7 @@
         position: relative;
         width: 13.333in;
         height: 7.5in;
-        padding: 0.62in 0.7in;
+        padding: 0.55in 0.7in 0.42in;
         overflow: hidden;
         page-break-after: always;
         break-after: page;
@@ -71,39 +97,38 @@
         color: #fff;
       }
 
-      /* 章番号の札。**下線や色帯は使わない**（見出しの下に線を引くのを
-         やめている。区切りは余白で作る）。 */
-      .chip {
-        display: inline-block;
-        font-size: 11pt;
+      .step {
+        font-size: 12pt;
         font-weight: 700;
-        letter-spacing: 0.08em;
+        letter-spacing: 0.1em;
         color: var(--teal);
-        margin-bottom: 0.16in;
+        margin-bottom: 0.1in;
       }
-      .dark .chip {
+      .dark .step {
         color: var(--sage);
       }
+
       h1 {
-        font-size: 40pt;
-        line-height: 1.22;
+        font-size: 44pt;
+        line-height: 1.16;
         font-weight: 700;
-        letter-spacing: -0.01em;
+        letter-spacing: -0.015em;
+        margin-bottom: 0.26in;
       }
-      h2 {
-        font-size: 27pt;
-        line-height: 1.3;
-        font-weight: 700;
-        margin-bottom: 0.28in;
+      h1.tight {
+        margin-bottom: 0.16in;
       }
+      /* **2 分のプレゼンで一瞬見て読めるサイズにする**（2026-08-17 その4）。
+         PC で読む資料ではないので、情報を削ってでも大きさを採る。 */
       p,
       li {
-        font-size: 13pt;
-        line-height: 1.65;
+        font-size: 14pt;
+        line-height: 1.55;
       }
       .lead {
-        font-size: 15pt;
-        line-height: 1.6;
+        font-size: 19pt;
+        line-height: 1.55;
+        font-weight: 700;
       }
       .muted {
         color: var(--muted);
@@ -111,189 +136,224 @@
       .dark .muted {
         color: #a9bcc6;
       }
-      b {
-        font-weight: 700;
-      }
       .warm {
         color: var(--warm);
       }
       .dark .warm {
         color: #f0a184;
       }
-
-      .cols {
-        display: flex;
-        gap: 0.5in;
-        flex: 1;
-        min-height: 0;
-      }
-      .cols > .txt {
-        flex: 0 0 4.5in;
-        display: flex;
-        flex-direction: column;
-        justify-content: center;
-      }
-      .cols > .fig {
-        flex: 1;
-        display: flex;
-        align-items: center;
-        min-width: 0;
-      }
-      .fig img {
-        width: 100%;
-        border: 1px solid var(--line);
-      }
-      .cap {
-        font-size: 9.5pt;
-        color: var(--muted);
-        margin-top: 0.1in;
+      .tiny {
+        font-size: 11.5pt;
         line-height: 1.45;
+        color: var(--muted);
+      }
+      .dark .tiny {
+        color: #90a6b1;
       }
 
-      /* 数字を主役にする札。棒や枠線ではなく、字の大きさで差をつける。 */
-      .stat {
-        margin: 0.1in 0 0.24in;
-      }
-      .stat .n {
-        font-size: 52pt;
+      .n {
+        font-size: 62pt;
         font-weight: 700;
         line-height: 1;
-        letter-spacing: -0.02em;
+        letter-spacing: -0.025em;
       }
-      .stat .n small {
-        font-size: 17pt;
+      .n small {
+        font-size: 19pt;
         font-weight: 400;
         color: var(--muted);
         letter-spacing: 0;
       }
-      .dark .stat .n small {
-        color: #a9bcc6;
-      }
-      .stat .k {
-        font-size: 12pt;
+      .k {
+        font-size: 14.5pt;
         line-height: 1.5;
-        margin-top: 0.07in;
-      }
-
-      .rows {
-        display: flex;
-        flex-direction: column;
-        gap: 0.2in;
-        margin-top: 0.06in;
-      }
-      .row {
-        display: flex;
-        gap: 0.26in;
-        align-items: baseline;
-      }
-      .row .num {
-        flex: 0 0 0.42in;
-        font-size: 15pt;
-        font-weight: 700;
-        color: var(--teal);
-      }
-      .dark .row .num {
-        color: var(--sage);
+        margin-top: 0.08in;
       }
 
       .card {
-        background: #f4f7f7;
-        padding: 0.3in 0.34in;
+        background: var(--wash);
+        padding: 0.22in 0.28in;
         border-radius: 0.09in;
       }
       .dark .card {
         background: #26383f;
       }
 
-      .grid2 {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 0.34in 0.5in;
-      }
-
-      .kv {
+      .cols {
         display: flex;
-        justify-content: space-between;
-        gap: 0.3in;
-        padding: 0.13in 0;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.16);
-        font-size: 13pt;
+        gap: 0.45in;
+        flex: 1;
+        min-height: 0;
       }
-      .kv:last-child {
-        border-bottom: 0;
+      .fig img {
+        display: block;
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 0.05in;
       }
-      .kv b {
-        white-space: nowrap;
+      /* **高さで決まる置き方。** 16:9 の画面写真を幅いっぱいに置くと、
+         残っている高さを越えて下端からこぼれる（1 枚目で実際にこぼれた）。
+         `.fit` は残った高さに合わせて縮め、幅はそれに従わせる。 */
+      .fig.fit {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 0;
+      }
+      .fig.fit img {
+        width: auto;
+        max-width: 100%;
+        max-height: 100%;
+      }
+      .cap {
+        font-size: 12pt;
+        color: var(--muted);
+        margin-top: 0.09in;
+        line-height: 1.45;
       }
 
-      /* 8 枚目で、その 1 行がどの等級の根拠に立っているかを行の末尾に出す札。
-         **色だけで区別しない**——凡例を探すことになり、白黒印刷で消える。
-         言葉（事実／提案／政策提案）を書いたうえで色を添える。
-         **新しい色相は作らない**（teal と warm を線と字にそのまま使う）。 */
+      /* **動画の置き場所。** `data-video` が付いた要素の矩形を
+         `tools/slides_pptx.mjs` が読み、そこへ mp4 を重ねる。
+         **PDF ではこのポスター画像がそのまま残る**ので、
+         再生できない環境でも 1 コマは見える。**矩形の出所は 1 つ**にしてある。 */
+      .video img {
+        display: block;
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 0.05in;
+      }
+
+      .steps {
+        display: flex;
+        flex-direction: column;
+        gap: 0.13in;
+      }
+      .steps > div {
+        display: flex;
+        gap: 0.16in;
+        align-items: baseline;
+      }
+      .steps b.i {
+        flex: 0 0 0.32in;
+        color: var(--teal);
+        font-size: 18pt;
+      }
+      .steps p {
+        font-size: 15pt;
+        line-height: 1.45;
+      }
+
+      /* 需要側／負荷側の 2 枚。 */
+      .side {
+        flex: 1;
+        background: var(--wash);
+        border-radius: 0.09in;
+        padding: 0.22in 0.28in;
+        display: flex;
+        flex-direction: column;
+      }
+      .side h2 {
+        font-size: 30pt;
+        font-weight: 700;
+        margin-bottom: 0.04in;
+      }
+      .side .def {
+        font-size: 15pt;
+        line-height: 1.4;
+        font-weight: 700;
+        color: var(--ink);
+        margin-bottom: 0.18in;
+      }
+      .side ul {
+        list-style: none;
+      }
+      .side li {
+        font-size: 16pt;
+        font-weight: 700;
+        padding: 0.06in 0;
+        border-top: 1px solid var(--line);
+      }
+      .side li span {
+        font-weight: 400;
+        font-size: 11pt;
+        color: var(--muted);
+        margin-left: 0.08in;
+      }
+      .times {
+        align-self: center;
+        font-size: 40pt;
+        font-weight: 700;
+        color: var(--teal);
+        padding: 0 0.04in;
+      }
+
+      /* 7 枚目の 5 段。等級は罫の色と札の 2 重で示す（色だけで区別しない）。 */
+      .flow {
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 0.2in;
+      }
+      .flow > div {
+        border-top: 2.5px solid var(--line);
+        padding-top: 0.11in;
+      }
+      .flow > div.now {
+        border-top-color: var(--teal);
+      }
+      .flow h3 {
+        font-size: 14.5pt;
+        line-height: 1.28;
+        margin-bottom: 0.08in;
+      }
+      .flow p {
+        font-size: 12pt;
+        line-height: 1.4;
+        color: var(--muted);
+      }
       .tier {
         display: inline-block;
-        font-size: 8.5pt;
+        font-size: 10pt;
         font-weight: 700;
         letter-spacing: 0.03em;
         color: var(--muted);
         border: 1px solid var(--line);
         border-radius: 0.05in;
-        padding: 0.008in 0.075in;
-        margin-left: 0.07in;
-        white-space: nowrap;
+        padding: 0.006in 0.06in;
+        margin-bottom: 0.06in;
       }
       .tier.fact {
         color: var(--teal);
         border-color: var(--teal);
       }
-      .tier.prop {
-        color: var(--warm);
-        border-color: var(--warm);
-      }
 
-      /* 8 枚目の 4 段の流れ。**縦に積むと ④ が下端で切れる**ので横に並べる
-         （16:9 は横が余り、縦が足りない）。**矢印は描かない**——
-         等間隔の矢印は、実装済みの ① とまだ照会もしていない ④ を
-         同じ確からしさに見せる。上の罫の色と `.tier` の 2 重で等級を示す。 */
-      .flow5 {
+      .refs {
         display: grid;
-        grid-template-columns: 1.35fr 0.85fr 1fr 1fr 1.1fr;
-        gap: 0.26in;
+        grid-template-columns: 1.25fr 1fr 1fr;
+        gap: 0.3in 0.5in;
+        flex: 1;
+        min-height: 0;
       }
-      .flow5 > div {
-        border-top: 2.5px solid var(--line);
-        padding-top: 0.13in;
+      .refs h3 {
+        font-size: 13.5pt;
+        color: var(--teal);
+        border-bottom: 1px solid var(--line);
+        padding-bottom: 0.06in;
+        margin-bottom: 0.1in;
       }
-      .flow5 > div.now {
-        border-top-color: var(--teal);
+      .refs li {
+        font-size: 11pt;
+        line-height: 1.42;
+        list-style: none;
+        margin-bottom: 0.075in;
       }
-      .flow5 > div.human {
-        border-top-color: var(--warm);
-      }
-      .flow5 .tier {
-        margin-left: 0;
-        margin-bottom: 0.09in;
-      }
-      .flow5 h3 {
-        font-size: 12.5pt;
-        font-weight: 700;
-        line-height: 1.35;
-        margin-bottom: 0.09in;
-      }
-      .flow5 p {
-        font-size: 10pt;
-        line-height: 1.48;
-      }
-      /* 9 枚目の 3 列。**箇条書きの点は残す**——事実・提案・未確認は
-         「並んだ項目」であって流れではないので、番号も矢印も付けない。 */
-      .slide li {
-        margin-left: 0;
+      .refs li i {
+        font-style: normal;
+        color: var(--muted);
       }
 
       .foot {
         margin-top: auto;
-        padding-top: 0.2in;
-        font-size: 10pt;
+        padding-top: 0.16in;
+        font-size: 11pt;
         color: var(--muted);
         display: flex;
         justify-content: space-between;
@@ -309,566 +369,709 @@
     </style>
   </head>
   <body>
-    <!-- ============================================ 1 タイトル（0–12秒）
+    <!-- ============================================ 0 表紙（0–5秒）
 
-         **初見の人がこの 1 枚で受け取るべきものは 3 つ**——
-         ①何の場所の話か（用語の定義）②何が困っているのか（問い）
-         ③この作品は何をするのか（9,507 → 絞り込み）。
-
-         **かつてここに「250m メッシュ 9,507 区画」と「データ 10 レイヤー
-         （うちスコアに入るのは 8 層）」を並べていた。** 規模は伝わるが、
-         **何の規模なのかが決まる前に数字が来る。** しかも 10 と 8 の
-         対応は外部から「意味が分からない」と言われた箇所で
-         （`CLAUDE.md`）、**初見の 1 枚目に置くのは最悪の位置**である。
-         層の数は根拠の枚（05）へ移した——そこには画面写真があり、
-         対応もその場で書ける。 -->
+         **説明しない 1 枚。** いきなり説明を始めると、聞き手は
+         「何の話が始まったのか」を探しながら聞くことになる。
+         名前と一行だけ置いて、次の枚で決着させる。 -->
+    <!-- **`justify-content: center` は効かない。** `.foot` が `margin-top:auto` を
+         持っているので、余白が全部下へ寄る。上にも `auto` を置いて挟む。 -->
     <section class="slide dark">
-      <div class="chip">都知事杯オープンデータ・ハッカソン 2026 ／ 自由課題</div>
-      <h1>東京のどこに、<br />次の 1 か所を置くべきか。</h1>
-
-      <!-- **因果を 1 段落で通す。** ①何の場所か → ②なぜ街の中で要るのか
-           → ③いまの決まり方では届かない、まで。**②が抜けていると
-           「施設の中の設備」の話に聞こえ、④（東京全体を比べる）が
-           何のためなのか分からなくなる。** -->
-      <p class="lead" style="margin-top: 0.34in; max-width: 10.4in">
-        <b>カームダウン・クールダウンスペース</b>——音・光・人混みで過負荷になった人が、
-        <b>一時的に落ち着くための小さな場所</b>です。要るのは施設の中にいるときより、
-        <b>むしろ移動の途中</b>——駅や街なかで、逃げ場が無いときです。
-        ところが<b>いま置かれているのは施設ごとの判断</b>で、
-        <b>東京全体で「次にどこを検討するか」を比べる仕組みがありません。</b>
+      <div class="step" style="margin-top: 0.5in">都知事杯オープンデータ・ハッカソン 2026 ／ 自由課題</div>
+      <!-- **一瞬見て何の作品か分かること**を、情報が入りきることより優先する。 -->
+      <h1 style="font-size: 96pt; margin-bottom: 0.2in; letter-spacing: -0.03em">CalmGap Tokyo</h1>
+      <p style="font-size: 30pt; line-height: 1.35; font-weight: 700">
+        東京のどこに、次のカームダウンスペースを置く？
       </p>
 
-      <!-- **余白は片側へ寄せる。** `margin-top: auto` で下端へ貼ると
-           本文との間に用の無い帯ができた（間隔を決め打ちして、
-           余りは footer の側へ渡す）。 -->
-      <div class="card" style="margin-top: 0.5in; max-width: 11.4in">
-        <p style="font-size: 19pt; font-weight: 700; line-height: 1.45">
-          東京 23 区を 250m 四方の <b class="warm">9,507 区画</b>に分け、
-          公開データだけで<b class="warm">「まず検討すべき区画」</b>まで絞り込みます。
-        </p>
+      <!-- **`min-height: 0` を付ける。** flex の子は既定で `min-height: auto` なので、
+           画像の自然な高さが `flex-basis` を押しのけて行が伸び、
+           **上の 1 行と重なった。** -->
+      <div class="cols" style="gap: 0.42in; margin-top: 0.34in; align-items: stretch; flex: 0 0 2.1in; min-height: 0">
+        <div class="fig fit" style="flex: 0 0 5.4in; justify-content: flex-start; min-height: 0">
+          <img src="captures/01-overview.png" alt="CalmGap の画面" style="border-color: #3d525c" />
+        </div>
+        <div style="flex: 1">
+          <svg viewBox="0 0 620 130" style="width: 100%; display: block" role="img"
+               aria-label="街で過負荷になり、一時的に落ち着ける場所が必要になる">
+            <rect x="2" y="2" width="250" height="126" rx="10" fill="#26383f" />
+            <g fill="#5b7078">
+              <rect x="28" y="62" width="16" height="44" />
+              <rect x="48" y="48" width="14" height="58" />
+              <rect x="104" y="56" width="16" height="50" />
+            </g>
+            <circle cx="80" cy="62" r="12" fill="#e7eef1" />
+            <path d="M80 77 c-13 0 -19 12 -19 29 l38 0 c0 -17 -6 -29 -19 -29 z" fill="#e7eef1" />
+            <g stroke="#f0a184" stroke-width="3.4" fill="none" stroke-linecap="round">
+              <path d="M50 36 q10 -10 20 0" /><path d="M90 36 q10 -10 20 0" />
+            </g>
+            <text x="186" y="70" text-anchor="middle" font-size="19" font-weight="700" fill="#fff">街で</text>
+            <text x="186" y="94" text-anchor="middle" font-size="19" font-weight="700" fill="#fff">過負荷</text>
+
+            <path d="M262 65 l24 0" stroke="#8fb9a8" stroke-width="4" />
+            <path d="M284 55 l16 10 -16 10 z" fill="#8fb9a8" />
+
+            <rect x="312" y="2" width="306" height="126" rx="10" fill="#26383f" />
+            <rect x="340" y="26" width="72" height="78" rx="6" fill="#1b2a33" stroke="#8fb9a8" stroke-width="3.4" />
+            <rect x="340" y="26" width="72" height="12" rx="6" fill="#8fb9a8" />
+            <circle cx="376" cy="62" r="10" fill="#e7eef1" />
+            <path d="M376 74 c-10 0 -15 9 -15 21 l30 0 c0 -12 -5 -21 -15 -21 z" fill="#e7eef1" />
+            <text x="522" y="58" text-anchor="middle" font-size="19" font-weight="700" fill="#fff">一時的に</text>
+            <text x="522" y="82" text-anchor="middle" font-size="19" font-weight="700" fill="#fff">落ち着ける場所</text>
+          </svg>
+        </div>
       </div>
 
       <div class="foot">
-        <span>カームダウン・クールダウンスペース 設置優先度マップ ／ monoimi</span>
+        <span>monoimi</span>
         <span>calmgap-tokyo.hiroaki-kuwabara.workers.dev</span>
       </div>
     </section>
 
-    <!-- ============================================ 2 課題（12–32秒）
+    <!-- ============================================ 1 カームダウンスペースとサービス概要
 
-         **「基準がバラバラ」を見出しにしていた。** 正しいが、初見の人には
-         *誰の* 基準の話か分からない。**「施設ごとに決まっている」**という
-         事実の側を見出しに出す——バラバラなのはその帰結である。 -->
+         **初見の人はカームダウンスペースを知らない。** 字の定義だけでは、
+         2 分の残りをずっと推測で聞くことになる。**絵で 3 段**にする。
+         3 段目を「では、その場所をどこに設置する？」にしてあるのが肝で、
+         **用語の説明がそのままこの作品の問いへ渡る。**
+
+         **画面写真を大きく使う。** 「東京全体を見渡して候補を絞る」は
+         言葉より画で伝わる。**ここに数字は置かない**（9,507 も 10 レイヤーも
+         3 枚目にある。何の場所かが決まる前に規模が来ると、規模のほうが残る）。 -->
     <section class="slide">
-      <div class="chip">01 なぜ、いまのやり方では決められないのか</div>
-      <!-- **割る場所をこちらで決める。** 自動改行に任せると
-           2 行目が「無い」の 2 文字だけになった。 -->
-      <h2 style="margin-bottom: 0.2in">
-        「ここに置くか」は考えられている。<br />
-        「次にどこか」を比べる仕組みが無い
-      </h2>
+      <div class="step">01</div>
+      <!-- **見出しを内容に合わせた**（2026-08-17 その4）。この枚には
+           「設備そのものの説明」と「CalmGap とは何か」の 2 つが入っている。
+           **「カームダウン・クールダウンスペースとは？」だと後半が浮く。**
+           設備 → その置き場所を考える道具、という流れが見出しで分かるようにする。 -->
+      <h1 class="tight" style="font-size: 40pt">カームダウンスペースを、<br />東京のどこに置く？</h1>
 
-      <!-- **「決める側に共通の物差しが無い」は抽象的すぎた**（2026-08-14）。
-           物差しという比喩は、**何と何を比べる話なのかを言っていない。**
-           事例が「施設ごとの是非」の単位でしか無いこと、を事実として置く
-           ——そこなら解決策（東京全体を同じ地図で比べる）と直につながる。
+      <!-- **3 段を縦に積む。** 横に並べると絵に高さを使えず、画面写真に
+           残る高さが 2.6in しか無かった（16:9 なので幅も 4.6in に潰れる）。
+           縦にすると絵は幅 4.4in で足り、**写真が 6.8in × 3.8in で置ける。** -->
+      <div class="cols" style="gap: 0.42in; align-items: stretch">
+        <div style="flex: 0 0 4.4in; display: flex; align-items: center">
+          <svg viewBox="0 0 440 400" style="width: 100%; display: block" role="img"
+               aria-label="街で過負荷になる、一時的に落ち着ける場所が必要、ではその場所をどこに設置するか">
+            <!-- ① 街で過負荷になる -->
+            <rect x="2" y="2" width="436" height="112" rx="10" fill="#f4f7f7" stroke="#d9e0e3" />
+            <g fill="#c9d6da">
+              <rect x="30" y="52" width="18" height="46" />
+              <rect x="52" y="36" width="15" height="62" />
+              <rect x="112" y="46" width="18" height="52" />
+            </g>
+            <circle cx="86" cy="56" r="12" fill="#1b2a33" />
+            <path d="M86 71 c-13 0 -19 12 -19 27 l38 0 c0 -15 -6 -27 -19 -27 z" fill="#1b2a33" />
+            <g stroke="#c2542f" stroke-width="3.4" fill="none" stroke-linecap="round">
+              <path d="M56 30 q10 -10 20 0" />
+              <path d="M96 30 q10 -10 20 0" />
+            </g>
+            <path d="M84 12 l11 0 -6 12 9 0 -15 20 4 -15 -9 0 z" fill="#c2542f" />
+            <text x="160" y="52" font-size="25" font-weight="700" fill="#1b2a33">街で過負荷になる</text>
+            <text x="160" y="82" font-size="19" fill="#5f727d">音・光・人混み</text>
 
-           **2 の JR 東日本は、この作品の外にある一次情報である。**
-           「移動の途中で過負荷になる人がいる」を作者の想定でなくするために
-           置いてある。**23 区の外であることを必ず添える**——書かないと
-           「もう解決済み」と読める。 -->
-      <div class="rows" style="max-width: 11.5in; gap: 0.16in">
-        <div class="row">
-          <div class="num">1</div>
-          <p>
-            感覚過敏のある人（発達障害・精神障害・PTSD 等）にとって、都市の音・光・混雑は
-            <b>過負荷</b>になりやすい。<b>要るのは移動の途中</b>——駅や街なかで、
-            逃げ場が無いときです。
-          </p>
+            <path d="M86 118 l0 20" stroke="#8fb9a8" stroke-width="4" />
+            <path d="M74 134 l12 14 12 -14 z" fill="#8fb9a8" />
+
+            <!-- ② 一時的に落ち着ける場所 -->
+            <rect x="2" y="154" width="436" height="112" rx="10" fill="#f4f7f7" stroke="#d9e0e3" />
+            <rect x="46" y="176" width="80" height="68" rx="7" fill="#fff" stroke="#2c7a8c" stroke-width="3.4" />
+            <rect x="46" y="176" width="80" height="14" rx="7" fill="#2c7a8c" />
+            <circle cx="86" cy="208" r="11" fill="#1b2a33" />
+            <path d="M86 222 c-11 0 -16 10 -16 22 l32 0 c0 -12 -5 -22 -16 -22 z" fill="#1b2a33" />
+            <g stroke="#8fb9a8" stroke-width="3.4" fill="none" stroke-linecap="round">
+              <path d="M20 196 h14" /><path d="M138 196 h14" />
+              <path d="M20 226 h14" /><path d="M138 226 h14" />
+            </g>
+            <text x="176" y="202" font-size="25" font-weight="700" fill="#1b2a33">一時的に落ち着ける</text>
+            <text x="176" y="234" font-size="25" font-weight="700" fill="#1b2a33">場所が必要</text>
+
+            <path d="M86 270 l0 20" stroke="#8fb9a8" stroke-width="4" />
+            <path d="M74 286 l12 14 12 -14 z" fill="#8fb9a8" />
+
+            <!-- ③ では、その場所をどこに設置する？ -->
+            <rect x="2" y="306" width="436" height="92" rx="10" fill="#2c7a8c" />
+            <text x="220" y="348" text-anchor="middle" font-size="29" font-weight="700" fill="#fff">
+              では、その場所を
+            </text>
+            <text x="220" y="380" text-anchor="middle" font-size="29" font-weight="700" fill="#fff">
+              どこに設置する？
+            </text>
+          </svg>
         </div>
-        <div class="row">
-          <div class="num">2</div>
-          <p>
-            <b>鉄道事業者も同じ問題を見ています。</b>JR 東日本は 2025 年 10 月〜12 月、
-            <b>横浜駅・立川駅の改札内</b>で「カームダウン・クールダウンスポット」と
-            センサリーマップの<b>実証実験</b>を行いました（<b>いずれも 23 区の外</b>）。
-          </p>
-        </div>
-        <div class="row">
-          <div class="num">3</div>
-          <p>
-            <b>ただし、どれも「その施設に置くかどうか」という単位の判断です。</b>
-            23 区で確認できた 11 か所も空港・区役所・大学・有料施設で、
-            <b>鉄道駅はこの一覧に 1 件も入っていません。</b>
-          </p>
+
+        <div style="flex: 1; display: flex; flex-direction: column; min-width: 0">
+          <div class="fig fit" style="flex: 1">
+            <img src="captures/01-overview.png" alt="CalmGap の画面。東京全体の優先度と、上位の候補一覧" />
+          </div>
+          <div class="card" style="background: var(--ink); color: #fff; margin-top: 0.16in">
+            <p style="font-size: 28pt; font-weight: 700; line-height: 1.15">CalmGap</p>
+            <p style="font-size: 16pt; line-height: 1.4; margin-top: 0.07in">
+              東京 23 区のどこに設置すると効果的かを、<b>公開データから検討するための地図</b>です。
+            </p>
+          </div>
         </div>
       </div>
 
-      <div class="card" style="margin-top: auto; max-width: 11.5in">
-        <p class="lead">
-          施設ごとに「ここに置くか」を考える事例が中心で、
-          <b>東京全体を同じ地図の上で比べて「次にどこを検討するか」を探す仕組みがありません。</b>
-          置く場所を決めるのは行政・鉄道事業者・施設運営者——<b>その全員が、同じ地図を持っていない。</b>
+      <div class="foot">
+        <span>calmgap-tokyo</span><span>1</span>
+      </div>
+    </section>
+
+    <!-- ============================================ 2 どうやって候補を探すのか
+
+         **「需要 × 負荷」とだけ書かない。** なぜそのデータなのかが分からないと、
+         「公開データを集めました」までしか伝わらない。**設計思想 → データ**の順に置き、
+         2 つを掛けて優先度になるところまでを 1 枚の図にする。
+         **層の数（10 と 8）はここに置く**（8 つの名前が目の前にある場所でしか出さない）。 -->
+    <section class="slide">
+      <div class="step">02</div>
+      <h1 class="tight">9,507 区画を、同じ尺度で比べる</h1>
+
+      <div class="cols" style="gap: 0.2in; align-items: stretch; flex: 0 0 auto">
+        <div class="side">
+          <h2 style="color: var(--teal)">需要</h2>
+          <p class="def">人が集まり、支援や移動の拠点となる場所</p>
+          <ul>
+            <li>障害福祉サービス事業所 <span>定員 ／ 徒歩圏 800m</span></li>
+            <li>特別支援学校 <span>在籍者数 ／ 徒歩圏 800m</span></li>
+            <li>駅 <span>乗降規模 ／ 帯域 600m</span></li>
+            <li>精神科・心療内科 <span>件数 ／ 徒歩圏 800m</span></li>
+          </ul>
+        </div>
+
+        <div class="times">×</div>
+
+        <div class="side">
+          <h2 style="color: var(--warm)">負荷</h2>
+          <p class="def">過負荷につながりやすい環境</p>
+          <ul>
+            <li>用途地域 <span>法が許す騒がしさの上限</span></li>
+            <li>自動車騒音 <span>実測点からの内挿</span></li>
+            <li>従業者数 <span>昼間の混雑の代理</span></li>
+            <li>緑・公園被覆 <span>減点</span></li>
+          </ul>
+        </div>
+      </div>
+
+      <!-- 2 枚が 1 つの値に落ちるところまでを図にする。
+           **矢印は 1 本だけ**（掛け算は 1 回しか起きない）。 -->
+      <div style="display: flex; align-items: center; justify-content: center; margin: 0.12in 0 0.1in">
+        <svg viewBox="0 0 60 30" style="width: 0.45in; display: block">
+          <path d="M30 0 l0 16" stroke="#8fb9a8" stroke-width="5" />
+          <path d="M18 14 l12 15 12 -15 z" fill="#8fb9a8" />
+        </svg>
+      </div>
+
+      <div class="card" style="text-align: center; padding: 0.18in">
+        <p style="font-size: 30pt; font-weight: 700; line-height: 1.2">
+          設置優先度 ＝ 需要 <span style="color: var(--teal)">×</span> 負荷
+        </p>
+        <p style="font-size: 13pt; margin-top: 0.06in">
+          <b>足し算ではなく掛け算。</b>片側だけ極端な場所は上位に入りません。
+          データの層は <b>10 レイヤー</b>、スコアに入るのが <b>8 層</b>です。
         </p>
       </div>
 
-      <p class="cap" style="margin-top: 0.11in">
-        出典：東日本旅客鉄道 2025 年 10 月 6 日 ニュースリリース（実施は 2025 年 10 月 15 日〜12 月下旬）。既存 11 か所は公表情報からの手集計で、網羅性の保証はありません。
+      <div class="foot"><span>calmgap-tokyo</span><span>2</span></div>
+    </section>
+
+    <!-- ============================================ 3 東京全体を比較する
+
+         **既存の設置方法を批判しない。** この作品は
+         「決められないから設置されない」という因果を証明していないし、
+         施設単位の検討が誤りだとも言えない。書けるのは
+         **「東京全体を見渡して比べる工程が無い」**までである。
+         そこは外部照合の結果（既存設置と順位が一致しない）が裏付けている。
+
+         **答えの側を大きく見せる。** 9,507 → 上位 50 → 1 区画の根拠、
+         という絞り込みがこの作品の値打ちで、それは図でしか短く伝わらない。 -->
+    <section class="slide">
+      <div class="step">03</div>
+      <h1 class="tight">東京全体を、同じ尺度で比較する</h1>
+
+      <div class="cols" style="gap: 0.45in">
+        <div style="flex: 0 0 5.4in; display: flex; flex-direction: column; justify-content: center">
+          <p class="lead" style="margin-bottom: 0.2in">
+            これまでの設置は<b>施設や建物の単位</b>。<br />
+            <b class="warm">9,507 区画から「まず検討する場所」を絞り込みます。</b>
+          </p>
+          <svg viewBox="0 0 720 318" style="width: 100%; display: block" role="img"
+               aria-label="9,507 区画から優先順位をつけ、上位 50 区画を見て、根拠を確認するまでの絞り込み">
+            <rect x="0" y="6" width="720" height="76" rx="8" fill="#2c7a8c" />
+            <text x="26" y="46" font-size="30" font-weight="700" fill="#fff">9,507 区画</text>
+            <text x="26" y="70" font-size="17" fill="#cfe3e7">東京 23 区すべて・250m 四方</text>
+
+            <path d="M360 86 l0 20" stroke="#8fb9a8" stroke-width="4" />
+            <path d="M348 102 l12 14 12 -14 z" fill="#8fb9a8" />
+            <text x="386" y="110" font-size="17" fill="#5f727d">需要 × 負荷で優先順位をつける</text>
+
+            <rect x="80" y="120" width="560" height="76" rx="8" fill="#4e97a6" />
+            <text x="106" y="160" font-size="30" font-weight="700" fill="#fff">上位 50 区画</text>
+            <text x="106" y="184" font-size="17" fill="#e2eff1">まず検討する場所</text>
+
+            <path d="M360 200 l0 20" stroke="#8fb9a8" stroke-width="4" />
+            <path d="M348 216 l12 14 12 -14 z" fill="#8fb9a8" />
+            <text x="386" y="224" font-size="17" fill="#5f727d">1 区画を開く</text>
+
+            <rect x="160" y="234" width="400" height="76" rx="8" fill="#c2542f" />
+            <text x="186" y="274" font-size="30" font-weight="700" fill="#fff">根拠を確認する</text>
+            <text x="186" y="298" font-size="17" fill="#f6ded6">実数・出典・地図の点</text>
+          </svg>
+        </div>
+
+        <div class="fig fit" style="flex: 1">
+          <img src="captures/05-overview-map.png" alt="東京 23 区全域の優先度。濃いほど需要 × 負荷が高い" />
+        </div>
+      </div>
+
+      <p class="tiny" style="margin-top: 0.14in">
+        既存の設置方法を否定するものではなく、<b>「次にどこを検討するか」を考えるための補助線</b>です。
+        23 区で確認できた既存の設置は <b>11 か所</b>（公表情報からの手集計）。
       </p>
 
-      <div class="foot">
-        <span>calmgap-tokyo</span><span>2</span>
-      </div>
+      <div class="foot"><span>calmgap-tokyo</span><span>3</span></div>
     </section>
 
-    <!-- ============================================ 3 作ったもの（32–52秒）
+    <!-- ============================================ 4 使用例
 
-         **かつてここは「優先度 ＝ 需要 × 負荷」を見出しにした算出方法の枚だった。**
-         初見の人は**まだ何が出てくるのかを知らない**ので、式が先に来ると
-         「何かを計算する作品」までしか受け取れない。**見出しは変換のほうへ渡す**
-         ——9,507 区画 → まず検討すべき場所。式は、その変換が何でできているかの
-         1 行として下に置く。**8 層の名前はここでは並べない**（05 で画面と一緒に出る）。 -->
+         **この枚は文字ではなく動画が仕事をする。** 左の 5 行は動画の目次であって
+         説明ではない。**キャプションの数値は動画の検査でもある**——
+         動画の中身は機械で照合できないので、`doc_numbers` が 2 位の区画の実数を見る。
+         **落ちたら数字を書き換えるのではなく、動画を撮り直すこと。** -->
     <section class="slide">
-      <div class="chip">02 作ったもの</div>
-      <h2>9,507 区画を比べて、まず検討すべき場所まで絞り込む</h2>
+      <div class="step">04</div>
+      <!-- **「こう使ってください」という推奨手順にしない。** 利用者は
+           目的に応じて自由に使う（重みを変える・別の層を重視する・
+           他の候補と比べる）。ここで見せるのは**確認できる情報の例**である。 -->
+      <h1 class="tight">使用例：ある区画で何が確認できるか</h1>
 
-      <div class="cols">
-        <div class="txt">
-          <p style="margin-bottom: 0.22in">
-            東京 23 区を 250m 四方に区切り、<b>公開データだけで 9,507 区画すべてに
-            優先度を付けました。</b>高いほうから並べて、<b>上位 50 区画</b>を出します。
-          </p>
-
-          <p style="font-size: 17pt; font-weight: 700; line-height: 1.4; margin-bottom: 0.16in">
-            優先度 ＝ 需要 <span style="color: var(--teal)">×</span> 負荷
-          </p>
-          <div class="rows" style="gap: 0.1in; margin-bottom: 0.22in">
-            <p class="muted">
-              <b style="color: var(--teal)">需要</b>
-              — そこへ<b>通わざるを得ない人</b>が、どれだけいるか
-            </p>
-            <p class="muted">
-              <b style="color: var(--teal)">負荷</b>
-              — その場所が、どれだけ<b>過負荷を起こしやすいか</b>
-            </p>
+      <div class="cols" style="gap: 0.36in">
+        <div style="flex: 0 0 3.5in; display: flex; flex-direction: column; justify-content: center">
+          <div class="steps" style="gap: 0.3in">
+            <div>
+              <b class="i">・</b>
+              <p><b>順位と、その内訳</b><br /><span style="font-size: 13pt; color: var(--muted)"
+                >需要と負荷のどの層がどれだけ効いているか</span></p>
+            </div>
+            <div>
+              <b class="i">・</b>
+              <p><b>数えたものの実数と出典</b><br /><span style="font-size: 13pt; color: var(--muted)"
+                >徒歩圏の事業所・学校・駅・医療機関の件数</span></p>
+            </div>
+            <div>
+              <b class="i">・</b>
+              <p><b>その施設が地図のどこにあるか</b><br /><span style="font-size: 13pt; color: var(--muted)"
+                >一覧の 1 件を押すと、地図の吹き出しに詳細</span></p>
+            </div>
           </div>
-
-          <p>
-            <b>足し算にしていません。</b>掛け算なので、
-            片側だけが極端な場所は上位に入りません。
-          </p>
         </div>
 
-        <div class="fig">
+        <div class="fig video" style="flex: 1; display: flex; flex-direction: column; min-width: 0">
+          <div class="fig fit" style="flex: 1">
+            <img data-video="demo-evidence.mp4" src="demo/demo-evidence-poster.png"
+                 alt="順位から根拠、地図の点、施設の詳細まで開く操作" />
+          </div>
+          <p class="cap">
+            第 2 位 <b>文京区 水道橋</b>（<code>5339464014</code>）。障害福祉サービス事業所
+            <b>58 件</b>・定員計 <b>496 人</b>。<b>表の件数・地図の点・一覧の行数は全 9,507 区画で一致を検査。</b>
+          </p>
+        </div>
+      </div>
+
+      <div class="foot"><span>calmgap-tokyo</span><span>4</span></div>
+    </section>
+
+    <!-- ============================================ 5 重みを変えて比較する
+
+         **伝えたいことは 1 つだけ。** 重みを変えると優先順位も変わる。
+         「唯一の正解を出さない」の説明は台本の側にある。
+         **限界（特別支援学校 1 層）は隅に小さく置く**（独立の 1 枚にすると、
+         慎重さの表明が作品そのものを弱く見せる）。 -->
+    <section class="slide">
+      <div class="step">05</div>
+      <!-- **機能紹介にしない。** 伝えるのは
+           「一つの固定された答えではなく、意思決定の条件を変えて比較できる」
+           という価値である。プリセットとスライダーは、その手段でしかない。 -->
+      <h1 class="tight" style="font-size: 40pt">立場によって、優先順位は変わる</h1>
+
+      <div class="cols" style="gap: 0.36in">
+        <div style="flex: 0 0 2.9in; display: flex; flex-direction: column; justify-content: center">
+          <p class="lead" style="font-size: 17pt; margin-bottom: 0.3in">
+            同じ東京の地図に対して、<b class="warm">何を重視するかを変えて比較できます。</b>
+          </p>
+          <div style="margin-bottom: 0.28in">
+            <div class="n warm">0 <small>件</small></div>
+            <p class="k"><b>4 つのプリセットすべてで上位 20 件に入る区画</b></p>
+          </div>
           <div>
-            <img src="captures/01-overview.png" alt="全体地図と結論 2 枚" />
-            <p class="cap">
-              9,507 区画すべてに優先度が付く。<b>この打ち切りに根拠はありません</b>
-              （優先度は連続していて切れ目が無い。件数は画面で変えられます）。
-            </p>
+            <div class="n">72.1 <small>%</small></div>
+            <p class="k">重み <b>8 個</b>を ±30% 揺さぶって上位 10 件に残る割合</p>
           </div>
+        </div>
+
+        <div class="fig video" style="flex: 1; display: flex; flex-direction: column; min-width: 0">
+          <div class="fig fit" style="flex: 1">
+            <img data-video="demo-weights.mp4" src="demo/demo-weights-poster.png"
+                 alt="プリセットを切り替え、さらにスライダーを動かすと順位表が入れ替わる操作" />
+          </div>
+          <p class="cap">
+            プリセットを「通所先・通学先の近く」へ切り替え、<b>さらに駅乗降規模のつまみを動かす</b>。
+            順位表も地図の色も同時に変わります。<b>唯一の正解は出しません。</b>
+          </p>
         </div>
       </div>
 
-      <div class="foot">
-        <span>calmgap-tokyo</span><span>3</span>
-      </div>
+      <p class="tiny" style="margin-top: 0.12in">
+        重み以外の固定値 <b>76 個</b>でも測っています。上位の顔ぶれは特別支援学校 1 層でほぼ決まります
+        （23 区に <b>45 校</b>しかないため）。順位を固定の答えとして読まないでください。
+      </p>
+
+      <div class="foot"><span>calmgap-tokyo</span><span>6</span></div>
     </section>
 
-    <!-- ============================================ 4 見つかったもの（52–70秒）
+    <!-- ============================================ 6 分析から見えてきた場所
 
-         **148 は「主張」ではなく「この仕組みが実際に見つけたもの」**として置く。
-         かつては 5 枚目（重みで動く）の後にあり、**否定的な結果を 2 つ続けて
-         見せてから**でないと成果に辿り着けなかった。順序を
-         結果 → 根拠 → 信頼性 に直したので、ここが結果の 2 つ目になる。 -->
+         **数字だけでなく地図そのものを見せる。** 148 は「9,507 区画を比べる
+         仕組みが実際に見つけたもの」で、**斜線の区画が東京中に散っている絵**が
+         その発見そのものである。文章で説明するより強い。
+
+         **地図だけを切り出した素材を使う**（`captures/04-unreachable-map.png`）。
+         斜線の区画は 250m 四方なので、左パネルごと縮めて置くと
+         **1 区画が 4px になり、斜線があること自体が読み取れない。**
+
+         **外部照合は 1 枚のカードに畳んだ**（2026-08-17 その4）。
+         内訳（大学 5 室・保安検査後 6 室・有料 5 室）はここから外し、
+         `presentation.md` に残した。**外したので `doc_numbers` の一覧からも外してある。** -->
     <section class="slide">
-      <div class="chip">03 実際に見つかったもの</div>
-      <h2>需要が高いのに、徒歩 700m に区の公共施設が 1 件も無い区画</h2>
+      <div class="step">06</div>
+      <h1 class="tight">分析すると、検討すべき場所が見えてくる</h1>
 
-      <div class="cols">
-        <div class="txt">
-          <div class="stat" style="margin-top: 0">
-            <div class="n">148 <small>／ 9,507 区画</small></div>
-            <p class="k">
-              転用できる建物が<b>そもそも徒歩圏に無い</b>場所。
-              新規整備か、民間施設との連携が要ります。
-            </p>
-          </div>
-
-          <p style="margin-bottom: 0.2in">
+      <!-- **左を細くして、動画に高さと幅を渡す。** 斜線の区画は 250m 四方で、
+           動画の中の地図は画面の 55% しかない。左を広く取ると
+           **斜線があること自体が読み取れない大きさ**になる。 -->
+      <div class="cols" style="gap: 0.32in">
+        <div style="flex: 0 0 2.6in; display: flex; flex-direction: column; justify-content: center">
+          <div class="n">148 <small>区画</small></div>
+          <p class="k" style="font-size: 15pt">
+            9,507 区画のうち、需要が高いのに<b>徒歩 700m に区の公共施設が 1 件も無い</b>場所。
+          </p>
+          <p class="k" style="font-size: 15pt; margin-top: 0.2in">
             <b>全体の上位 50 区画とは 1 件も重なりません。</b>
-            順位の上位と、既存施設で届いていない場所は、別の場所を指しています。
           </p>
-
-          <!-- **プリセットごとの範囲（133〜171 件）は書かない。**
-               配信データから出せない数なので検査できず、ビルドが変われば
-               黙って古くなる。画面が同じ理由でこれを出していない
-               （status.md 2026-08-06）ので、資料も揃える。 -->
-          <p class="muted">
-            この数も<b>重みで動きます</b>（既定の重みでの値です）。
-            また<b>公共施設があっても、そこにカームダウンスペースがあるとは限りません</b>——
-            数えているのは転用しうる場所の有無です。
+          <p class="tiny" style="margin-top: 0.24in">
+            公共施設があっても、そこにカームダウンスペースがあるとは限りません。
+            この数も重みで動きます。
           </p>
         </div>
 
-        <div class="fig">
-          <div>
-            <img src="captures/03-unreachable.png" alt="到達不可の区画だけに絞った状態" />
-            <p class="cap">
-              絞り込むと上位がごっそり消え、斜線の区画が現れる。
-              <b>「公共施設 0 件」がその場で確かめられる。</b>
-            </p>
+        <div class="fig video" style="flex: 1; display: flex; flex-direction: column; min-width: 0">
+          <div class="fig fit" style="flex: 1">
+            <img data-video="demo-unreachable.mp4" src="demo/demo-unreachable-poster.png"
+                 alt="絞り込むと、斜線の 148 区画が東京 23 区の地図に浮かび上がる" />
           </div>
+          <p class="cap">
+            画面の<b>「絞り込んで地図に出す」</b>を押すと、上位が消えて<b class="warm">斜線の 148 区画</b>が現れます。
+          </p>
         </div>
       </div>
 
-      <div class="foot">
-        <span>calmgap-tokyo</span><span>4</span>
-      </div>
+      <div class="foot"><span>calmgap-tokyo ／ 斜線＝徒歩 700m に区の公共施設が無い区画</span><span>6</span></div>
     </section>
 
-    <!-- ============================================ 5 根拠が辿れる（70–90秒）
+    <!-- ============================================ 7 社会実装の一例：都営地下鉄
 
-         **「では、その順位は信用してよいのか」への答えがこの枚。**
-         結果を 2 つ見せた直後に置く——**疑いが立ってから根拠を出す**ほうが、
-         根拠を先に出すより短い時間で効く。
+         **具体例を 1 つ置く。** 抽象的な「社会実装」より、
+         **誰が何を判断するのかを想像できる 1 例**のほうが強い。
+         都営地下鉄を選んだのは、**東京都交通局が東京都自身の事業者**で、
+         この作品（東京都のオープンデータ）から施策までの距離がいちばん短いためである。
 
-         **層の数（10 と 8）はここに置く。** 画面写真に内訳が写っているので
-         対応をその場で書ける。1 枚目に置くと、何の層なのかが決まる前に
-         2 つの数だけが来る。 -->
+         **ここに書いた事実は、すべて一次情報で確かめてある**（2026-08-17）:
+         - 全 106 駅のホームドア整備完了は東京都交通局の公表
+           （**かつて「ホームドア 85.3%」と書いていたのは誤り。**
+           都市整備局の集計でも都営地下鉄は都内 95 駅で 100%）
+         - 鉄道駅の設置事例は Osaka Metro 夢洲駅（改札内・改札外の両方）と
+           JR 東日本の実証（横浜駅・立川駅・23 区の外）
+         - 交通結節点への設置はエコモ財団の解説冊子（2023 年 6 月・交通事業者と
+           行政向け）に 7 事例あり、**すべて空港とフェリーターミナル**である
+         - 鉄道駅総合バリアフリー推進事業の補助対象はエレベーター・ホームドア・
+           バリアフリートイレで、**カームダウンスペースは挙がっていない**
+
+         **「移動中のほうが負担が大きい」とは書かない。** 比較の主張の裏が取れない。
+         書けるのは「交通結節点への設置が実務として積み上がっている」までである。
+
+         **決まった話ではない。** 東京都交通局への照会も合意もしていない。 -->
     <section class="slide">
-      <div class="chip">04 なぜ、その順位を信用してよいのか</div>
-      <h2>1 区画を開くと、実数・出典・順位・寄与が全部出る</h2>
+      <div class="step">07</div>
+      <h1 class="tight" style="font-size: 40pt">社会実装の一例：都営地下鉄</h1>
 
-      <div class="cols">
-        <div class="txt">
-          <p class="muted" style="font-size: 12pt; margin-bottom: 0.04in">
-            第 1 位・江東区 亀戸（<code>5339463631</code>）
-          </p>
-          <!-- **1 行に収まらないので、割る場所をこちらで決める。**
-               自動改行に任せると「負荷 0.985」が「荷 0.985」で折れた。 -->
-          <p style="font-size: 19pt; font-weight: 700; line-height: 1.35; margin-bottom: 0.14in">
-            優先度 0.974<br />
-            ＝ 需要 0.989 × 負荷 0.985
-          </p>
-
-          <!-- **4 行を 3 行に畳んである。** 左の列は下端で foot と当たる寸前まで
-               詰まっており、1 行増えると重なる（実際に重なった）。 -->
-          <div class="rows" style="gap: 0.09in">
-            <p>障害福祉サービス事業所 <b>44 件</b>（定員計 394 人）／ 精神科・心療内科 <b>6 件</b></p>
-            <p>駅 <b>1 駅</b>（乗降計 135,911 人／日・最寄りは亀戸）</p>
-            <p>用途地域 <b>商業地域</b> ／ 推定騒音 <b>67.6 dB</b></p>
-          </div>
-
-          <p style="margin-top: 0.18in">
-            需要 4 層・負荷 4 層の<b>1 層ずつ</b>に実数・出典・地域内順位・寄与が付きます
-            （データは <b>10 レイヤー</b>、スコアに入るのは <b>8 層</b>）。
-          </p>
-          <p style="margin-top: 0.12in">
-            数えた施設は<b>地図で光り、一覧でも開きます。表の件数・地図の点・
-            一覧の行数は、全 9,507 区画で一致を検査しています。</b>
-          </p>
+      <div class="cols" style="gap: 0.42in; flex: 0 0 auto; margin-bottom: 0.16in">
+        <div style="flex: 0 0 4.3in">
+          <p style="font-size: 16pt; font-weight: 700; margin-bottom: 0.1in">なぜ駅、なぜ都営地下鉄か</p>
+          <ul style="padding-left: 0.22in">
+            <li style="font-size: 13.5pt; line-height: 1.4; list-style: disc; margin-bottom: 0.07in">
+              <b>交通結節点への設置が積み上がっている</b>（エコモ財団の冊子の 7 事例は空港とフェリーターミナル）
+            </li>
+            <li style="font-size: 13.5pt; line-height: 1.4; list-style: disc; margin-bottom: 0.07in">
+              <b>鉄道駅はまだ始まったばかり</b>（Osaka Metro 夢洲駅、JR の実証は<b>23 区の外</b>）
+            </li>
+            <li style="font-size: 13.5pt; line-height: 1.4; list-style: disc">
+              <b>東京都交通局は東京都自身の事業者</b>（4 路線 <b>106 駅</b>・令和 6 年 2 月に全駅ホームドア整備完了）
+            </li>
+          </ul>
         </div>
 
-        <div class="fig">
-          <div>
-            <img src="captures/02-evidence.png" alt="1 区画の根拠と内訳" />
-            <p class="cap">
-              示すのは<b>区画</b>であって特定の施設ではない。
-              施設の余剰空間も運営体制も測っていないため。
-            </p>
-          </div>
-        </div>
-      </div>
-
-      <div class="foot">
-        <span>calmgap-tokyo</span><span>5</span>
-      </div>
-    </section>
-
-    <!-- ============================================ 6 唯一の正解は出さない（90–105秒）
-
-         **この枚を 4 枚目に置いていたのが、初見の人にいちばん効いていなかった。**
-         「4 つの重みで共通する区画は 0 件」は誠実さの表明だが、
-         **成果を見る前に読むと「答えが出ない道具」に見える。**
-         結果（03）と根拠（04）の後なら、同じ 0 件が
-         **「そこまで分かっていて出さない」**に読み替わる。 -->
-    <section class="slide">
-      <div class="chip">05 それでも唯一の正解は出さない</div>
-      <h2>立場が変われば、順位も提言も変わる</h2>
-
-      <div class="grid2" style="max-width: 11.6in; gap: 0.3in 0.7in">
-        <div class="stat">
-          <div class="n warm">0 <small>件</small></div>
-          <p class="k">
-            <b>4 つの重みプリセットすべてで上位 20 件に入る区画。</b>
-            「重みの選び方に関係なく上位に来る場所」はもうありません。
+        <div style="flex: 1">
+          <p style="font-size: 16pt; font-weight: 700; margin-bottom: 0.1in">
+            さらに具体的な例：どの重み設定でも残る駅
           </p>
-        </div>
-        <div class="stat">
-          <div class="n">72.1 <small>%</small></div>
-          <p class="k">
-            重み 8 個を <b>±30% 揺さぶった 200 回</b>で、上位 10 件に残る割合。
-            重み以外の固定値 76 個でも同時に測っています。
+          <p style="font-size: 13.5pt; line-height: 1.45">
+            4 つの重み設定それぞれで上位 50 区画を出し、最寄り駅が都営 4 路線と一致する数を数えます
+            （<b>22 区画・9 駅</b>／<b>22 区画・9 駅</b>／<b>25 区画・10 駅</b>／<b>19 区画・8 駅</b>）。
+            <b class="warm">2 つ以上</b>で挙がったのは <b>9 駅</b>、<b>3 つ以上</b>は <b>8 駅</b>、
+            <b class="warm">4 つすべて</b>は <b>神保町</b>の 1 駅。
+          </p>
+          <p style="font-size: 13.5pt; line-height: 1.45; margin-top: 0.08in">
+            <b>どの立場から見ても候補に残る駅なら、まず現地調査をする候補として優先できます。</b>
           </p>
         </div>
       </div>
 
-      <p class="lead" style="max-width: 11.6in; margin-top: 0.1in">
-        重みはスライダーで動かせます。<b>動かすと順位も提言も変わります。</b>
-        どこを優先すべきかは「何を重視するか」に依存する——
-        <b>その依存そのものを、同じ画面に出しています。</b>
-      </p>
-
-      <div class="card" style="margin-top: auto; max-width: 11.6in">
-        <p>
-          <b>限界も画面に書いてあります。</b>上位の顔ぶれは
-          <b>特別支援学校というレイヤー 1 枚</b>でほぼ決まります（外すと上位 10 件が
-          全部入れ替わる。23 区に 45 校しかないため）。
-          <b>順位を固定の答えとして読まないでください。</b>
-        </p>
-      </div>
-
-      <div class="foot">
-        <span>calmgap-tokyo</span><span>6</span>
-      </div>
-    </section>
-
-    <!-- ============================================ 7 外部照合と結び（105–120秒） -->
-    <section class="slide dark">
-      <div class="chip">06 外から確かめた</div>
-      <h2 style="margin-bottom: 0.22in">
-        既に置かれている場所と、この地図が指す場所は一致しない
-      </h2>
-
-      <div class="cols" style="gap: 0.6in">
-        <div style="flex: 0 0 5.5in">
-          <div class="kv"><span>確認できた設置</span><b>11 か所・17 室</b></div>
-          <div class="kv"><span>優先度順位の中央値</span><b>4,765 位 / 9,507</b></div>
-          <div class="kv"><span>上位 50 に入るもの</span><b class="warm">0 件</b></div>
-          <div class="kv">
-            <span>街を歩いている人がその場で使える室</span><b class="warm">1 室</b>
-          </div>
-          <p class="muted" style="font-size: 11pt; margin-top: 0.18in">
-            残りは大学の関係者のみ 5 室・保安検査後 6 室・入館料やチケットが要るもの 5 室。
-            公表情報からの手集計で、スコアには一切入れていません。
-          </p>
-        </div>
-
-        <div style="flex: 1; display: flex; flex-direction: column; justify-content: center">
-          <p class="lead">
-            既存のカームダウンスペースは<b>「その施設の利用者向けの設備」</b>であって、
-            <b>街にいる人の退避先ではありません。</b>
-          </p>
-          <p class="lead" style="margin-top: 0.2in">
-            この地図は、その差を <b>148 区画</b>として示します。
-          </p>
-        </div>
-      </div>
-
-      <!-- **最後に残すのは作品の正体である**（2026-08-14）。
-           かつてこの card は「9,507 区画を絞る道具です」から始まり、
-           **そのあとに導入経路の話が続いて薄まっていた。**
-           「何を作るものではないか」を先に言い切ると
-           **「絞り込む道具」のほうが輪郭を持つ**——否定が定義を作る。
-           導入経路そのものは 8 枚目にあり口では触れないが、
-           **「既にある判断の場に出す資料である」までは分析の側から言える**
-           ——新しい制度も新しい会議も前提にしていないため。 -->
-      <div class="card" style="margin-top: 0.28in">
-        <p style="font-size: 15pt; line-height: 1.55">
-          <b>この作品は、カームダウンスペースそのものを作るものではありません。</b>
-          東京 <b>9,507 区画</b>から<b class="warm">「まずここを検討する」場所を絞り込む、意思決定支援ツール</b>です。
-        </p>
-        <!-- **駅の話はここで 1 句だけ。** 2 分の主役は「9,507 区画から
-             絞り込む」ことで、駅はその結果が現実の施策へどう接続するかの
-             一例にすぎない（詳細は 8–9 枚目・口では触れない）。
-             **1 句に収める**——ここで説明を始めると、結びが提案の話になる。 -->
-        <p style="font-size: 11.5pt; margin-top: 0.13in">
-          決めるのは人——<b>新しい制度も新しい会議も要りません。</b>計画の改定・改修の設計・
-          予算要求や、<b>都営地下鉄のような駅のバリアフリー施策</b>という<b>既にある判断の場</b>に、
-          区をまたいだ同じ物差しの根拠として出せます。
-          ETL・スコアリング・地図 UI・検証ツールは OSS として公開しています。
-        </p>
-      </div>
-
-      <div class="foot">
-        <span>monoimi ／ github.com/monoimi-mod/calmgap-tokyo</span>
-        <span>calmgap-tokyo.hiroaki-kuwabara.workers.dev</span>
-      </div>
-    </section>
-
-    <!-- ============================================ 8-9 導入経路（口頭では触れない）
-
-         **この 2 枚だけ、2 分の台本に対応する区間を持たない。**
-         導入経路は根拠の種類が違う話なので、口で足すと 52–90 秒の
-         「見つかったもの → 根拠が全部辿れる」実演が薄まる
-         （`docs/presentation.md` 2 節）。**ただし 7 枚目の結びで
-         「都営地下鉄のような、既にある判断の場に出せる」の 1 句だけは
-         口に出す**——そこまでは分析の側から言える。
-
-         **2026-08-14 に 1 枚 → 2 枚にした。** 流れ（8）と、
-         事実／提案／未確認の切り分け（9）を同じ枚に詰めると、
-         **どちらも読めない密度になった**（実測で ④ が下端で切れた）。
-         **切り分けの枚を削らないこと**——ここを落とすと、
-         提案と未確認が流れの中で事実の顔をする（`issues.md` A10 と同じ型）。
-
-         **数値は 8 枚目の ① だけが持つ。** `tools/doc_numbers.py` が
-         `toei_reach()` で数え直す（上位区画のうち最寄りが都営地下鉄の駅の数と、
-         その駅名すべて）。**落ちたら直すのは資料のほうである**——
-         上位が動いて都営の駅が減ったのなら、この一例自体を考え直す。
-         **年月日は数値ではなく出典の一部**なので検査に入れない。 -->
-    <section class="slide">
-      <div class="chip">07 この先 — 分析結果を、現実の施策へ</div>
-      <h2 style="margin-bottom: 0.14in">例：都営地下鉄から始める</h2>
-
-      <p class="lead" style="font-size: 13pt; margin-bottom: 0.26in; max-width: 12in">
-        東京都交通局は<b>都営地下鉄 4 路線・106 駅</b>を運営し、バリアフリー化を進めています。
-        <b>東京都自身の施設なので、分析から施策までの距離がいちばん短い</b>——というのが、
-        ここから始める理由です（<b>提案であって、決まった話ではありません</b>）。
-      </p>
-
-      <div class="flow5">
+      <div class="flow" style="grid-template-columns: repeat(6, 1fr); gap: 0.16in">
         <div class="now">
-          <span class="tier fact">この作品・実装済み</span>
-          <h3>① データで<br />優先地域を発見</h3>
-          <p>
-            9,507 区画の優先度。順位表は区画を<b>「区名＋最寄り駅」</b>で指す。
-            <b>上位 50 区画のうち 22 区画</b>は、最寄りが都営地下鉄の乗り入れる
-            <b>9 駅</b>（水道橋・岩本町・神保町・春日・新板橋・九段下・
-            新宿三丁目・本郷三丁目・飯田橋）。
-          </p>
+          <span class="tier fact">この作品</span>
+          <h3>① 東京全体を<br />分析</h3>
         </div>
-        <div class="human">
-          <span class="tier prop">提案</span>
-          <h3>② 候補駅を<br />検討</h3>
-          <p>
-            都営地下鉄の駅から候補を選ぶ。<b>東京都交通局の判断。</b>
-          </p>
-        </div>
-        <div class="human">
-          <span class="tier prop">提案</span>
-          <h3>③ 駅構内を<br />現地確認</h3>
-          <p>
-            動線・安全性・混雑・設置スペース・電源等の設備条件・利用者への案内。
-            <b class="warm">CalmGap は駅構内の場所を決めません。</b>
-          </p>
-        </div>
-        <div class="human">
-          <span class="tier prop">提案・未実施</span>
-          <h3>④ 実証</h3>
-          <p>
-            当事者・専門家を含めて設置し、利用実態と当事者評価を、優先度が中位の
-            対照区画と比べる。<b>属性は記録しない。</b>
-          </p>
+        <div class="now">
+          <span class="tier fact">この作品</span>
+          <h3>② 候補駅を<br />絞る</h3>
         </div>
         <div>
-          <span class="tier">政策提案・未確認</span>
-          <h3>⑤ 効果を確認<br />して展開</h3>
-          <p>
-            他の都営駅へ。さらに都の<b>鉄道駅総合バリアフリー推進事業</b>を通じて
-            JR・私鉄へ。<b class="warm">ただし同事業はカームダウンスペースを
-            対象として挙げていません。</b>
+          <span class="tier">駅・行政</span>
+          <h3>③ 現地条件を<br />確認</h3>
+        </div>
+        <div>
+          <span class="tier">駅・行政</span>
+          <h3>④ 設置可能性を<br />検討</h3>
+        </div>
+        <div>
+          <span class="tier">未実施</span>
+          <h3>⑤ 実証・<br />効果検証</h3>
+        </div>
+        <div>
+          <span class="tier">政策提案</span>
+          <h3>⑥ 必要に応じて<br />展開</h3>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top: 0.16in">
+        <p style="font-size: 15pt">
+          <b class="warm">CalmGap が担うのは、候補を絞るところまで。</b>
+          設置を決めるのは行政と鉄道事業者で、この道具がそれを代替するわけではありません。
+          <b>導入が決まった話ではなく、東京都交通局への照会も合意もしていません。</b>
+        </p>
+      </div>
+
+      <div class="foot">
+        <span>出典：東京都交通局／東京都都市整備局／交通エコロジー・モビリティ財団／Osaka Metro／東日本旅客鉄道 2025-10-06</span>
+        <span>8</span>
+      </div>
+    </section>
+
+    <!-- ============================================ 8 今後の課題と展望
+
+         **機能一覧にしない。** 「今後実装したいもの」を並べると、
+         いまの作品が未完成であることの説明になってしまう。
+         **課題は 3 つの束**（スコアの精度・分析条件の自由度・実証）に畳み、
+         **展望は 1 行**にする。
+
+         **展望がこの作品の動機である。** この道具そのものが使われることだけが
+         目的ではない。**オープンデータから「どこに置くと効果的か」を
+         定量的に探る考え方**が広がって、実際に設置場所が増えることが理想である。 -->
+    <section class="slide">
+      <div class="step">08</div>
+      <h1 class="tight">今後の課題と展望</h1>
+
+      <div class="cols" style="gap: 0.4in; flex: 0 0 auto">
+        <div class="card" style="flex: 1">
+          <h2 style="font-size: 19pt; color: var(--teal); margin-bottom: 0.12in">
+            スコアの精度
+          </h2>
+          <ul style="padding-left: 0.22in">
+            <li style="font-size: 14pt; line-height: 1.45; list-style: disc; margin-bottom: 0.08in">
+              需要・負荷を表すデータの改善
+            </li>
+            <li style="font-size: 14pt; line-height: 1.45; list-style: disc">
+              レイヤーの妥当性の検証
+            </li>
+          </ul>
+        </div>
+        <div class="card" style="flex: 1">
+          <h2 style="font-size: 19pt; color: var(--teal); margin-bottom: 0.12in">
+            分析条件の自由度
+          </h2>
+          <ul style="padding-left: 0.22in">
+            <li style="font-size: 14pt; line-height: 1.45; list-style: disc; margin-bottom: 0.08in">
+              レイヤーの追加・削除
+            </li>
+            <li style="font-size: 14pt; line-height: 1.45; list-style: disc; margin-bottom: 0.08in">
+              CSV 等による独自データの取り込み
+            </li>
+            <li style="font-size: 14pt; line-height: 1.45; list-style: disc">
+              自動で正規化して地図へ反映
+            </li>
+          </ul>
+        </div>
+        <div class="card" style="flex: 1">
+          <h2 style="font-size: 19pt; color: var(--teal); margin-bottom: 0.12in">
+            実証
+          </h2>
+          <ul style="padding-left: 0.22in">
+            <li style="font-size: 14pt; line-height: 1.45; list-style: disc; margin-bottom: 0.08in">
+              実際の設置結果との比較
+            </li>
+            <li style="font-size: 14pt; line-height: 1.45; list-style: disc">
+              利用状況と<b>当事者による評価</b>での検証
+            </li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top: auto; background: var(--ink); color: #fff">
+        <p style="font-size: 15pt; line-height: 1.5; margin-bottom: 0.12in">
+          <b>この道具が使われることだけが目的ではありません。</b>
+          オープンデータから<b>「どこに置くと効果的か」を定量的に探る考え方</b>が
+          行政や事業者に広がって、実際に設置場所が増えることが理想です。
+        </p>
+        <p style="font-size: 22pt; font-weight: 700; line-height: 1.35">
+          必要な人が、街中で安心して少し休める場所を増やしたい。
+        </p>
+        <p class="tiny" style="margin-top: 0.1in">
+          カームダウンスペースは感覚過敏のある人だけのものではありません。
+          高齢者・妊婦・体調のすぐれない人にも使える場所になり得ます。
+        </p>
+      </div>
+
+      <div class="foot"><span>calmgap-tokyo</span><span>9</span></div>
+    </section>
+
+    <!-- ============================================ 9 技術スタック
+
+         **技術自慢の枚にしない。** どのライブラリを使ったかより、
+         **公開データ → 空間分析 → 地図上の意思決定支援**という流れが
+         見えることのほうが大事である。
+
+         **使っていないものを書かない。** React も ODPT も使っていない
+         （`web/package.json` の依存は maplibre-gl のみ、
+          出典は `etl/config.py` の SOURCES が唯一の出所）。 -->
+    <section class="slide">
+      <div class="step">09</div>
+      <h1 class="tight">どう作ったか</h1>
+
+      <div class="cols" style="gap: 0.22in; align-items: stretch; flex: 0 0 auto">
+        <div class="side" style="background: var(--wash)">
+          <h2 style="font-size: 21pt; color: var(--teal)">データ</h2>
+          <p class="def" style="margin-bottom: 0.1in">公開データだけ</p>
+          <p style="font-size: 13pt; line-height: 1.5">
+            国土数値情報／WAM NET／e-Stat 経済センサス／東京都オープンデータカタログ（23 区の公共施設）／
+            東京都環境局・東京都教育庁／環境GIS＋
+          </p>
+        </div>
+        <div class="times" style="font-size: 28pt">→</div>
+        <div class="side" style="background: var(--wash)">
+          <h2 style="font-size: 21pt; color: var(--teal)">空間分析</h2>
+          <p class="def" style="margin-bottom: 0.1in">Python</p>
+          <p style="font-size: 13pt; line-height: 1.5">
+            GeoPandas・pandas・NumPy・Shapely・pyproj。住所からの座標化、距離重み付き内挿、
+            250m メッシュへの集計、重み付き合成
+          </p>
+        </div>
+        <div class="times" style="font-size: 28pt">→</div>
+        <div class="side" style="background: var(--wash)">
+          <h2 style="font-size: 21pt; color: var(--teal)">地図・UI</h2>
+          <p class="def" style="margin-bottom: 0.1in">TypeScript</p>
+          <p style="font-size: 13pt; line-height: 1.5">
+            MapLibre GL JS・Vite。<b>重みの再計算はブラウザ側</b>なので、
+            スライダーを動かすと即座に順位と地図が変わる
+          </p>
+        </div>
+        <div class="times" style="font-size: 28pt">→</div>
+        <div class="side" style="background: var(--wash)">
+          <h2 style="font-size: 21pt; color: var(--teal)">公開</h2>
+          <p class="def" style="margin-bottom: 0.1in">Cloudflare Workers</p>
+          <p style="font-size: 13pt; line-height: 1.5">
+            静的配信。ETL・スコアリング・地図 UI・検証ツールは <b>OSS</b>
           </p>
         </div>
       </div>
 
       <div class="card" style="margin-top: auto">
-        <p style="font-size: 11.5pt">
-          <b>役割分担。</b><b class="warm">CalmGap は ① だけ</b>——東京全体を比べて
-          「まずどの地域・駅周辺を検討すべきか」を絞る。<b>駅構内の設置可能性は鉄道事業者、
-          実証は行政と事業者、実際に使われるかは実証</b>が決める。
-          最寄り駅は 1,500m 以内の<b>区画の呼び名</b>で、<b>駅構内の優先度を出したわけではありません。</b>
+        <p style="font-size: 15pt">
+          <b>同じ数式が Python と TypeScript に 2 つあります。</b>重みを画面で動かすためです。
+          <b>全 9,507 区画で両者のスコアが一致することを毎回検査</b>しており、
+          表の件数・地図の点・一覧の行数の一致も同じように検査しています。
         </p>
       </div>
 
-      <div class="foot">
-        <span>calmgap-tokyo ／ 導入経路の詳細と、レビューで削った案は docs/implementation.md</span>
-        <span>8</span>
-      </div>
+      <div class="foot"><span>calmgap-tokyo ／ github.com/monoimi-mod/calmgap-tokyo</span><span>10</span></div>
     </section>
 
-    <!-- ============================================ 9 事実・提案・未確認の切り分け -->
+    <!-- ============================================ 10 参考文献
+         **本編では触れない 1 枚。** ここに出典をまとめておくことで、
+         本編の各枚が出典を書かずにビジュアルへ寄せられる。
+         **改変した旨は表の上に置く**（CC BY・PDL1.0・e-Stat 利用規約が
+         そろって求めている条件で、表を読んだあとの但し書きでは遅い）。 -->
     <section class="slide">
-      <div class="chip">08 前ページの根拠 — どこまでが事実で、どこからが提案か</div>
-      <h2 style="margin-bottom: 0.22in">同じ体裁で並べない</h2>
+      <div class="step">10</div>
+      <h1 class="tight">参考文献・データ出典</h1>
+      <p class="tiny" style="margin-bottom: 0.2in; max-width: 12in">
+        本作の数値・地図・順位は、下記データを<b>編集・加工したもの</b>です（対象の絞り込み・名寄せ・
+        住所からの座標化・距離重み付き内挿・250m メッシュへの集計・重み付き合成）。
+        <b>加工の責任は本作にあり、出典の提供元は加工結果について一切の責任を負いません。</b>
+      </p>
 
-      <div class="cols" style="gap: 0.44in">
-        <div style="flex: 1">
-          <span class="tier fact" style="margin-left: 0">確認した事実</span>
-          <!-- **括弧の中を削って 4 行減らしてある。** ここが 1 行増えると、
-               下の card の下へ潜って**読めないまま気付けない**（実際に潜った）。
-               削ったのは 109.0km と、根拠法令の名前（バリアフリー新法・
-               東京都福祉のまちづくり条例）——**設備の実数のほうが強い。** -->
-          <ul style="margin-top: 0.16in; padding-left: 0.2in">
-            <li style="font-size: 11.5pt; line-height: 1.5; margin-bottom: 0.12in">
-              <b>東京都交通局が都営地下鉄を運営</b>（浅草線・三田線・新宿線・大江戸線の
-              4 路線・106 駅）
-            </li>
-            <li style="font-size: 11.5pt; line-height: 1.5; margin-bottom: 0.12in">
-              <b>都営地下鉄はバリアフリー化を進めている</b>（全駅にスロープ板・
-              エレベーター、ホームドア 85.3%）
-            </li>
-            <li style="font-size: 11.5pt; line-height: 1.5; margin-bottom: 0.12in">
-              <b>都に鉄道駅バリアフリー整備の支援施策がある</b>（鉄道駅総合バリアフリー
-              推進事業。区市町と連携し鉄道事業者へ補助）
-            </li>
-            <li style="font-size: 11.5pt; line-height: 1.5">
-              <b>JR 東日本が駅で実証した事例がある</b>（2025 年 10〜12 月・横浜駅・
-              立川駅の改札内。<b>23 区の外</b>）
-            </li>
+      <div class="refs">
+        <div>
+          <h3>利用したオープンデータ（10 レイヤー・13 出典）</h3>
+          <ul>
+            <li>国土数値情報 <i>N03 行政区域 ／ P29 学校 ／ P14 福祉施設 ／ P04 医療機関 ／ S12 駅別乗降客数 ／ A29 用途地域 ／ P13 都市公園（国土交通省）</i></li>
+            <li>WAM NET 障害福祉サービス等事業所一覧 <i>独立行政法人福祉医療機構</i></li>
+            <li>公立学校統計調査報告書（学校別在籍者数）<i>東京都教育庁</i></li>
+            <li>自動車交通騒音 常時監視・要請限度測定地点 <i>東京都環境局</i></li>
+            <li>自動車騒音の常時監視結果（環境GIS＋）<i>環境省／国立環境研究所</i></li>
+            <li>地域メッシュ統計 経済センサス <i>総務省統計局</i></li>
+            <li>各区の公共施設一覧（23 区）<i>各区（東京都オープンデータカタログ ほか）</i></li>
           </ul>
         </div>
-
-        <div style="flex: 1">
-          <span class="tier prop" style="margin-left: 0">本プロジェクトからの提案</span>
-          <ul style="margin-top: 0.16in; padding-left: 0.2in">
-            <li style="font-size: 11.5pt; line-height: 1.5; margin-bottom: 0.13in">
-              CalmGap で<b>優先度の高い地域・駅周辺を候補として抽出する</b>
-            </li>
-            <li style="font-size: 11.5pt; line-height: 1.5; margin-bottom: 0.13in">
-              <b>都営地下鉄の候補駅で実証する</b>
-            </li>
-            <li style="font-size: 11.5pt; line-height: 1.5">
-              その後、<b>他の鉄道事業者へ展開する</b>
-            </li>
-          </ul>
-          <p class="cap" style="margin-top: 0.2in">
-            <b>「駅に必ず置くべき」ではありません。</b>分析結果を現実の判断に
-            つなげる、最も筋の通る一例です。
-          </p>
-        </div>
-
-        <div style="flex: 1">
-          <span class="tier" style="margin-left: 0">現時点で未確認</span>
-          <ul style="margin-top: 0.16in; padding-left: 0.2in">
-            <li style="font-size: 11.5pt; line-height: 1.5; margin-bottom: 0.13in">
-              <b>カームダウンスペース専用の都の補助制度</b>があること
-              （<b>鉄道駅総合バリアフリー推進事業はこれを対象として挙げていない</b>）
-            </li>
-            <li style="font-size: 11.5pt; line-height: 1.5; margin-bottom: 0.13in">
-              <b>東京都交通局が設置を決定している</b>こと（<b>照会もしていません</b>）
-            </li>
-            <li style="font-size: 11.5pt; line-height: 1.5; margin-bottom: 0.13in">
-              <b>特定の駅に設置すれば効果がある</b>こと
-            </li>
-            <li style="font-size: 11.5pt; line-height: 1.5">
-              <b>実証の結果をもって JR・私鉄への展開が決まる</b>こと
-            </li>
+        <div>
+          <h3>カームダウンスペースの事例と考え方</h3>
+          <ul>
+            <li>交通エコロジー・モビリティ財団「カームダウン・クールダウンについて」<i>2023 年 6 月。ピクトグラムは 2018 年公開。事例 7 件はすべて空港・フェリーターミナル</i></li>
+            <li>Osaka Metro「カームダウン・クールダウンスペース」<i>夢洲駅。改札内・改札外</i></li>
+            <li>東日本旅客鉄道 <i>2025 年 10 月 6 日 ニュースリリース。横浜駅・立川駅で実証</i></li>
+            <li>既存設置 11 か所・17 室 <i>羽田空港・港区役所・東京国立博物館・大学 ほかの公表情報から手集計</i></li>
+            <li>感覚過敏研究所 空港・図書館の設置調査 <i>2025 年 8 月版 ／ 2026 年 3 月版</i></li>
           </ul>
         </div>
-      </div>
+        <div>
+          <h3>駅バリアフリー施策</h3>
+          <ul>
+            <li>東京都交通局「ホームドアの整備について」<i>令和 6 年 2 月に全 106 駅で整備完了</i></li>
+            <li>東京都都市整備局「鉄道駅のバリアフリーの取組について」<i>鉄道駅総合バリアフリー推進事業。対象はエレベーター・ホームドア・バリアフリートイレ</i></li>
+            <li>国土交通省「知的・発達障害者等に対する公共交通機関の利用支援に関する検討会」</li>
+          </ul>
+          <h3 style="margin-top: 0.18in">ライセンスと検証</h3>
+          <ul>
+            <li>13 出典の内訳・著作権表示・条文の URL は<b>画面の「算出方法とデータ出典」</b>に全件掲載</li>
+            <li><code>link_check.py</code> と <code>doc_numbers.py</code> が、リンク先と資料の数値を検査</li>
+          </ul>
 
-      <div class="card" style="margin-top: 0.24in">
-        <p style="font-size: 11.5pt">
-          <b class="warm">実証設置・自治体や鉄道事業者との合意・当事者による検証は、いずれも行っていません。</b>
-          JR 東日本と東京都交通局の事例は<b>公表された一次情報を引いたもの</b>で、照会も連携もしていません。
-          <b>この道具が示すのは候補地域の絞り込みまで</b>——<b>需要は公開データの代理変数</b>です。
-        </p>
+        </div>
       </div>
 
       <div class="foot">
-        <span>出典：東日本旅客鉄道 2025-10-06 ニュースリリース ／ 東京都交通局「都営地下鉄」「バリアフリー設備一覧」 ／ 東京都都市整備局「鉄道駅のバリアフリーの取組について」</span>
-        <span>9</span>
+        <span>monoimi ／ github.com/monoimi-mod/calmgap-tokyo</span>
+        <span>calmgap-tokyo.hiroaki-kuwabara.workers.dev</span>
       </div>
     </section>
   </body>

@@ -170,15 +170,27 @@ def d3(x: float) -> str:
 TOEI_PATH = ROOT / "data/reference/toei_stations.json"
 
 
-def toei_reach(meta: dict, order: list[dict]) -> tuple[int, list[str]]:
+def toei_reach(meta: dict, order: list[dict]) -> dict:
     """上位区画のうち、最寄り駅が都営地下鉄の駅であるものを数える。
+    **4 つの重みプリセットすべてで数え直す。**
 
-    **スコアの話ではない。** 資料（スライド 8 枚目・`1-9`）が
+    **スコアの話ではない。** 資料（スライド 7 枚目・記入案 `1-9`）が
     「上位区画の最寄り駅に都営地下鉄の駅が並ぶ」と書いているので、
     **その主張が次のビルドで黙って古くならないように**数え直す。
     上位の顔ぶれはこの作品でいちばんよく動くところで、
     **特別支援学校の規模を実数にしただけで提言 8 件のうち 4 件が
     入れ替わった**履歴がある（`CLAUDE.md`）。
+
+    **既定の重みだけでは足りない**（2026-08-17）。スライドは直前の枚で
+    「重みを変えると順位も変わる」と言っており、**その次の枚で
+    「9 駅です」とだけ出すと、どの重みで出た 9 駅なのかが分からない。**
+    だから 4 つのプリセットすべてで上位 50 区画を出し直し、
+    **いくつのプリセットで候補に挙がったか**まで資料に書けるようにする。
+
+    **順位は本番と同じ式で出す。** `etl.score.compose` をそのまま呼ぶ
+    （配信済みの `n_*` を入力にする）。ここに式をもう 1 つ書くと、
+    **感度分析と同じ誤り**——資料だけが別の式で計算した数を名乗ることになる。
+    **既定の重みで配信済みの順位を再現することを、毎回確かめている。**
 
     **駅名の一致で数える。** S12 は駅グループコードで束ねるので、
     同名で他社と共用の駅を含む——**「都営専用の駅」ではなく
@@ -187,11 +199,58 @@ def toei_reach(meta: dict, order: list[dict]) -> tuple[int, list[str]]:
     **駅構内の優先度ではない。** 最寄り駅は 1,500m 以内の「区画の呼び名」で、
     この作品は駅について何も述べていない。
     """
+    import pandas as pd
+
+    sys.path.insert(0, str(ROOT))
+    from etl.config import ALL_COMPONENTS, PRESETS
+    from etl.score import compose
+
     doc = json.loads(TOEI_PATH.read_text(encoding="utf-8"))
     toei = {name for names in doc["lines"].values() for name in names}
-    top = order[: meta["ranking_default_n"]]
-    hit = [r for r in top if r.get("f_station_name") in toei]
-    return len(hit), sorted({r["f_station_name"] for r in hit})
+    n = meta["ranking_default_n"]
+    df = pd.DataFrame(order)
+
+    out: dict[str, dict] = {}
+    for preset in PRESETS:
+        weights = {c.key: float(preset["weights"].get(c.key, c.weight)) for c in ALL_COMPONENTS}
+        ranked = compose(df, weights).sort_values("priority", ascending=False)
+        top = ranked.head(n)
+        # **既定は配信済みの上位を再現するはず。** ずれたら、この計算が
+        # 本番と違う式になっている（＝資料の他の数値も信用できない）。
+        #
+        # **並び順ではなく集合で見る。** 入力の `n_*` は配信のために
+        # 丸めてあるので、優先度が同値になった組の前後が入れ替わる
+        # （実測で 50 件中 2 組）。**この検査が見たいのは
+        # 「同じ 50 区画が選ばれるか」**であって、同値の並べ方ではない。
+        if preset["id"] == "default":
+            published = {r["c"] for r in order[:n]}
+            got = set(top["c"])
+            if got != published:
+                sys.exit(
+                    "既定の重みで計算し直した上位 "
+                    f"{n} 区画が、配信済みのものと一致しない"
+                    f"（差 {len(got ^ published)} 件）。"
+                    "tools/doc_numbers.py が本番と違う式で数えている"
+                )
+        names = [s for s in top["f_station_name"].tolist() if isinstance(s, str) and s in toei]
+        out[preset["id"]] = {
+            "label": preset["label"],
+            "meshes": len(names),
+            "stations": sorted(set(names)),
+        }
+
+    tally: dict[str, int] = {}
+    for r in out.values():
+        for s in r["stations"]:
+            tally[s] = tally.get(s, 0) + 1
+    out["_shared"] = {
+        "presets": len(PRESETS),
+        # **2 つ以上／3 つ以上／全部、の 3 段で持つ。** 資料はこの 3 つを書く。
+        "at_least_2": sorted(s for s, c in tally.items() if c >= 2),
+        "at_least_3": sorted(s for s, c in tally.items() if c >= 3),
+        "all": sorted(s for s, c in tally.items() if c == len(PRESETS)),
+    }
+    return out
 
 
 def submission_checks(meta: dict, sens: dict | None, order: list[dict]) -> list[tuple[Path, str, str]]:
@@ -208,7 +267,12 @@ def submission_checks(meta: dict, sens: dict | None, order: list[dict]) -> list[
     が検査しているので、ここで数え直すと**同じ規則の 3 本目の実装**に
     なってしまう（`CLAUDE.md` が繰り返し警告している型）。
     """
-    top = order[0]
+    # **スライドと台本が実数を並べているのは 2 位の区画である**（2026-08-17）。
+    # 4 枚目の操作動画がその区画を開いており、**動画の中身は機械で照合
+    # できない**ので、キャプションの実数がその代わりをしている。
+    # **落ちたときに直すのは数字ではなく動画のほう**——順位が入れ替わった
+    # のに数字だけ書き換えると、動画と資料が別の区画を指す。
+    top = order[1]
     u = meta["unreachable"]
     score_layers = sum(1 for r in meta["layer_roles"] if r["role"] == "score")
 
@@ -255,19 +319,17 @@ def submission_checks(meta: dict, sens: dict | None, order: list[dict]) -> list[
         f"{sum(1 for r in order if not r.get('f_noise_n')):,} 区画",
     )
 
-    # --- 1 位の区画。**スライドと台本が実数を並べている行** ---
-    need((SLIDES, SCRIPT), "1 位のメッシュコード", top["c"])
-    need((SLIDES, SCRIPT), "1 位の区", ward)
-    need((SLIDES, SCRIPT), "1 位の最寄り駅", top["f_station_name"])
-    need((SLIDES,), "1 位の優先度", d3(top["priority"]))
-    need((SLIDES,), "1 位の需要", d3(top["demand"]))
-    need((SLIDES,), "1 位の負荷", d3(top["load"]))
-    need((SLIDES, SCRIPT), "1 位の事業所件数", f"{top['f_welfare_n']} 件")
-    need((SLIDES,), "1 位の事業所定員計", f"{top['f_welfare_cap']:,} 人")
-    need((SLIDES,), "1 位の精神科件数", f"{top['f_clinic_n']} 件")
-    need((SLIDES, SCRIPT), "1 位の駅の乗降計", f"{top['f_station_sum']:,} 人")
-    need((SLIDES, SCRIPT), "1 位の用途地域", top["f_zoning_name"])
-    need((SLIDES, SCRIPT), "1 位の推定騒音", f"{top['f_noise_db']} dB")
+    # --- 2 位の区画。**4 枚目の操作動画が開いている区画** ---
+    need((SLIDES, SCRIPT), "2 位のメッシュコード", top["c"])
+    need((SLIDES, SCRIPT), "2 位の区", ward)
+    need((SLIDES, SCRIPT), "2 位の最寄り駅", top["f_station_name"])
+    need((SLIDES, SCRIPT), "2 位の事業所件数", f"{top['f_welfare_n']} 件")
+    need((SLIDES, SCRIPT), "2 位の事業所定員計", f"{top['f_welfare_cap']:,} 人")
+    need((SCRIPT,), "2 位の優先度", d3(top["priority"]))
+    need((SCRIPT,), "2 位の精神科件数", f"{top['f_clinic_n']} 件")
+    need((SCRIPT,), "2 位の駅の乗降計", f"{top['f_station_sum']:,} 人")
+    need((SCRIPT,), "2 位の用途地域", top["f_zoning_name"])
+    need((SCRIPT,), "2 位の推定騒音", f"{top['f_noise_db']} dB")
 
     # --- 2 つの出力 ---
     need(ALL, "到達不可のうち区内で中位以上", f"{u['mid_or_above']} 区画")
@@ -285,12 +347,19 @@ def submission_checks(meta: dict, sens: dict | None, order: list[dict]) -> list[
         "料金を一次情報で確かめたか所",
         f"{sum(1 for s in cs['sites'] if s.get('fee') != 'unchecked')} か所",
     )
-    need((SLIDES, SCRIPT), "既存の設置室数", f"{rooms} 室")
-    need((SLIDES, SCRIPT), "既存の設置の順位の中央値", f"{median_rank:,} 位")
-    need((SLIDES,), "その場で使える室数", f"{by_access.get('open', 0)} 室")
-    need((SLIDES,), "関係者のみの室数", f"{by_access.get('members', 0)} 室")
-    need((SLIDES,), "保安検査後の室数", f"{by_access.get('airside', 0)} 室")
-    need((SLIDES,), "有料の室数", f"{by_access.get('ticketed', 0)} 室")
+    # **外部照合はスライド本編から外した**（2026-08-17 その5・ユーザー判断）。
+    # 面白い検証だが、**2 分の発表では「それで何が分かったの？」になりやすい。**
+    # 台本と記入案には残してあるので、聞かれたら答える。
+    need((SCRIPT,), "既存の設置室数", f"{rooms} 室")
+    need((SCRIPT,), "既存の設置の順位の中央値", f"{median_rank:,} 位")
+    need((SCRIPT,), "その場で使える室数", f"{by_access.get('open', 0)} 室")
+    # **内訳（関係者のみ・保安検査後・有料）はスライドから外した**（2026-08-17）。
+    # 2 分のプレゼンで読めるサイズを優先し、`presentation.md` へ移してある。
+    # **主張ごと消したので、この一覧からも消す**（残すと落ちるだけで、
+    # 直すべきものを指さない検査になる）。
+    need((SCRIPT,), "関係者のみの室数", f"{by_access.get('members', 0)} 室")
+    need((SCRIPT,), "保安検査後の室数", f"{by_access.get('airside', 0)} 室")
+    need((SCRIPT,), "有料の室数", f"{by_access.get('ticketed', 0)} 室")
 
     # --- 順位の不安定さ。**ここを落とすと資料が作品より強く見える** ---
     if sens:
@@ -304,13 +373,31 @@ def submission_checks(meta: dict, sens: dict | None, order: list[dict]) -> list[
 
     # --- 導入経路の一例（都営地下鉄）が、いまの上位と本当につながっているか ---
     # **ここが落ちたら直すのは資料のほうである。** 上位の顔ぶれが動いて
-    # 都営の駅が減ったのなら、**8 枚目の一例そのものを考え直す**——
+    # 都営の駅が減ったのなら、**7 枚目の一例そのものを考え直す**——
     # 数字だけ書き換えると「つながっている」という主張が中身を失う。
-    n_toei, toei_names = toei_reach(meta, order)
-    need((SLIDES, FORM), "上位区画のうち最寄りが都営地下鉄の駅", f"{n_toei} 区画")
-    need((SLIDES,), "都営地下鉄の駅の数", f"{len(toei_names)} 駅")
-    for name in toei_names:
-        need((SLIDES,), f"名指しした都営の駅（{name}）", name)
+    toei = toei_reach(meta, order)
+    shared = toei["_shared"]
+    need((SLIDES, FORM), "上位区画のうち最寄りが都営の駅（既定）", f"{toei['default']['meshes']} 区画")
+    need((SLIDES, FORM), "都営地下鉄の駅の数（既定）", f"{len(toei['default']['stations'])} 駅")
+
+    # **プリセット別の内訳も資料に書いてある**（2026-08-17）。
+    # 「どの重みで出た 9 駅なのか」に答える表なので、4 行とも検査する。
+    for pid, r in toei.items():
+        if pid == "_shared":
+            continue
+        need((SLIDES,), f"{r['label']}での区画数", f"{r['meshes']} 区画")
+        need((SLIDES,), f"{r['label']}での駅数", f"{len(r['stations'])} 駅")
+
+    need((SLIDES,), "2 つ以上のプリセットで候補になった駅数", f"{len(shared['at_least_2'])} 駅")
+    need((SLIDES,), "3 つ以上のプリセットで候補になった駅数", f"{len(shared['at_least_3'])} 駅")
+    need((SLIDES,), "4 つすべてで候補になった駅数", f"{len(shared['all'])} 駅")
+    # **スライドが名指しするのは「4 つすべてで挙がった駅」だけ**にした
+    # （2026-08-17 その5）。9 駅を並べると 2 秒では読めない。
+    # **9 駅の一覧は記入案 1-9 が持っている**ので、そちらで検査する。
+    for name in shared["at_least_2"]:
+        need((FORM,), f"名指しした都営の駅（{name}）", name)
+    for name in shared["all"]:
+        need((SLIDES, FORM), f"4 つすべてに出た駅（{name}）", name)
 
     return out
 
