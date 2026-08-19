@@ -556,7 +556,7 @@
 
       <!-- 2 枚が 1 つの値に落ちるところまでを図にする。
            **矢印は 1 本だけ**（掛け算は 1 回しか起きない）。 -->
-      <div style="display: flex; align-items: center; justify-content: center; margin: 0.12in 0 0.1in">
+      <div style="display: flex; align-items: center; justify-content: center; margin: 0.05in 0 0.05in">
         <svg viewBox="0 0 60 30" style="width: 0.45in; display: block">
           <path d="M30 0 l0 16" stroke="#8fb9a8" stroke-width="5" />
           <path d="M18 14 l12 15 12 -15 z" fill="#8fb9a8" />
@@ -570,6 +570,13 @@
         <p style="font-size: 13pt; margin-top: 0.06in">
           <b>足し算ではなく掛け算。</b>片側だけ極端な場所は上位に入りません。
           データの層は <b>10 レイヤー</b>、スコアに入るのが <b>8 層</b>です。
+        </p>
+        <!-- **重みの話をここで出しておく**（2026-08-17 その7）。
+             6 枚目でプリセットとスライダーが初めて出てくると、
+             **その枚を見ている間に「それは何か」を考えることになる。**
+             重みに外部の根拠が無いことは画面（左パネル）に書いてある。 -->
+        <p style="font-size: 13pt; margin-top: 0.1in; color: var(--teal); font-weight: 700">
+          この 8 層の重みは<b>スライダーで動かせます。</b>立場ごとの例として <b>4 つのプリセット</b>を用意しました。
         </p>
       </div>
 
@@ -748,17 +755,18 @@
            動画の中の地図は画面の 55% しかない。左を広く取ると
            **斜線があること自体が読み取れない大きさ**になる。 -->
       <div class="cols" style="gap: 0.32in">
-        <div style="flex: 0 0 2.6in; display: flex; flex-direction: column; justify-content: center">
-          <div class="n">148 <small>区画</small></div>
-          <p class="k" style="font-size: 15pt">
+        <div style="flex: 0 0 2.9in; display: flex; flex-direction: column; justify-content: center">
+          <div class="n" style="margin-top: 0.16in">148 <small>区画</small></div>
+          <p class="k" style="font-size: 14.5pt">
             9,507 区画のうち、需要が高いのに<b>徒歩 700m に区の公共施設が 1 件も無い</b>場所。
           </p>
-          <p class="k" style="font-size: 15pt; margin-top: 0.2in">
-            <b>全体の上位 50 区画とは 1 件も重なりません。</b>
-          </p>
-          <p class="tiny" style="margin-top: 0.24in">
-            公共施設があっても、そこにカームダウンスペースがあるとは限りません。
-            この数も重みで動きます。
+          <!-- **「だから何」に答える**（2026-08-17 その7）。数と地図だけを見せると、
+               聞いている側に出口が無い。148 の意味は
+               **「転用できる建物がそもそも徒歩圏に無い」**で、
+               そこから出るのは `implementation.md` 4.3 のルート B である。 -->
+          <p class="k" style="font-size: 14.5pt; margin-top: 0.16in">
+            <b class="warm">転用できる建物が、そもそも徒歩圏にありません。</b>
+            区の施設では届かないので、<b>新しく整備するか、区の外と組む</b>ことになります。
           </p>
         </div>
 
@@ -773,7 +781,32 @@
         </div>
       </div>
 
-      <div class="foot"><span>calmgap-tokyo ／ 斜線＝徒歩 700m に区の公共施設が無い区画</span><span>6</span></div>
+      <!-- **次の枚との関係をここで言っておく。** 上位 50 と 148 は
+           **1 件も重ならない**ので、次にすることが変わる。
+           これを書かずに次の枚へ行くと、**重ならないと自分で書いている 2 つが、
+           順接で繋がっているように聞こえる**（`implementation.md` 4.3 の 2 ルート）。 -->
+      <div class="card" style="margin-top: 0.14in; padding: 0.14in 0.24in">
+        <div style="display: flex; gap: 0.34in; align-items: center">
+          <p style="flex: 0 0 2.5in; font-size: 13.5pt; font-weight: 700">
+            1 件も重ならないので、<br />次にすることが変わります
+          </p>
+          <div style="flex: 1">
+            <p style="font-size: 13pt; line-height: 1.4">
+              <b style="color: var(--teal)">上位 50 区画</b>　徒歩圏に施設がある。
+              <b>既にある場所に置けないか</b>を考える（次の枚）
+            </p>
+            <p style="font-size: 13pt; line-height: 1.4; margin-top: 0.04in">
+              <b class="warm">148 区画</b>　徒歩圏に施設が無い。
+              <b>新設か、都・民間・鉄道事業者と組む</b>。区だけでは閉じない
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div class="foot">
+        <span>斜線＝徒歩 700m に区の公共施設が無い区画。公共施設があっても、そこにカームダウンスペースがあるとは限りません。この数も重みで動きます</span>
+        <span>6</span>
+      </div>
     </section>
 
     <!-- ============================================ 7 社会実装の一例：都営地下鉄
@@ -802,9 +835,15 @@
       <div class="step">07</div>
       <h1 class="tight" style="font-size: 40pt">社会実装の一例：都営地下鉄</h1>
 
-      <div class="cols" style="gap: 0.42in; flex: 0 0 auto; margin-bottom: 0.16in">
+      <!-- **前の枚の続きではない。** ここは上位区画の側（ルート A）で、
+           148 区画とは 1 件も重ならない。**明示しないと順接に聞こえる。** -->
+      <p style="font-size: 13.5pt; margin-bottom: 0.12in">
+        こちらは<b>上位区画の側</b>で、前の枚の <b>148 区画とは重なりません</b>。徒歩圏に施設があるので、<b>既にある場所に置けないか</b>を考えます。
+      </p>
+
+      <div class="cols" style="gap: 0.42in; flex: 0 0 auto; margin-bottom: 0.12in">
         <div style="flex: 0 0 4.3in">
-          <p style="font-size: 16pt; font-weight: 700; margin-bottom: 0.1in">なぜ駅、なぜ都営地下鉄か</p>
+          <p style="font-size: 16pt; font-weight: 700; margin-bottom: 0.08in">なぜ駅、なぜ都営地下鉄か</p>
           <ul style="padding-left: 0.22in">
             <li style="font-size: 13.5pt; line-height: 1.4; list-style: disc; margin-bottom: 0.07in">
               <b>交通結節点への設置が積み上がっている</b>（エコモ財団の冊子の 7 事例は空港とフェリーターミナル）
@@ -861,10 +900,9 @@
         </div>
       </div>
 
-      <div class="card" style="margin-top: 0.16in">
-        <p style="font-size: 15pt">
-          <b class="warm">CalmGap が担うのは、候補を絞るところまで。</b>
-          設置を決めるのは行政と鉄道事業者で、この道具がそれを代替するわけではありません。
+      <div class="card" style="margin-top: 0.14in; padding: 0.16in 0.28in">
+        <p style="font-size: 14.5pt">
+          <b class="warm">CalmGap が担うのは、候補を絞るところまで。</b>設置を決めるのは行政と鉄道事業者です。
           <b>導入が決まった話ではなく、東京都交通局への照会も合意もしていません。</b>
         </p>
       </div>
